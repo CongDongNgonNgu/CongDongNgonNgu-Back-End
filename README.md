@@ -23,7 +23,8 @@ database URL, public URL, and CORS origins. Provider integrations default to
 `disabled` and are not initialized by this baseline.
 
 The API prefix is `/api/v1`; the public readiness endpoint is
-`GET /api/v1/health`. There are intentionally no course, lesson, classroom,
+`GET /api/v1/health`. Session, OAuth, AI, email, storage, realtime, and payment providers are represented by independent environment controls and remain disabled until a later phase. Marking one configured fails startup when its required endpoint or sensitive credential is missing.
+There are intentionally no course, lesson, classroom,
 assignment, quiz, certificate, job, mentor, AI, commerce, payment, or
 membership routes in this repository.
 
