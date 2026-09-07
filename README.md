@@ -28,6 +28,10 @@ There are intentionally no course, lesson, classroom,
 assignment, quiz, certificate, job, mentor, AI, commerce, payment, or
 membership routes in this repository.
 
+## CI and deployment boundary
+
+CI runs on pull requests and pushes to `main` and checks install, lint, types, unit/e2e tests, build, and dependency audit. Phase 00 configures no deployment workflow; production deployment remains a separate approved task.
+
 ## Implementation references
 
 The baseline follows the NestJS guidance for configuration, validation, CORS,
