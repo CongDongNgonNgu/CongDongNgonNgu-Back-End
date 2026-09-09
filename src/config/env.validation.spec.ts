@@ -11,6 +11,49 @@ const base = {
   JWT_REFRESH_SECRET: "local-refresh-secret-that-is-at-least-32-chars",
 };
 
+describe('production transport security', () => {
+  it('requires HTTPS for the public app origin in production', () => {
+    expect(() => validateEnvironment({
+      ...base,
+      NODE_ENV: 'production',
+      PUBLIC_APP_URL: 'http://app.example.test',
+      CORS_ALLOWED_ORIGINS: 'https://app.example.test',
+    })).toThrow('PUBLIC_APP_URL must use HTTPS in production');
+  });
+
+  it('requires HTTPS for production CORS origins', () => {
+    expect(() => validateEnvironment({
+      ...base,
+      NODE_ENV: 'production',
+      PUBLIC_APP_URL: 'https://app.example.test',
+      CORS_ALLOWED_ORIGINS: 'http://app.example.test',
+    })).toThrow('CORS_ALLOWED_ORIGINS must use HTTPS in production');
+  });
+
+  it('requires HTTPS for configured OAuth redirects and email delivery', () => {
+    expect(() => validateEnvironment({
+      ...base,
+      NODE_ENV: 'production',
+      PUBLIC_APP_URL: 'https://app.example.test',
+      CORS_ALLOWED_ORIGINS: 'https://app.example.test',
+      GOOGLE_OAUTH_PROVIDER: 'configured',
+      GOOGLE_OAUTH_CLIENT_ID: 'google-client',
+      GOOGLE_OAUTH_CLIENT_SECRET: 'google-secret',
+      GOOGLE_OAUTH_REDIRECT_URI: 'http://auth.example.test/callback',
+    })).toThrow('GOOGLE_OAUTH_REDIRECT_URI must use HTTPS in production');
+
+    expect(() => validateEnvironment({
+      ...base,
+      NODE_ENV: 'production',
+      PUBLIC_APP_URL: 'https://app.example.test',
+      CORS_ALLOWED_ORIGINS: 'https://app.example.test',
+      EMAIL_PROVIDER: 'configured',
+      EMAIL_API_URL: 'http://mailer.example.test',
+      EMAIL_API_KEY: 'email-key',
+    })).toThrow('EMAIL_API_URL must use HTTPS in production');
+  });
+});
+
 describe("validateEnvironment", () => {
   it("accepts independent local defaults with providers disabled", () => {
     expect(validateEnvironment(base)).toMatchObject({
@@ -18,7 +61,29 @@ describe("validateEnvironment", () => {
       PORT: 3000,
       AI_PROVIDER: "disabled",
       PAYMENT_PROVIDER: "disabled",
+      AUTH_PERSISTENCE: "memory",
+      AUTH_ACCESS_TTL_SECONDS: 900,
+      AUTH_REFRESH_TTL_SECONDS: 2592000,
     });
+  });
+
+  it("rejects memory identity persistence in production", () => {
+    expect(() => validateEnvironment({
+      ...base,
+      NODE_ENV: "production",
+      PUBLIC_APP_URL: "https://app.example.test",
+      CORS_ALLOWED_ORIGINS: "https://app.example.test",
+      AUTH_PERSISTENCE: "memory",
+    })).toThrow("AUTH_PERSISTENCE=memory is not allowed in production");
+  });
+
+  it("requires complete independent Google OAuth configuration", () => {
+    expect(() => validateEnvironment({
+      ...base,
+      GOOGLE_OAUTH_PROVIDER: "configured",
+      GOOGLE_OAUTH_CLIENT_ID: "google-client",
+      GOOGLE_OAUTH_REDIRECT_URI: "http://localhost:5173/api/v1/auth/oauth/google/callback",
+    })).toThrow("GOOGLE_OAUTH_CLIENT_SECRET is required when GOOGLE_OAUTH_PROVIDER is configured");
   });
 
   it("rejects a database URL belonging to the external product", () => {
@@ -46,6 +111,8 @@ describe("validateEnvironment", () => {
     expect(() => validateEnvironment({
       ...base,
       NODE_ENV: "production",
+      PUBLIC_APP_URL: "https://app.example.test",
+      CORS_ALLOWED_ORIGINS: "https://app.example.test",
       JWT_ACCESS_SECRET: "replace-with-a-local-random-access-secret",
     })).toThrow("JWT_ACCESS_SECRET must be replaced before production startup");
   });

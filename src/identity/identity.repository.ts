@@ -54,6 +54,7 @@ export interface CreateOAuthTransactionInput {
   provider: OAuthProviderName;
   mode: 'login' | 'register' | 'link';
   userId: string | null;
+  sessionId: string | null;
   stateDigest: string;
   expiresAt: Date;
 }

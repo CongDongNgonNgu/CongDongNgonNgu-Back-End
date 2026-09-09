@@ -4,6 +4,10 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
 import { EMAIL_PROVIDER, MemoryEmailProvider } from '../src/auth/email/email.provider';
+import { AuthRateLimiter } from '../src/auth/rate-limit/rate-limiter';
+import { createOpaqueToken, digestOpaqueToken } from '../src/auth/crypto/token-crypto';
+import { IDENTITY_REPOSITORY } from '../src/identity/identity.module';
+import type { IdentityRepository } from '../src/identity/identity.repository';
 
 describe('auth API', () => {
   let app: INestApplication;
@@ -84,6 +88,12 @@ describe('auth API', () => {
         expect(body.data.passwordHash).toBeUndefined();
       });
 
+    await agent
+      .get('/api/v1/auth/me?userId=another-user')
+      .set('Authorization', 'Bearer ' + oldAccessToken)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.email).toBe(email));
+
     const refreshed = await agent
       .post('/api/v1/auth/refresh')
       .set('X-CSRF-Token', csrf)
@@ -124,6 +134,155 @@ describe('auth API', () => {
       .get('/api/v1/auth/me')
       .set('Authorization', 'Bearer ' + loginAgain.body.data.accessToken)
       .expect(401);
+  });
+
+  it('keeps credential errors generic and enforces password, lifecycle, and rate limits', async () => {
+    const api = request(app.getHttpServer());
+    const email = 'policy-pending@example.com';
+    const password = 'Policy password 2026';
+
+    await api.post('/api/v1/auth/register').send({
+      email,
+      displayName: 'Policy Pending',
+      password,
+    }).expect(201);
+    await api.post('/api/v1/auth/register').send({
+      email: 'invalid-password@example.com',
+      displayName: 'Invalid Password',
+      password: 'short',
+    }).expect(400);
+
+    const wrongPassword = await api.post('/api/v1/auth/login').send({
+      email,
+      password: 'Wrong password 2026',
+    }).expect(401);
+    const missingAccount = await api.post('/api/v1/auth/login').send({
+      email: 'missing-account@example.com',
+      password: 'Wrong password 2026',
+    }).expect(401);
+    expect(wrongPassword.body.error).toEqual(missingAccount.body.error);
+
+    await api.post('/api/v1/auth/login').send({ email, password })
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('AUTH_EMAIL_VERIFICATION_REQUIRED'));
+
+    const repository = app.get<IdentityRepository>(IDENTITY_REPOSITORY);
+    const pendingUser = await repository.findUserByEmail(email);
+    expect(pendingUser).toBeTruthy();
+    await repository.updateUser(pendingUser!.id, { status: 'DISABLED' });
+    await api.post('/api/v1/auth/login').send({ email, password })
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('AUTH_ACCOUNT_DISABLED'));
+
+    app.get(AuthRateLimiter).clear();
+    const rateLimitedEmail = 'rate-limited@example.com';
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await api.post('/api/v1/auth/login').send({
+        email: rateLimitedEmail,
+        password: 'Wrong password 2026',
+      }).expect(401);
+    }
+    await api.post('/api/v1/auth/login').send({
+      email: rateLimitedEmail,
+      password: 'Wrong password 2026',
+    }).expect(429)
+      .expect(({ body }) => expect(body.error.code).toBe('AUTH_RATE_LIMITED'));
+  });
+
+  it('rejects expired or wrong-purpose verification tokens and throttles resend', async () => {
+    const api = request(app.getHttpServer());
+    const repository = app.get<IdentityRepository>(IDENTITY_REPOSITORY);
+    const user = await repository.createUser({
+      email: 'verification-edge@example.com',
+      displayName: 'Verification Edge',
+      passwordHash: null,
+      status: 'VERIFICATION_PENDING',
+    });
+    const expired = createOpaqueToken();
+    await repository.createAuthToken({
+      userId: user.id,
+      purpose: 'EMAIL_VERIFICATION',
+      tokenDigest: digestOpaqueToken(expired),
+      expiresAt: new Date(Date.now() - 1000),
+    });
+    await api.post('/api/v1/auth/verify-email').send({ token: expired })
+      .expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('AUTH_VERIFICATION_INVALID'));
+
+    const wrongPurpose = createOpaqueToken();
+    await repository.createAuthToken({
+      userId: user.id,
+      purpose: 'PASSWORD_RESET',
+      tokenDigest: digestOpaqueToken(wrongPurpose),
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await api.post('/api/v1/auth/verify-email').send({ token: wrongPurpose })
+      .expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('AUTH_VERIFICATION_INVALID'));
+    await api.post('/api/v1/auth/verify-email').send({ token: 'malformed-token' }).expect(400);
+
+    const resetUser = await repository.createUser({
+      email: 'reset-expired@example.com',
+      displayName: 'Reset Expired',
+      passwordHash: null,
+      status: 'ACTIVE',
+      emailVerifiedAt: new Date(),
+    });
+    const expiredReset = createOpaqueToken();
+    await repository.createAuthToken({
+      userId: resetUser.id,
+      purpose: 'PASSWORD_RESET',
+      tokenDigest: digestOpaqueToken(expiredReset),
+      expiresAt: new Date(Date.now() - 1000),
+    });
+    await api.post('/api/v1/auth/reset-password').send({
+      token: expiredReset,
+      password: 'Another recovery password 2026',
+    }).expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('AUTH_RESET_INVALID'));
+
+    app.get(AuthRateLimiter).clear();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await api.post('/api/v1/auth/resend-verification').send({ email: user.email }).expect(201);
+    }
+    await api.post('/api/v1/auth/resend-verification').send({ email: user.email })
+      .expect(429)
+      .expect(({ body }) => expect(body.error.code).toBe('AUTH_RATE_LIMITED'));
+  });
+
+  it('enforces CSRF and origin checks on cookie-backed refresh', async () => {
+    const api = request(app.getHttpServer());
+    const email = 'csrf-flow@example.com';
+    const password = 'CSRF flow password 2026';
+    await api.post('/api/v1/auth/register').send({
+      email,
+      displayName: 'CSRF Flow',
+      password,
+    }).expect(201);
+    const verificationToken = emailProvider.messages.at(-1)!.token;
+    await api.post('/api/v1/auth/verify-email').send({ token: verificationToken }).expect(201);
+    const login = await api.post('/api/v1/auth/login').send({ email, password }).expect(201);
+    const cookies = (login.headers['set-cookie'] as unknown as string[])
+      .map((cookie) => cookie.split(';')[0])
+      .join('; ');
+    const csrf = cookieValue(login.headers['set-cookie'] as unknown as string[], 'cdn_csrf');
+
+    await api.post('/api/v1/auth/refresh')
+      .set('Cookie', cookies)
+      .set('X-CSRF-Token', 'wrong-csrf')
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('AUTH_CSRF_INVALID'));
+    await api.post('/api/v1/auth/refresh')
+      .set('Cookie', cookies)
+      .set('Origin', 'https://attacker.example')
+      .set('X-CSRF-Token', csrf)
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('AUTH_CSRF_INVALID'));
+    await api.post('/api/v1/auth/refresh')
+      .set('Cookie', cookies)
+      .set('Origin', 'http://localhost:5173')
+      .set('X-CSRF-Token', csrf)
+      .expect(201);
   });
 
   it('keeps recovery generic and invalidates prior sessions after reset', async () => {

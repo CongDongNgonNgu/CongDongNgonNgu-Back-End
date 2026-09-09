@@ -21,8 +21,12 @@ export class PasswordPolicyError extends Error {
 
 @Injectable()
 export class PasswordHasher {
-  async hash(password: string): Promise<string> {
+  validate(password: string): void {
     this.assertPolicy(password);
+  }
+
+  async hash(password: string): Promise<string> {
+    this.validate(password);
     const salt = randomBytes(SALT_BYTES);
     const derivedKey = await this.derive(password, salt);
     const separator = String.fromCharCode(36);

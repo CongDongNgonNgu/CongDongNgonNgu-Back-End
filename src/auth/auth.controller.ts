@@ -104,7 +104,7 @@ export class AuthController {
     @Req() request: AuthenticatedRequest,
   ) {
     this.sessions.assertCsrfForCookie(request);
-    const url = await this.oauth.start(provider, 'link', request.user!.user.id);
+    const url = await this.oauth.start(provider, 'link', request.user!.user.id, request.user!.claims.sid);
     return success({ authorizationUrl: url }, 'Đang mở liên kết tài khoản');
   }
 

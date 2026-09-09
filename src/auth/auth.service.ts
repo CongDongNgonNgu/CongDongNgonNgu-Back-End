@@ -54,8 +54,8 @@ export class AuthService {
   ) {}
 
   async register(input: RegisterDto, ip: string): Promise<{ verificationRequired: true }> {
-    this.assertEmail(input.email);
-    this.consumeRate('register', ip, input.email, { limit: 5, windowMs: 15 * 60 * 1000 });
+    const email = this.assertEmail(input.email);
+    this.consumeRate('register', ip, email, { limit: 5, windowMs: 15 * 60 * 1000 });
     let passwordHash: string;
     try {
       passwordHash = await this.passwordHasher.hash(input.password);
@@ -65,7 +65,7 @@ export class AuthService {
       }
       throw error;
     }
-    const existing = await this.repository.findUserByEmail(input.email);
+    const existing = await this.repository.findUserByEmail(email);
     if (existing) {
       this.audit('registration_duplicate');
       return { verificationRequired: true };
@@ -73,7 +73,7 @@ export class AuthService {
     let user: UserRecord;
     try {
       user = await this.repository.createUser({
-        email: input.email,
+        email,
         displayName: input.displayName.trim(),
         passwordHash,
         status: 'VERIFICATION_PENDING',
@@ -90,10 +90,10 @@ export class AuthService {
   }
 
   async login(input: LoginDto, response: Response, ip: string): Promise<AuthSuccess> {
-    this.assertEmail(input.email);
+    const email = this.assertEmail(input.email);
     this.consumeRate('login-ip', ip, undefined, { limit: 30, windowMs: 15 * 60 * 1000 });
-    this.consumeRate('login-account', ip, input.email, { limit: 10, windowMs: 15 * 60 * 1000 });
-    const user = await this.repository.findUserByEmail(input.email);
+    this.consumeRate('login-account', ip, email, { limit: 10, windowMs: 15 * 60 * 1000 });
+    const user = await this.repository.findUserByEmail(email);
     const passwordHash = user?.passwordHash ?? DUMMY_PASSWORD_HASH;
     const passwordMatches = await this.passwordHasher.verify(input.password, passwordHash);
     if (!user || !passwordMatches) {
@@ -131,18 +131,18 @@ export class AuthService {
   }
 
   async resendVerification(input: EmailDto, ip: string): Promise<{ sent: true }> {
-    this.assertEmail(input.email);
-    this.consumeRate('verification-resend', ip, input.email, { limit: 3, windowMs: 15 * 60 * 1000 });
-    const user = await this.repository.findUserByEmail(input.email);
+    const email = this.assertEmail(input.email);
+    this.consumeRate('verification-resend', ip, email, { limit: 3, windowMs: 15 * 60 * 1000 });
+    const user = await this.repository.findUserByEmail(email);
     if (user?.status === 'VERIFICATION_PENDING') await this.sendVerification(user);
     this.audit('verification_resend_requested');
     return { sent: true };
   }
 
   async forgotPassword(input: EmailDto, ip: string): Promise<{ sent: true }> {
-    this.assertEmail(input.email);
-    this.consumeRate('password-recovery', ip, input.email, { limit: 3, windowMs: 15 * 60 * 1000 });
-    const user = await this.repository.findUserByEmail(input.email);
+    const email = this.assertEmail(input.email);
+    this.consumeRate('password-recovery', ip, email, { limit: 3, windowMs: 15 * 60 * 1000 });
+    const user = await this.repository.findUserByEmail(email);
     if (user?.status === 'ACTIVE') {
       await this.repository.revokeAuthTokens(user.id, 'PASSWORD_RESET');
       const token = createOpaqueToken();
@@ -162,22 +162,30 @@ export class AuthService {
     return { sent: true };
   }
   async resetPassword(input: ResetPasswordDto): Promise<{ reset: true }> {
+    try {
+      this.passwordHasher.validate(input.password);
+    } catch (error) {
+      if (error instanceof PasswordPolicyError) {
+        throw new AuthFailure('AUTH_INVALID_PASSWORD', 400, 'Mật khẩu chưa đáp ứng yêu cầu');
+      }
+      throw error;
+    }
     const token = await this.repository.consumeAuthToken(
       digestOpaqueToken(input.token),
       'PASSWORD_RESET',
       new Date(),
     );
-    if (!token) throw new AuthFailure('AUTH_RESET_INVALID', 400, 'Li�n k�t �wB������B���R��F�r��7��r���v2� h�t h�n');
+    if (!token) throw new AuthFailure('AUTH_RESET_INVALID', 400, 'Liên kết đặt lại mật khẩu không hợp lệ hoặc đã hết hạn');
     const user = await this.repository.findUserById(token.userId);
     if (!user || user.status !== 'ACTIVE') {
-      throw new AuthFailure('AUTH_RESET_INVALID', 400, 'Li�n k�t �wB������B���R��F�r��7��r���v2� h�t h�n');
+      throw new AuthFailure('AUTH_RESET_INVALID', 400, 'Liên kết đặt lại mật khẩu không hợp lệ hoặc đã hết hạn');
     }
     let passwordHash: string;
     try {
       passwordHash = await this.passwordHasher.hash(input.password);
     } catch (error) {
       if (error instanceof PasswordPolicyError) {
-        throw new AuthFailure('AUTH_INVALID_PASSWORD', 400, 'M�t kh�u ch�p �ng y�u c�u');
+        throw new AuthFailure('AUTH_INVALID_PASSWORD', 400, 'Mật khẩu chưa đáp ứng yêu cầu');
       }
       throw error;
     }
@@ -252,11 +260,15 @@ export class AuthService {
     };
   }
 
-  private assertEmail(email: string): void {
-    const normalized = normalizeEmail(email);
-    if (normalized !== email || !isValidEmail(normalized)) {
-      throw new AuthFailure('AUTH_INVALID_EMAIL', 400, 'Vui l�ng nh�p m�t email h�p l�');
+  private assertEmail(email: string): string {
+    if (typeof email !== 'string') {
+      throw new AuthFailure('AUTH_INVALID_EMAIL', 400, 'Vui lòng nhập một email hợp lệ');
     }
+    const normalized = normalizeEmail(email);
+    if (!isValidEmail(normalized)) {
+      throw new AuthFailure('AUTH_INVALID_EMAIL', 400, 'Vui lòng nhập một email hợp lệ');
+    }
+    return normalized;
   }
 
   private consumeRate(
@@ -267,7 +279,7 @@ export class AuthService {
   ): void {
     const key = operation + ':' + ip + (email ? ':' + digestOpaqueToken(email).slice(0, 16) : '');
     if (!this.rateLimiter.consume(key, rule)) {
-      throw new AuthFailure('AUTH_RATE_LIMITED', 429, 'B�n th� l�i sau �t ph�t');
+      throw new AuthFailure('AUTH_RATE_LIMITED', 429, 'Bạn thử lại sau ít phút');
     }
   }
 

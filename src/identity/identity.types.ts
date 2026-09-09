@@ -56,6 +56,7 @@ export interface OAuthTransactionRecord {
   provider: OAuthProviderName;
   mode: 'login' | 'register' | 'link';
   userId: string | null;
+  sessionId: string | null;
   stateDigest: string;
   expiresAt: Date;
   consumedAt: Date | null;

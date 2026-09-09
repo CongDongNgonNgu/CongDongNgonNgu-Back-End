@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS oauth_transactions (
   provider oauth_provider NOT NULL,
   mode oauth_transaction_mode NOT NULL,
   user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+  session_id uuid REFERENCES auth_sessions(id) ON DELETE CASCADE,
   state_digest text NOT NULL UNIQUE,
   expires_at timestamptz NOT NULL,
   consumed_at timestamptz,

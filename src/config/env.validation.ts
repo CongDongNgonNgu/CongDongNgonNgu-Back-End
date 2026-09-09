@@ -43,8 +43,8 @@ export function validateEnvironment(
 ): ValidatedEnvironment {
   const environment = readEnvironment(input.NODE_ENV);
   const port = readPort(input.PORT);
-  const publicAppUrl = readOrigin(input.PUBLIC_APP_URL, "PUBLIC_APP_URL");
-  const corsOrigins = readOrigins(input.CORS_ALLOWED_ORIGINS);
+  const publicAppUrl = readOrigin(input.PUBLIC_APP_URL, "PUBLIC_APP_URL", environment === "production");
+  const corsOrigins = readOrigins(input.CORS_ALLOWED_ORIGINS, environment === "production");
   const databaseUrl = readDatabaseUrl(input.DATABASE_URL);
   const accessSecret = readSecret(input.JWT_ACCESS_SECRET, "JWT_ACCESS_SECRET");
   const refreshSecret = readSecret(input.JWT_REFRESH_SECRET, "JWT_REFRESH_SECRET");
@@ -86,7 +86,7 @@ export function validateEnvironment(
 
   const emailProvider = readProvider(input.EMAIL_PROVIDER, "EMAIL_PROVIDER");
   const emailApiUrl = emailProvider === "configured"
-    ? readConfiguredUrl(input, "EMAIL_API_URL", "EMAIL_PROVIDER")
+    ? readConfiguredUrl(input, "EMAIL_API_URL", "EMAIL_PROVIDER", environment === "production")
     : undefined;
   const emailApiKey = emailProvider === "configured"
     ? readConfiguredSecret(input, "EMAIL_API_KEY", "EMAIL_PROVIDER")
@@ -199,7 +199,7 @@ function readDatabaseUrl(value: unknown): string {
   return databaseUrl;
 }
 
-function readOrigin(value: unknown, name: string): string {
+function readOrigin(value: unknown, name: string, requireHttps = false): string {
   const origin = requireString(value, name);
   assertIndependentUrl(origin, name);
   let url: URL;
@@ -214,14 +214,17 @@ function readOrigin(value: unknown, name: string): string {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(`${name} must use http or https`);
   }
+  if (requireHttps && url.protocol !== "https:") {
+    throw new Error(`${name} must use HTTPS in production`);
+  }
   return origin.replace(/\/$/, "");
 }
 
-function readOrigins(value: unknown): string[] {
+function readOrigins(value: unknown, requireHttps = false): string[] {
   const raw = requireString(value, "CORS_ALLOWED_ORIGINS");
   const origins = raw.split(",").map((item) => item.trim()).filter(Boolean);
   if (origins.length === 0) throw new Error("CORS_ALLOWED_ORIGINS must not be empty");
-  return origins.map((origin) => readOrigin(origin, "CORS_ALLOWED_ORIGINS"));
+  return origins.map((origin) => readOrigin(origin, "CORS_ALLOWED_ORIGINS", requireHttps));
 }
 
 function readSecret(value: unknown, name: string): string {
@@ -263,11 +266,12 @@ function readConfiguredUrl(
   input: Record<string, unknown>,
   name: string,
   providerName: string,
+  requireHttps = false,
 ): string {
-  return readHttpUrl(readConfiguredValue(input, name, providerName), name);
+  return readHttpUrl(readConfiguredValue(input, name, providerName), name, requireHttps);
 }
 
-function readHttpUrl(value: unknown, name: string): string {
+function readHttpUrl(value: unknown, name: string, requireHttps = false): string {
   const rawUrl = requireString(value, name);
   assertIndependentUrl(rawUrl, name);
   let url: URL;
@@ -278,6 +282,9 @@ function readHttpUrl(value: unknown, name: string): string {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(`${name} must use http or https`);
+  }
+  if (requireHttps && url.protocol !== "https:") {
+    throw new Error(`${name} must use HTTPS in production`);
   }
   if (url.username || url.password || url.search || url.hash) {
     throw new Error(`${name} must not contain credentials, query, or fragment`);
@@ -342,24 +349,24 @@ function buildAuthEnvironment(
       tokenUrl: 'https://oauth2.googleapis.com/token',
       userInfoUrl: 'https://openidconnect.googleapis.com/v1/userinfo',
       scopes: ['openid', 'email', 'profile'],
-    }),
+    }, environment),
     facebook: readAuthOAuthProvider(input, 'FACEBOOK', {
       authorizationUrl: 'https://www.facebook.com/v20.0/dialog/oauth',
       tokenUrl: 'https://graph.facebook.com/v20.0/oauth/access_token',
       userInfoUrl: 'https://graph.facebook.com/me',
       scopes: ['email', 'public_profile'],
-    }),
+    }, environment),
     zalo: readAuthOAuthProvider(input, 'ZALO', {
       authorizationUrl: 'https://oauth.zaloapp.com/v4/permission',
       tokenUrl: 'https://oauth.zaloapp.com/v4/access_token',
       userInfoUrl: 'https://graph.zalo.me/v2.0/me',
       scopes: ['id', 'name', 'picture', 'email'],
-    }),
+    }, environment),
     apple: readAuthOAuthProvider(input, 'APPLE', {
       authorizationUrl: 'https://appleid.apple.com/auth/authorize',
       tokenUrl: 'https://appleid.apple.com/auth/token',
       scopes: ['name', 'email'],
-    }),
+    }, environment),
   } satisfies Record<OAuthProviderKey, ValidatedOAuthProvider>;
   return {
     AUTH_PERSISTENCE: persistence,
@@ -399,6 +406,7 @@ function readAuthOAuthProvider(
   input: Record<string, unknown>,
   prefix: string,
   defaults: Pick<ValidatedOAuthProvider, 'authorizationUrl' | 'tokenUrl' | 'userInfoUrl' | 'scopes'>,
+  environment: RuntimeEnvironment,
 ): ValidatedOAuthProvider {
   const provider = readProvider(input[prefix + '_OAUTH_PROVIDER'], prefix + '_OAUTH_PROVIDER');
   if (provider === 'disabled') {
@@ -406,7 +414,12 @@ function readAuthOAuthProvider(
   }
   const clientId = readConfiguredValue(input, prefix + '_OAUTH_CLIENT_ID', prefix + '_OAUTH_PROVIDER');
   const clientSecret = readConfiguredSecret(input, prefix + '_OAUTH_CLIENT_SECRET', prefix + '_OAUTH_PROVIDER');
-  const redirectUri = readConfiguredUrl(input, prefix + '_OAUTH_REDIRECT_URI', prefix + '_OAUTH_PROVIDER');
+  const redirectUri = readConfiguredUrl(
+    input,
+    prefix + '_OAUTH_REDIRECT_URI',
+    prefix + '_OAUTH_PROVIDER',
+    environment === 'production',
+  );
   const scopes = optionalString(input[prefix + '_OAUTH_SCOPES'])
     ?.split(',')
     .map((scope) => scope.trim())

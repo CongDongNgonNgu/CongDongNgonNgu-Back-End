@@ -28,7 +28,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
 
   async findUserById(id: string): Promise<UserRecord | null> {
     const result = await this.pool.query(
-      'SELECT u.*, COALESCE(array_agg(ur.role_key) FILTER (WHERE ur.role_key IS NOT NULL), ARRAY[]::text[]) AS roles FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id WHERE u.id = $1 GROUP BY u.id',
+      'SELECT u.*, COALESCE(array_agg(ur.role_key::text) FILTER (WHERE ur.role_key IS NOT NULL), ARRAY[]::text[]) AS roles FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id WHERE u.id = $1 GROUP BY u.id',
       [id],
     );
     return result.rows[0] ? mapUser(result.rows[0]) : null;
@@ -36,7 +36,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
 
   async findUserByEmail(email: string): Promise<UserRecord | null> {
     const result = await this.pool.query(
-      'SELECT u.*, COALESCE(array_agg(ur.role_key) FILTER (WHERE ur.role_key IS NOT NULL), ARRAY[]::text[]) AS roles FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id WHERE u.normalized_email = $1 GROUP BY u.id',
+      'SELECT u.*, COALESCE(array_agg(ur.role_key::text) FILTER (WHERE ur.role_key IS NOT NULL), ARRAY[]::text[]) AS roles FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id WHERE u.normalized_email = $1 GROUP BY u.id',
       [email],
     );
     return result.rows[0] ? mapUser(result.rows[0]) : null;
@@ -303,8 +303,8 @@ export class PostgresIdentityRepository implements IdentityRepository {
   async createOAuthTransaction(input: CreateOAuthTransactionInput): Promise<OAuthTransactionRecord> {
     try {
       const result = await this.pool.query(
-        'INSERT INTO oauth_transactions (provider, mode, user_id, state_digest, expires_at) VALUES ($1::oauth_provider, $2::oauth_transaction_mode, $3, $4, $5) RETURNING *',
-        [input.provider, input.mode, input.userId, input.stateDigest, input.expiresAt],
+        'INSERT INTO oauth_transactions (provider, mode, user_id, session_id, state_digest, expires_at) VALUES ($1::oauth_provider, $2::oauth_transaction_mode, $3, $4, $5, $6) RETURNING *',
+        [input.provider, input.mode, input.userId, input.sessionId, input.stateDigest, input.expiresAt],
       );
       return mapOAuthTransaction(result.rows[0]);
     } catch (error) {
@@ -383,6 +383,7 @@ function mapOAuthTransaction(row: Record<string, unknown>): OAuthTransactionReco
     provider: String(row.provider) as OAuthProviderName,
     mode: String(row.mode) as OAuthTransactionRecord['mode'],
     userId: row.user_id ? String(row.user_id) : null,
+    sessionId: row.session_id ? String(row.session_id) : null,
     stateDigest: String(row.state_digest),
     expiresAt: new Date(String(row.expires_at)),
     consumedAt: row.consumed_at ? new Date(String(row.consumed_at)) : null,

@@ -40,11 +40,13 @@ export class OAuthService {
     providerName: string,
     mode: 'login' | 'register' | 'link',
     userId: string | null = null,
+    sessionId: string | null = null,
   ): Promise<string> {
     const provider = this.readProvider(providerName);
-    if (mode === 'link' && !userId) {
+    if (mode === 'link' && (!userId || !sessionId)) {
       throw new AuthFailure('AUTH_UNAUTHORIZED', 401, 'Bạn cần đăng nhập để liên kết tài khoản');
     }
+    if (mode === 'link') await this.assertLinkSession(userId, sessionId);
     const adapter = this.adapter(provider);
     if (!adapter.enabled) {
       throw new OAuthFailure(
@@ -58,6 +60,7 @@ export class OAuthService {
       provider,
       mode,
       userId,
+      sessionId,
       stateDigest: digestOpaqueToken(state),
       expiresAt: new Date(Date.now() + OAUTH_STATE_TTL_MS),
     });
@@ -93,6 +96,9 @@ export class OAuthService {
     if (!transaction || transaction.provider !== provider) {
       throw new OAuthFailure('AUTH_OAUTH_STATE_INVALID', 400, 'Phiên OAuth không hợp lệ hoặc đã hết hạn');
     }
+    if (transaction.mode === 'link') {
+      await this.assertLinkSession(transaction.userId, transaction.sessionId);
+    }
     const identity = await adapter.exchangeCode(code);
     this.assertIdentity(identity);
     const user = await this.resolveUser(transaction.mode, transaction.userId, identity);
@@ -127,6 +133,14 @@ export class OAuthService {
         await this.repository.updateProviderAccount(existingProvider.id, providerMetadata(identity));
         return owner;
       }
+      const existingEmail = await this.repository.findUserByEmail(normalizeEmail(identity.email!));
+      if (existingEmail && existingEmail.id !== owner.id) {
+        throw new OAuthFailure(
+          'AUTH_ACCOUNT_COLLISION',
+          409,
+          'Email này đã có tài khoản. Hãy đăng nhập vào tài khoản đó rồi liên kết phương thức này',
+        );
+      }
       try {
         await this.repository.createProviderAccount({
           userId: owner.id,
@@ -146,6 +160,9 @@ export class OAuthService {
       if (!user) throw new OAuthFailure('AUTH_OAUTH_FAILED', 400, 'Tài khoản OAuth không còn tồn tại');
       if (user.status === 'DISABLED') {
         throw new AuthFailure('AUTH_ACCOUNT_DISABLED', 403, 'Tài khoản đang bị tạm khóa');
+      }
+      if (user.status !== 'ACTIVE') {
+        throw new AuthFailure('AUTH_EMAIL_VERIFICATION_REQUIRED', 403, 'Vui lòng xác minh email trước khi đăng nhập');
       }
       await this.repository.updateProviderAccount(existingProvider.id, providerMetadata(identity));
       return user;
@@ -180,6 +197,19 @@ export class OAuthService {
       throw error;
     }
     return user;
+  }
+
+  private async assertLinkSession(userId: string | null, sessionId: string | null): Promise<void> {
+    const session = sessionId ? await this.repository.findSessionById(sessionId) : null;
+    if (
+      !userId ||
+      !session ||
+      session.userId !== userId ||
+      session.revokedAt ||
+      session.expiresAt.getTime() <= Date.now()
+    ) {
+      throw new OAuthFailure('AUTH_SESSION_EXPIRED', 401, 'Phiên liên kết đã hết hạn');
+    }
   }
 
   private assertIdentity(identity: OAuthIdentity): void {

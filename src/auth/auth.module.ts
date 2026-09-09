@@ -8,6 +8,7 @@ import { PasswordHasher } from './crypto/password-hasher';
 import { createEmailProvider, EMAIL_PROVIDER } from './email/email.provider';
 import { AuthRateLimiter } from './rate-limit/rate-limiter';
 import { AccessTokenGuard } from './guards/access-token.guard';
+import { RolesGuard } from './guards/roles.guard';
 import { SessionService } from './session/session.service';
 import { OAuthService } from './oauth/oauth.service';
 
@@ -22,12 +23,13 @@ import { OAuthService } from './oauth/oauth.service';
     SessionService,
     AuthRateLimiter,
     AccessTokenGuard,
+    RolesGuard,
     {
       provide: EMAIL_PROVIDER,
       inject: [ConfigService],
       useFactory: (config: ConfigService) => createEmailProvider(config),
     },
   ],
-  exports: [AuthService, SessionService, AccessTokenGuard],
+  exports: [AuthService, SessionService, AccessTokenGuard, RolesGuard],
 })
 export class AuthModule {}

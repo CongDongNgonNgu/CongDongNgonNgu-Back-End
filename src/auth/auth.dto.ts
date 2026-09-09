@@ -10,6 +10,7 @@ export class RegisterDto {
   @MaxLength(254)
   email!: string;
 
+  @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
   @IsString()
   @Length(2, 120)
   @Matches(/\S/)

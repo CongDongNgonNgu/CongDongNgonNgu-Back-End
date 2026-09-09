@@ -57,5 +57,8 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "testEnvironment": "node"
+  },
+  "overrides": {
+    "multer": "2.3.0"
   }
 }
