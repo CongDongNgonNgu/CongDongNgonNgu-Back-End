@@ -11,6 +11,21 @@ export interface RuntimeConfig {
     url: string;
   };
   auth: {
+    persistence: 'postgres' | 'memory';
+    accessTtlSeconds: number;
+    refreshTtlSeconds: number;
+    refreshCookieName: string;
+    csrfCookieName: string;
+    oauth: Record<string, {
+      enabled: boolean;
+      clientId?: string;
+      clientSecret?: string;
+      redirectUri?: string;
+      scopes: string[];
+      authorizationUrl: string;
+      tokenUrl: string;
+      userInfoUrl?: string;
+    }>;
     accessSecret: string;
     refreshSecret: string;
     sessionStore: ValidatedEnvironment["SESSION_STORE"];
@@ -53,6 +68,12 @@ export function buildConfiguration(env: ValidatedEnvironment): RuntimeConfig {
     },
     database: { url: env.DATABASE_URL },
     auth: {
+      persistence: env.AUTH_PERSISTENCE,
+      accessTtlSeconds: env.AUTH_ACCESS_TTL_SECONDS,
+      refreshTtlSeconds: env.AUTH_REFRESH_TTL_SECONDS,
+      refreshCookieName: 'cdn_refresh',
+      csrfCookieName: 'cdn_csrf',
+      oauth: env.AUTH_OAUTH_PROVIDERS,
       accessSecret: env.JWT_ACCESS_SECRET,
       refreshSecret: env.JWT_REFRESH_SECRET,
       sessionStore: env.SESSION_STORE,

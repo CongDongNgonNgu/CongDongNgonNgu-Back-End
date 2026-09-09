@@ -9,7 +9,12 @@ export function configureApp(app: INestApplication): void {
   const environment = config.get("app.environment", { infer: true });
 
   app.setGlobalPrefix("api/v1");
-  app.enableCors({ origin: origins, credentials: true });
+  app.enableCors({
+    origin: origins,
+    credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
+  });
   app.useGlobalPipes(
     new ValidationPipe({
       transform: true,

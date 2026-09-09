@@ -125,7 +125,10 @@ export function validateEnvironment(
     ? readConfiguredSecret(input, "PAYMENT_WEBHOOK_SECRET", "PAYMENT_PROVIDER")
     : undefined;
 
-  const result: ValidatedEnvironment = {
+  const result: Omit<
+    ValidatedEnvironment,
+    'AUTH_PERSISTENCE' | 'AUTH_ACCESS_TTL_SECONDS' | 'AUTH_REFRESH_TTL_SECONDS' | 'AUTH_OAUTH_PROVIDERS'
+  > = {
     NODE_ENV: environment,
     PORT: port,
     PUBLIC_APP_URL: publicAppUrl,
@@ -167,7 +170,7 @@ export function validateEnvironment(
     }
     result.REDIS_URL = redisUrl;
   }
-  return result;
+  return Object.assign(result, buildAuthEnvironment(input, environment));
 }
 
 function readEnvironment(value: unknown): RuntimeEnvironment {
@@ -301,4 +304,112 @@ function assertIndependentUrl(value: string, name: string): void {
 
 function isPlaceholderSecret(value: string): boolean {
   return /^(replace-with|change-me|example|test-secret)/i.test(value);
+}
+export type AuthPersistence = 'postgres' | 'memory';
+export type OAuthProviderKey = 'google' | 'facebook' | 'zalo' | 'apple';
+
+export interface ValidatedOAuthProvider {
+  enabled: boolean;
+  clientId?: string;
+  clientSecret?: string;
+  redirectUri?: string;
+  scopes: string[];
+  authorizationUrl: string;
+  tokenUrl: string;
+  userInfoUrl?: string;
+}
+
+export interface ValidatedEnvironment {
+  AUTH_PERSISTENCE: AuthPersistence;
+  AUTH_ACCESS_TTL_SECONDS: number;
+  AUTH_REFRESH_TTL_SECONDS: number;
+  AUTH_OAUTH_PROVIDERS: Record<OAuthProviderKey, ValidatedOAuthProvider>;
+}
+
+function buildAuthEnvironment(
+  input: Record<string, unknown>,
+  environment: RuntimeEnvironment,
+): Pick<
+  ValidatedEnvironment,
+  'AUTH_PERSISTENCE' | 'AUTH_ACCESS_TTL_SECONDS' | 'AUTH_REFRESH_TTL_SECONDS' | 'AUTH_OAUTH_PROVIDERS'
+> {
+  const persistence = readAuthPersistenceValue(input.AUTH_PERSISTENCE, environment);
+  const accessTtlSeconds = readAuthDuration(input.AUTH_ACCESS_TTL_SECONDS, 'AUTH_ACCESS_TTL_SECONDS', 60, 3600, 900);
+  const refreshTtlSeconds = readAuthDuration(input.AUTH_REFRESH_TTL_SECONDS, 'AUTH_REFRESH_TTL_SECONDS', 86400, 7776000, 2592000);
+  const providers = {
+    google: readAuthOAuthProvider(input, 'GOOGLE', {
+      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      userInfoUrl: 'https://openidconnect.googleapis.com/v1/userinfo',
+      scopes: ['openid', 'email', 'profile'],
+    }),
+    facebook: readAuthOAuthProvider(input, 'FACEBOOK', {
+      authorizationUrl: 'https://www.facebook.com/v20.0/dialog/oauth',
+      tokenUrl: 'https://graph.facebook.com/v20.0/oauth/access_token',
+      userInfoUrl: 'https://graph.facebook.com/me',
+      scopes: ['email', 'public_profile'],
+    }),
+    zalo: readAuthOAuthProvider(input, 'ZALO', {
+      authorizationUrl: 'https://oauth.zaloapp.com/v4/permission',
+      tokenUrl: 'https://oauth.zaloapp.com/v4/access_token',
+      userInfoUrl: 'https://graph.zalo.me/v2.0/me',
+      scopes: ['id', 'name', 'picture', 'email'],
+    }),
+    apple: readAuthOAuthProvider(input, 'APPLE', {
+      authorizationUrl: 'https://appleid.apple.com/auth/authorize',
+      tokenUrl: 'https://appleid.apple.com/auth/token',
+      scopes: ['name', 'email'],
+    }),
+  } satisfies Record<OAuthProviderKey, ValidatedOAuthProvider>;
+  return {
+    AUTH_PERSISTENCE: persistence,
+    AUTH_ACCESS_TTL_SECONDS: accessTtlSeconds,
+    AUTH_REFRESH_TTL_SECONDS: refreshTtlSeconds,
+    AUTH_OAUTH_PROVIDERS: providers,
+  };
+}
+
+function readAuthPersistenceValue(value: unknown, environment: RuntimeEnvironment): AuthPersistence {
+  const persistence = optionalString(value) ?? (environment === 'test' ? 'memory' : 'postgres');
+  if (persistence !== 'postgres' && persistence !== 'memory') {
+    throw new Error('AUTH_PERSISTENCE must be postgres or memory');
+  }
+  if (environment === 'production' && persistence === 'memory') {
+    throw new Error('AUTH_PERSISTENCE=memory is not allowed in production');
+  }
+  return persistence;
+}
+
+function readAuthDuration(
+  value: unknown,
+  name: string,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number {
+  const normalized = optionalString(value);
+  const duration = normalized === undefined ? fallback : Number(normalized);
+  if (!Number.isInteger(duration) || duration < minimum || duration > maximum) {
+    throw new Error(name + ' must be an integer between ' + minimum + ' and ' + maximum);
+  }
+  return duration;
+}
+
+function readAuthOAuthProvider(
+  input: Record<string, unknown>,
+  prefix: string,
+  defaults: Pick<ValidatedOAuthProvider, 'authorizationUrl' | 'tokenUrl' | 'userInfoUrl' | 'scopes'>,
+): ValidatedOAuthProvider {
+  const provider = readProvider(input[prefix + '_OAUTH_PROVIDER'], prefix + '_OAUTH_PROVIDER');
+  if (provider === 'disabled') {
+    return { enabled: false, ...defaults };
+  }
+  const clientId = readConfiguredValue(input, prefix + '_OAUTH_CLIENT_ID', prefix + '_OAUTH_PROVIDER');
+  const clientSecret = readConfiguredSecret(input, prefix + '_OAUTH_CLIENT_SECRET', prefix + '_OAUTH_PROVIDER');
+  const redirectUri = readConfiguredUrl(input, prefix + '_OAUTH_REDIRECT_URI', prefix + '_OAUTH_PROVIDER');
+  const scopes = optionalString(input[prefix + '_OAUTH_SCOPES'])
+    ?.split(',')
+    .map((scope) => scope.trim())
+    .filter(Boolean) ?? defaults.scopes;
+  return { ...defaults, enabled: true, clientId, clientSecret, redirectUri, scopes };
 }
