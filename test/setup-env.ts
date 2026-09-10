@@ -5,3 +5,7 @@ process.env.CORS_ALLOWED_ORIGINS = "http://localhost:5173";
 process.env.DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/congdongngonngu";
 process.env.JWT_ACCESS_SECRET = "local-access-secret-that-is-at-least-32-chars";
 process.env.JWT_REFRESH_SECRET = "local-refresh-secret-that-is-at-least-32-chars";
+process.env.GOOGLE_OAUTH_PROVIDER = "disabled";
+process.env.FACEBOOK_OAUTH_PROVIDER = "disabled";
+process.env.ZALO_OAUTH_PROVIDER = "disabled";
+process.env.APPLE_OAUTH_PROVIDER = "disabled";

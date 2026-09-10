@@ -26,6 +26,29 @@ GET /api/v1/health. Auth routes include /auth/register, /auth/login,
 /auth/reset-password, /auth/refresh, /auth/logout, /auth/logout-all,
 /auth/me, and provider capability/OAuth start-callback routes.
 
+Phase 03 profile routes are:
+
+~~~text
+GET   /languages
+GET   /profile                         authenticated own projection
+PATCH /profile                         authenticated own replacement update
+GET   /profiles/:userId                public projection
+~~~
+
+Profile updates accept language codes from the active catalog, language roles
+('native', 'known', 'learning'), declared proficiency ('NATIVE', 'A1' through
+'C2'), optional goals/skills/interests, an IANA timezone, and optional
+availability windows. Lists are bounded and replacing a list is atomic. A
+primary learning target is represented on exactly one learning relation, or
+none. Availability uses local wall-clock minutes and half-open ranges;
+cross-midnight availability must be split at '24:00'.
+
+The own projection may include the account email, timezone, exact availability
+and private language relations. The public projection contains only the
+display name, public language relations, goals, skills and interests; it does
+not include email, roles, provider identifiers, timezone, security metadata or
+exact availability.
+
 Refresh credentials are server-tracked, rotated, replay-detected, and held in
 an HttpOnly cdn_refresh cookie scoped to /api/v1/auth. A readable cdn_csrf
 cookie and matching header protect cookie-backed mutations. Access tokens are
