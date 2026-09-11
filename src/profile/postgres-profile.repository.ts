@@ -1,5 +1,8 @@
 import type { Pool } from 'pg';
-import { ProfileRepositoryConflictError } from './language-catalog';
+import {
+  normalizeSearchText,
+  ProfileRepositoryConflictError,
+} from './language-catalog';
 import type { ProfileRepository } from './profile.repository';
 import type {
   LanguageCatalogRecord,
@@ -14,9 +17,9 @@ export class PostgresProfileRepository implements ProfileRepository {
   async listActive(search = '', limit = 50): Promise<LanguageCatalogRecord[]> {
     const values: unknown[] = [];
     let where = 'WHERE active = true';
-    const normalizedSearch = search.trim();
+    const normalizedSearch = normalizeSearchText(search.trim());
     if (normalizedSearch) {
-      values.push('%' + normalizedSearch + '%');
+      values.push('%' + escapeLikePattern(normalizedSearch) + '%');
       const parameter = '$' + values.length;
       where +=
         ' AND (code ILIKE ' + parameter +
@@ -28,10 +31,18 @@ export class PostgresProfileRepository implements ProfileRepository {
     values.push(limit);
     const result = await this.pool.query(
       'SELECT * FROM languages ' + where +
-      ' ORDER BY sort_order ASC, english_name ASC LIMIT $' + values.length,
+      ' ORDER BY sort_order ASC, english_name ASC, code ASC LIMIT $' + values.length,
       values,
     );
     return result.rows.map(mapLanguage);
+  }
+
+  async findBySlug(slug: string): Promise<LanguageCatalogRecord | null> {
+    const result = await this.pool.query(
+      'SELECT * FROM languages WHERE slug = $1 LIMIT 1',
+      [slug.trim().toLowerCase()],
+    );
+    return result.rows[0] ? mapLanguage(result.rows[0]) : null;
   }
 
   async findByCodes(codes: readonly string[]): Promise<LanguageCatalogRecord[]> {
@@ -276,6 +287,14 @@ function mapUserLanguage(row: Record<string, unknown>): UserLanguageRecord {
     isPrimaryLearningTarget: Boolean(row.is_primary_learning_target),
     visibility: String(row.visibility) as UserLanguageRecord['visibility'],
   };
+}
+
+function escapeLikePattern(value: string): string {
+  const escape = String.fromCharCode(92);
+  return value
+    .split(escape).join(escape + escape)
+    .split('%').join(escape + '%')
+    .split('_').join(escape + '_');
 }
 
 function mapProfileRepositoryError(error: unknown): Error {

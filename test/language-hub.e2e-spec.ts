@@ -1,0 +1,97 @@
+import { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import request from 'supertest';
+import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/app.setup';
+import { PROFILE_REPOSITORY, InMemoryProfileRepository } from '../src/profile/profile.repository';
+
+describe('language explorer API', () => {
+  let app: INestApplication;
+  let profiles: InMemoryProfileRepository;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    app = moduleRef.createNestApplication();
+    configureApp(app);
+    await app.init();
+    profiles = app.get<InMemoryProfileRepository>(PROFILE_REPOSITORY);
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('lists active languages and searches Unicode names through one public contract', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/languages')
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toHaveLength(8);
+        expect(body.data.map((language: { code: string }) => language.code)).toEqual([
+          'vi', 'en', 'zh', 'ja', 'ko', 'fr', 'de', 'es',
+        ]);
+      });
+
+    for (const search of ['Tiếng Nhật', 'Français', '中文', '한국어', 'English']) {
+      await request(app.getHttpServer())
+        .get('/api/v1/languages')
+        .query({ search })
+        .expect(200)
+        .expect(({ body }) => expect(body.data).toHaveLength(1));
+    }
+  });
+
+  it('resolves every launch language and a later catalog addition without route branches', async () => {
+    for (const slug of [
+      'vietnamese',
+      'english',
+      'chinese',
+      'japanese',
+      'korean',
+      'french',
+      'german',
+      'spanish',
+    ]) {
+      await request(app.getHttpServer())
+        .get('/api/v1/languages/' + slug)
+        .expect(200)
+        .expect(({ body }) => expect(body.data.slug).toBe(slug));
+    }
+
+    await profiles.seed([{
+      code: 'pt',
+      slug: 'portuguese',
+      nativeName: 'Português',
+      englishName: 'Portuguese',
+      vietnameseName: 'Tiếng Bồ Đào Nha',
+      direction: 'ltr',
+      active: true,
+      launch: false,
+      sortOrder: 90,
+    }]);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/languages/portuguese')
+      .expect(200)
+      .expect(({ body }) => expect(body.data.code).toBe('pt'));
+  });
+
+  it('returns deterministic errors for unknown, inactive, and malformed slugs', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/languages/unknown')
+      .expect(404)
+      .expect(({ body }) => expect(body.error.code).toBe('LANGUAGE_NOT_FOUND'));
+
+    await profiles.setActive('fr', false);
+    await request(app.getHttpServer())
+      .get('/api/v1/languages/french')
+      .expect(404)
+      .expect(({ body }) => expect(body.error.code).toBe('LANGUAGE_INACTIVE'));
+    await profiles.setActive('fr', true);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/languages/%25')
+      .expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('LANGUAGE_INVALID_SLUG'));
+  });
+});

@@ -2,7 +2,10 @@ import { Inject, Injectable } from '@nestjs/common';
 import { IDENTITY_REPOSITORY } from '../identity/identity.module';
 import type { IdentityRepository } from '../identity/identity.repository';
 import type { UserRecord } from '../identity/identity.types';
-import { ProfileRepositoryConflictError } from './language-catalog';
+import {
+  LANGUAGE_SLUG_PATTERN,
+  ProfileRepositoryConflictError,
+} from './language-catalog';
 import {
   PROFILE_REPOSITORY,
   type ProfileRepository,
@@ -11,6 +14,7 @@ import { ProfileFailure } from './profile.errors';
 import type {
   AvailabilityWindowRecord,
   DeclaredLanguageProficiency,
+  LanguageCatalogRecord,
   LanguageRole,
   LanguageVisibility,
   ProfileRecord,
@@ -146,17 +150,19 @@ export class ProfileService {
       throw profileFailure('PROFILE_INVALID_LIMIT', 'Language result limit is invalid');
     }
     const languages = await this.profiles.listActive(search?.trim(), limit);
-    return languages.map((language) => ({
-      code: language.code,
-      slug: language.slug,
-      nativeName: language.nativeName,
-      englishName: language.englishName,
-      vietnameseName: language.vietnameseName,
-      direction: language.direction,
-      active: language.active,
-      launch: language.launch,
-      sortOrder: language.sortOrder,
-    }));
+    return languages.map(toLanguageCatalogResponse);
+  }
+
+  async getLanguageBySlug(slug: string): Promise<LanguageCatalogResponse> {
+    const normalizedSlug = normalizeLanguageSlug(slug);
+    const language = await this.profiles.findBySlug(normalizedSlug);
+    if (!language) {
+      throw profileFailure('LANGUAGE_NOT_FOUND', 'Language was not found', 404);
+    }
+    if (!language.active) {
+      throw profileFailure('LANGUAGE_INACTIVE', 'Language is not active', 404);
+    }
+    return toLanguageCatalogResponse(language);
   }
 
   async getOwnProfile(userId: string): Promise<OwnProfileResponse> {
@@ -372,6 +378,33 @@ function normalizeLanguageCode(value: unknown): string {
     throw profileFailure('PROFILE_INVALID_LANGUAGE', 'Language code is invalid');
   }
   return value.trim().toLowerCase();
+}
+
+function normalizeLanguageSlug(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw profileFailure('LANGUAGE_INVALID_SLUG', 'Language slug is invalid');
+  }
+  const slug = value.normalize('NFKC').trim().toLowerCase();
+  if (slug.length === 0 || slug.length > 64 || !LANGUAGE_SLUG_PATTERN.test(slug)) {
+    throw profileFailure('LANGUAGE_INVALID_SLUG', 'Language slug is invalid');
+  }
+  return slug;
+}
+
+function toLanguageCatalogResponse(
+  language: LanguageCatalogRecord,
+): LanguageCatalogResponse {
+  return {
+    code: language.code,
+    slug: language.slug,
+    nativeName: language.nativeName,
+    englishName: language.englishName,
+    vietnameseName: language.vietnameseName,
+    direction: language.direction,
+    active: language.active,
+    launch: language.launch,
+    sortOrder: language.sortOrder,
+  };
 }
 
 function normalizeRole(value: unknown): LanguageRole {

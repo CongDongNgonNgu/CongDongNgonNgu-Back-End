@@ -140,15 +140,64 @@ describe('ProfileService', () => {
     })).rejects.toMatchObject({ code: 'PROFILE_INVALID_DISPLAY_NAME' });
     expect((await service.getOwnProfile(user.id)).goals).toEqual([]);
   });
+
+  it('searches every catalog name field through the same bounded path', async () => {
+    const { service } = createService();
+
+    expect((await service.listLanguages('Tiếng Nhật')).map((language) => language.code)).toEqual(['ja']);
+    expect((await service.listLanguages('English')).map((language) => language.code)).toEqual(['en']);
+    expect((await service.listLanguages('日本語')).map((language) => language.code)).toEqual(['ja']);
+    expect((await service.listLanguages('한국어')).map((language) => language.code)).toEqual(['ko']);
+    expect((await service.listLanguages('Français')).map((language) => language.code)).toEqual(['fr']);
+    expect(await service.listLanguages('%')).toEqual([]);
+  });
+
+  it('resolves active, inactive, unknown and malformed slugs deterministically', async () => {
+    const { service } = createService();
+
+    for (const slug of [
+      'vietnamese',
+      'english',
+      'chinese',
+      'japanese',
+      'korean',
+      'french',
+      'german',
+      'spanish',
+    ]) {
+      await expect(service.getLanguageBySlug(slug)).resolves.toMatchObject({ slug });
+    }
+
+    await expect(service.getLanguageBySlug('missing')).rejects.toMatchObject({
+      code: 'LANGUAGE_NOT_FOUND',
+      status: 404,
+    });
+    await expect(service.getLanguageBySlug('../english')).rejects.toMatchObject({
+      code: 'LANGUAGE_INVALID_SLUG',
+      status: 400,
+    });
+  });
+
+  it('keeps inactive languages out of discovery while reporting their slug state', async () => {
+    const { service, profiles } = createService();
+    await profiles.setActive('fr', false);
+
+    expect(await service.listLanguages('français')).toEqual([]);
+    await expect(service.getLanguageBySlug('french')).rejects.toMatchObject({
+      code: 'LANGUAGE_INACTIVE',
+      status: 404,
+    });
+  });
 });
 
 function createService(): {
   identity: InMemoryIdentityRepository;
+  profiles: InMemoryProfileRepository;
   service: ProfileService;
 } {
   const identity = new InMemoryIdentityRepository();
   const profiles = new InMemoryProfileRepository();
-  return { identity, service: new ProfileService(profiles, identity) };
+  return { identity, profiles, service: new ProfileService(profiles, identity) };
 }
 
 async function createUser(repository: InMemoryIdentityRepository, email: string) {

@@ -150,3 +150,9 @@ export class LanguageCatalogQueryDto {
   @Max(50)
   limit?: number;
 }
+
+export class LanguageSlugParamsDto {
+  @IsString()
+  @Length(1, 64)
+  slug!: string;
+}

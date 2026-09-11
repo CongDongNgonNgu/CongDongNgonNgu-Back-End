@@ -95,6 +95,8 @@ export const INITIAL_LANGUAGE_CATALOG: readonly LanguageCatalogSeed[] = [
   },
 ];
 
+export const LANGUAGE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 export class ProfileRepositoryConflictError extends Error {
   constructor(message = 'Profile data conflicts with an existing record') {
     super(message);
@@ -104,6 +106,7 @@ export class ProfileRepositoryConflictError extends Error {
 
 export interface LanguageCatalogRepository {
   listActive(search?: string, limit?: number): Promise<LanguageCatalogRecord[]>;
+  findBySlug(slug: string): Promise<LanguageCatalogRecord | null>;
   findByCodes(codes: readonly string[]): Promise<LanguageCatalogRecord[]>;
   findActiveByCodes(codes: readonly string[]): Promise<LanguageCatalogRecord[]>;
 }
@@ -117,7 +120,7 @@ export class InMemoryLanguageCatalogRepository implements LanguageCatalogReposit
   }
 
   async listActive(search = '', limit = 50): Promise<LanguageCatalogRecord[]> {
-    const normalizedSearch = search.trim().toLowerCase();
+    const normalizedSearch = normalizeSearchText(search.trim());
     return [...this.languagesByCode.values()]
       .filter((language) => language.active)
       .filter((language) => {
@@ -128,11 +131,17 @@ export class InMemoryLanguageCatalogRepository implements LanguageCatalogReposit
           language.nativeName,
           language.englishName,
           language.vietnameseName,
-        ].some((value) => value.toLowerCase().includes(normalizedSearch));
+        ].some((value) => normalizeSearchText(value).includes(normalizedSearch));
       })
-      .sort((left, right) => left.sortOrder - right.sortOrder)
+      .sort(compareLanguages)
       .slice(0, limit)
       .map(cloneLanguage);
+  }
+
+  async findBySlug(slug: string): Promise<LanguageCatalogRecord | null> {
+    const code = this.codesBySlug.get(normalizeSlug(slug));
+    const language = code ? this.languagesByCode.get(code) : undefined;
+    return language ? cloneLanguage(language) : null;
   }
 
   async findByCodes(codes: readonly string[]): Promise<LanguageCatalogRecord[]> {
@@ -214,6 +223,18 @@ function normalizeCode(value: string): string {
 
 function normalizeSlug(value: string): string {
   return value.trim().toLowerCase();
+}
+
+export function normalizeSearchText(value: string): string {
+  return value.normalize('NFKC').toLowerCase();
+}
+
+function compareLanguages(left: LanguageCatalogRecord, right: LanguageCatalogRecord): number {
+  if (left.sortOrder !== right.sortOrder) return left.sortOrder - right.sortOrder;
+  const englishNameComparison = normalizeSearchText(left.englishName)
+    .localeCompare(normalizeSearchText(right.englishName));
+  if (englishNameComparison !== 0) return englishNameComparison;
+  return left.code.localeCompare(right.code);
 }
 
 function cloneLanguage(language: LanguageCatalogRecord): LanguageCatalogRecord {

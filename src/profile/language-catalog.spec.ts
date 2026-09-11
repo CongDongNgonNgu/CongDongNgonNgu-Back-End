@@ -47,4 +47,25 @@ describe('InMemoryLanguageCatalogRepository', () => {
     expect(await repository.findActiveByCodes(['fr', 'unknown'])).toEqual([]);
     expect(await repository.findByCodes(['fr', 'unknown'])).toHaveLength(1);
   });
+
+  it('resolves canonical slugs without hiding inactive catalog records', async () => {
+    const repository = new InMemoryLanguageCatalogRepository();
+    await repository.setActive('fr', false);
+
+    expect(await repository.findBySlug('french')).toMatchObject({
+      code: 'fr',
+      slug: 'french',
+      active: false,
+    });
+    expect(await repository.findBySlug('unknown')).toBeNull();
+  });
+
+  it('matches Unicode catalog fields and keeps wildcard characters literal', async () => {
+    const repository = new InMemoryLanguageCatalogRepository();
+
+    expect((await repository.listActive('Tiếng Nhật')).map((language) => language.code)).toEqual(['ja']);
+    expect((await repository.listActive('Français')).map((language) => language.code)).toEqual(['fr']);
+    expect((await repository.listActive('日本語')).map((language) => language.code)).toEqual(['ja']);
+    expect((await repository.listActive('%')).map((language) => language.code)).toEqual([]);
+  });
 });

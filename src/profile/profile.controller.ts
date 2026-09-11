@@ -14,6 +14,7 @@ import { SessionService } from '../auth/session/session.service';
 import { AccessTokenGuard, type AuthenticatedRequest } from '../auth/guards/access-token.guard';
 import {
   LanguageCatalogQueryDto,
+  LanguageSlugParamsDto,
   ProfileUpdateDto,
 } from './profile.dto';
 import { ProfileService } from './profile.service';
@@ -30,6 +31,14 @@ export class ProfileController {
     return success(
       await this.profiles.listLanguages(query.search, query.limit),
       'Language catalog',
+    );
+  }
+
+  @Get('languages/:slug')
+  async language(@Param() params: LanguageSlugParamsDto) {
+    return success(
+      await this.profiles.getLanguageBySlug(params.slug),
+      'Language',
     );
   }
 
