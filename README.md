@@ -57,6 +57,39 @@ hyphenated values; blank topics are absent. A syntactically valid topic with
 no backed data is echoed with NOT_AVAILABLE_YET status, while invalid levels
 and topic syntax return LANGUAGE_INVALID_LEVEL or LANGUAGE_INVALID_TOPIC.
 
+Phase 05A community backend routes are:
+
+~~~text
+POST  /community/posts
+GET   /community/posts                    recency/id cursor feed
+GET   /community/posts/:postId
+GET   /community/posts/:postId/share      public canonical link only
+PATCH /community/posts/:postId            owner only
+DELETE /community/posts/:postId           owner soft-delete
+POST  /community/posts/:postId/comments
+GET   /community/posts/:postId/comments
+PATCH /community/comments/:commentId      author only
+DELETE /community/comments/:commentId     author soft-delete
+POST  /community/posts/:postId/reactions  explicit reaction type
+DELETE /community/posts/:postId/reactions/:type
+POST  /community/posts/:postId/save
+DELETE /community/posts/:postId/save
+GET   /community/saved-posts              authenticated viewer only
+POST  /community/reports                  generic submitted response
+~~~
+
+Community posts use one normalized contract for the eight launch post types,
+an active language catalog code, optional CEFR/topic metadata, plain text
+content and PUBLIC/PRIVATE visibility. The feed is deterministic
+created_at DESC, id DESC with an opaque cursor. Comments are depth 0/1;
+reactions use explicit add/remove semantics with a database primary key for
+idempotency. Saved posts are private to the authenticated viewer. Share links
+are issued only for active public posts, and report responses never reveal
+whether an inaccessible target or duplicate report exists. The current
+abuse-control implementation is process-local (10 posts per user per 15
+minutes; 60 comments per 15 minutes; 10 reports per hour); a shared limiter
+must replace it before horizontally scaled production traffic.
+
 Profile updates accept language codes from the active catalog, language roles
 ('native', 'known', 'learning'), declared proficiency ('NATIVE', 'A1' through
 'C2'), optional goals/skills/interests, an IANA timezone, and optional

@@ -71,6 +71,7 @@ export interface CommunityCommentRecord {
 export interface CommunityCommentThreadRecord {
   comment: CommunityCommentRecord;
   replies: CommunityCommentRecord[];
+  hasMoreReplies: boolean;
 }
 
 export interface CommunityPostCursor {
