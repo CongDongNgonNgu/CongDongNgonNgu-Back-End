@@ -13,8 +13,10 @@ import {
 import { ProfileFailure } from './profile.errors';
 import {
   buildLanguageHubOverview,
+  type LanguageHubFilterInput,
   type LanguageHubOverviewResponse,
 } from './language-hub.contract';
+import { normalizeLanguageHubFilters } from './language-hub.filters';
 import type {
   AvailabilityWindowRecord,
   DeclaredLanguageProficiency,
@@ -169,8 +171,14 @@ export class ProfileService {
     return toLanguageCatalogResponse(language);
   }
 
-  async getLanguageOverview(slug: string): Promise<LanguageHubOverviewResponse> {
-    return buildLanguageHubOverview(await this.getLanguageBySlug(slug));
+  async getLanguageOverview(
+    slug: string,
+    filters: LanguageHubFilterInput = {},
+  ): Promise<LanguageHubOverviewResponse> {
+    return buildLanguageHubOverview(
+      await this.getLanguageBySlug(slug),
+      normalizeLanguageHubFilters(filters),
+    );
   }
 
   async getOwnProfile(userId: string): Promise<OwnProfileResponse> {

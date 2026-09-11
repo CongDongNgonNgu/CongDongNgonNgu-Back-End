@@ -14,6 +14,7 @@ import { SessionService } from '../auth/session/session.service';
 import { AccessTokenGuard, type AuthenticatedRequest } from '../auth/guards/access-token.guard';
 import {
   LanguageCatalogQueryDto,
+  LanguageHubQueryDto,
   LanguageSlugParamsDto,
   ProfileUpdateDto,
 } from './profile.dto';
@@ -35,9 +36,12 @@ export class ProfileController {
   }
 
   @Get('languages/:slug/overview')
-  async languageOverview(@Param() params: LanguageSlugParamsDto) {
+  async languageOverview(
+    @Param() params: LanguageSlugParamsDto,
+    @Query() query: LanguageHubQueryDto,
+  ) {
     return success(
-      await this.profiles.getLanguageOverview(params.slug),
+      await this.profiles.getLanguageOverview(params.slug, query),
       'Language overview',
     );
   }

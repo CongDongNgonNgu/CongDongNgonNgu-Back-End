@@ -51,6 +51,11 @@ export interface LanguageHubFilterSummary {
   topicState: 'NOT_AVAILABLE_YET';
 }
 
+export interface LanguageHubFilterInput {
+  level?: readonly string[];
+  topic?: string | null;
+}
+
 export interface LanguageHubOverviewResponse {
   language: LanguageCatalogResponse;
   seo: {
@@ -81,6 +86,7 @@ const FUTURE_HUB_SECTION_KEYS: readonly HubSectionKey[] = [
 
 export function buildLanguageHubOverview(
   language: LanguageCatalogResponse,
+  filters = buildLanguageHubFilterSummary(),
 ): LanguageHubOverviewResponse {
   const canonicalPath = '/languages/' + language.slug;
   return {
@@ -96,7 +102,7 @@ export function buildLanguageHubOverview(
       resourceCount: buildUnavailableMetric(),
     },
     sections: buildLanguageHubSections(language.slug),
-    filters: buildLanguageHubFilterSummary(),
+    filters,
   };
 }
 

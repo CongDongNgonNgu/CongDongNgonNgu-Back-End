@@ -235,6 +235,49 @@ describe('ProfileService', () => {
         ))).toBe(true);
     }
   });
+
+  it('normalizes optional CEFR filters and opaque topics for stable overview queries', async () => {
+    const { service } = createService();
+
+    const overview = await service.getLanguageOverview('english', {
+      level: ['B2', 'A1', 'A1'],
+      topic: '  Travel  ',
+    });
+
+    expect(overview.filters).toMatchObject({
+      levels: ['A1', 'B2'],
+      topic: 'travel',
+      levelOptions: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'],
+      levelRequired: false,
+      topicState: 'NOT_AVAILABLE_YET',
+    });
+
+    const emptyTopic = await service.getLanguageOverview('english', { topic: '   ' });
+    expect(emptyTopic.filters.levels).toEqual([]);
+    expect(emptyTopic.filters.topic).toBeNull();
+  });
+
+  it('rejects invalid levels and topic syntax without creating resource data', async () => {
+    const { service } = createService();
+
+    await expect(service.getLanguageOverview('english', { level: ['A7'] }))
+      .rejects.toMatchObject({ code: 'LANGUAGE_INVALID_LEVEL', status: 400 });
+    await expect(service.getLanguageOverview('english', { topic: 'travel!' }))
+      .rejects.toMatchObject({ code: 'LANGUAGE_INVALID_TOPIC', status: 400 });
+
+    const unknownTopic = await service.getLanguageOverview('english', {
+      topic: 'space-opera',
+    });
+    expect(unknownTopic.filters).toMatchObject({
+      levels: [],
+      topic: 'space-opera',
+      topicState: 'NOT_AVAILABLE_YET',
+    });
+    expect(unknownTopic.metrics.resourceCount).toEqual({
+      state: 'NOT_AVAILABLE_YET',
+      value: null,
+    });
+  });
 });
 
 function createService(): {

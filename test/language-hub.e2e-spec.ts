@@ -119,4 +119,48 @@ describe('language explorer API', () => {
           ))).toBe(true);
       });
   });
+
+  it('normalizes repeated overview filters without inventing resource results', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/languages/english/overview')
+      .query({ level: ['B2', 'A1', 'A1'], topic: '  Travel  ' })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data.filters.levels).toEqual(['A1', 'B2']);
+        expect(body.data.filters.topic).toBe('travel');
+        expect(body.data.metrics.resourceCount).toEqual({
+          state: 'NOT_AVAILABLE_YET',
+          value: null,
+        });
+      });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/languages/english/overview')
+      .query({ topic: '   ' })
+      .expect(200)
+      .expect(({ body }) => expect(body.data.filters.topic).toBeNull());
+  });
+
+  it('returns stable validation errors for invalid overview filters', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/languages/english/overview')
+      .query({ level: 'A7' })
+      .expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('LANGUAGE_INVALID_LEVEL'));
+
+    await request(app.getHttpServer())
+      .get('/api/v1/languages/english/overview')
+      .query({ topic: 'travel!' })
+      .expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('LANGUAGE_INVALID_TOPIC'));
+
+    await request(app.getHttpServer())
+      .get('/api/v1/languages/english/overview')
+      .query({ topic: 'space-opera' })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data.filters.topic).toBe('space-opera');
+        expect(body.data.filters.topicState).toBe('NOT_AVAILABLE_YET');
+      });
+  });
 });

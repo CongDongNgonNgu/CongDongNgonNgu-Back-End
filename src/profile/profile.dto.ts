@@ -151,8 +151,34 @@ export class LanguageCatalogQueryDto {
   limit?: number;
 }
 
+export class LanguageHubQueryDto {
+  @Transform(({ value }) => normalizeLanguageHubLevels(value))
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(6)
+  @IsString({ each: true })
+  @MaxLength(16, { each: true })
+  level?: string[];
+
+  @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  topic?: string;
+}
+
 export class LanguageSlugParamsDto {
   @IsString()
   @Length(1, 64)
   slug!: string;
+}
+
+function normalizeLanguageHubLevels(value: unknown): unknown {
+  if (value === undefined || value === null) return value;
+  const values = Array.isArray(value) ? value : [value];
+  return values.flatMap((item) => (
+    typeof item === 'string'
+      ? item.split(',').map((level) => level.trim())
+      : [item]
+  ));
 }

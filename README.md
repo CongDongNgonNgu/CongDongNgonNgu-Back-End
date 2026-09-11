@@ -49,6 +49,14 @@ navigable section; Vocabulary, Grammar, Sentences, Pronunciation, Resources,
 Community, Questions, Practice and Exchange are explicitly marked
 NOT_IMPLEMENTED and are not dead links.
 
+The overview accepts optional level filters as repeated or comma-separated
+query values, for example /languages/english/overview?level=A1&level=B2.
+Levels are case-insensitive, deduplicated and returned in A1-to-C2 order.
+Topics are Unicode-normalized, trimmed, lowercased and converted to stable
+hyphenated values; blank topics are absent. A syntactically valid topic with
+no backed data is echoed with NOT_AVAILABLE_YET status, while invalid levels
+and topic syntax return LANGUAGE_INVALID_LEVEL or LANGUAGE_INVALID_TOPIC.
+
 Profile updates accept language codes from the active catalog, language roles
 ('native', 'known', 'learning'), declared proficiency ('NATIVE', 'A1' through
 'C2'), optional goals/skills/interests, an IANA timezone, and optional
