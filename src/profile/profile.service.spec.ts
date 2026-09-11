@@ -188,6 +188,53 @@ describe('ProfileService', () => {
       status: 404,
     });
   });
+
+  it('builds one truthful overview contract for every active launch language', async () => {
+    const { service } = createService();
+
+    for (const slug of [
+      'vietnamese',
+      'english',
+      'chinese',
+      'japanese',
+      'korean',
+      'french',
+      'german',
+      'spanish',
+    ]) {
+      const overview = await service.getLanguageOverview(slug);
+
+      expect(overview.language.slug).toBe(slug);
+      expect(overview.seo.canonicalPath).toBe('/languages/' + slug);
+      expect(overview.metrics).toEqual({
+        learnerCount: { state: 'NOT_AVAILABLE_YET', value: null },
+        contributorCount: { state: 'NOT_AVAILABLE_YET', value: null },
+        resourceCount: { state: 'NOT_AVAILABLE_YET', value: null },
+      });
+      expect(overview.filters).toEqual({
+        levels: [],
+        topic: null,
+        levelOptions: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'],
+        levelRequired: false,
+        topicState: 'NOT_AVAILABLE_YET',
+      });
+      expect(overview.sections.find((section) => section.key === 'overview')).toEqual({
+        key: 'overview',
+        status: 'AVAILABLE',
+        isNavigable: true,
+        href: '/languages/' + slug,
+      });
+      expect(overview.sections.filter((section) => section.key !== 'overview'))
+        .toHaveLength(9);
+      expect(overview.sections
+        .filter((section) => section.key !== 'overview')
+        .every((section) => (
+          section.status === 'NOT_IMPLEMENTED' &&
+          section.isNavigable === false &&
+          section.href === null
+        ))).toBe(true);
+    }
+  });
 });
 
 function createService(): {

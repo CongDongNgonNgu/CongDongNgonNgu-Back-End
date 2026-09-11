@@ -35,6 +35,20 @@ PATCH /profile                         authenticated own replacement update
 GET   /profiles/:userId                public projection
 ~~~
 
+Phase 04A language hub routes are:
+
+~~~text
+GET   /languages/:slug                 active canonical language identity
+GET   /languages/:slug/overview        truthful hub overview contract
+~~~
+
+The overview contract is shared by every active language. Metrics use
+explicit unavailable states until real learner, contributor and resource
+data exists. The overview section is the only currently available and
+navigable section; Vocabulary, Grammar, Sentences, Pronunciation, Resources,
+Community, Questions, Practice and Exchange are explicitly marked
+NOT_IMPLEMENTED and are not dead links.
+
 Profile updates accept language codes from the active catalog, language roles
 ('native', 'known', 'learning'), declared proficiency ('NATIVE', 'A1' through
 'C2'), optional goals/skills/interests, an IANA timezone, and optional

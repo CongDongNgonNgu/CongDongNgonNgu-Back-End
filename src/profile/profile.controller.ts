@@ -34,6 +34,14 @@ export class ProfileController {
     );
   }
 
+  @Get('languages/:slug/overview')
+  async languageOverview(@Param() params: LanguageSlugParamsDto) {
+    return success(
+      await this.profiles.getLanguageOverview(params.slug),
+      'Language overview',
+    );
+  }
+
   @Get('languages/:slug')
   async language(@Param() params: LanguageSlugParamsDto) {
     return success(

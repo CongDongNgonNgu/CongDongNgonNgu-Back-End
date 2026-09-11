@@ -11,6 +11,10 @@ import {
   type ProfileRepository,
 } from './profile.repository';
 import { ProfileFailure } from './profile.errors';
+import {
+  buildLanguageHubOverview,
+  type LanguageHubOverviewResponse,
+} from './language-hub.contract';
 import type {
   AvailabilityWindowRecord,
   DeclaredLanguageProficiency,
@@ -163,6 +167,10 @@ export class ProfileService {
       throw profileFailure('LANGUAGE_INACTIVE', 'Language is not active', 404);
     }
     return toLanguageCatalogResponse(language);
+  }
+
+  async getLanguageOverview(slug: string): Promise<LanguageHubOverviewResponse> {
+    return buildLanguageHubOverview(await this.getLanguageBySlug(slug));
   }
 
   async getOwnProfile(userId: string): Promise<OwnProfileResponse> {

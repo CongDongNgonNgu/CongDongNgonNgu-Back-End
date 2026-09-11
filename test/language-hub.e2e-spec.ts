@@ -94,4 +94,29 @@ describe('language explorer API', () => {
       .expect(400)
       .expect(({ body }) => expect(body.error.code).toBe('LANGUAGE_INVALID_SLUG'));
   });
+
+  it('returns a truthful overview with non-working future sections', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/languages/english/overview')
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data.language.slug).toBe('english');
+        expect(body.data.metrics.learnerCount).toEqual({
+          state: 'NOT_AVAILABLE_YET',
+          value: null,
+        });
+        expect(body.data.sections).toHaveLength(10);
+        expect(body.data.sections
+          .filter((section: { key: string }) => section.key !== 'overview')
+          .every((section: {
+            status: string;
+            isNavigable: boolean;
+            href: string | null;
+          }) => (
+            section.status === 'NOT_IMPLEMENTED' &&
+            section.isNavigable === false &&
+            section.href === null
+          ))).toBe(true);
+      });
+  });
 });
