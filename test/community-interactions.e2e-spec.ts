@@ -103,13 +103,29 @@ describe('community interaction API', () => {
       isShareable: true,
     });
 
-    await Promise.all(
-      Array.from({ length: 8 }, () => request(app.getHttpServer())
-        .post('/api/v1/community/posts/' + publicPostId + '/reactions')
-        .set('Authorization', 'Bearer ' + viewerToken)
-        .send({ type: 'HELPFUL' })
-        .expect(201)),
-    );
+    const firstReaction = await request(app.getHttpServer())
+      .post('/api/v1/community/posts/' + publicPostId + '/reactions')
+      .set('Authorization', 'Bearer ' + viewerToken)
+      .send({ type: 'HELPFUL' })
+      .expect(201);
+    expect(firstReaction.body.data).toEqual({
+      postId: publicPostId,
+      type: 'HELPFUL',
+      reacted: true,
+      helpfulCount: 1,
+    });
+
+    const duplicateReaction = await request(app.getHttpServer())
+      .post('/api/v1/community/posts/' + publicPostId + '/reactions')
+      .set('Authorization', 'Bearer ' + viewerToken)
+      .send({ type: 'HELPFUL' })
+      .expect(201);
+    expect(duplicateReaction.body.data).toEqual({
+      postId: publicPostId,
+      type: 'HELPFUL',
+      reacted: true,
+      helpfulCount: 1,
+    });
 
     const reacted = await request(app.getHttpServer())
       .get('/api/v1/community/posts/' + publicPostId)
@@ -134,9 +150,26 @@ describe('community interaction API', () => {
     });
 
     await request(app.getHttpServer())
+      .post('/api/v1/community/posts/' + publicPostId + '/reactions')
+      .send({ type: 'HELPFUL' })
+      .expect(401);
+
+    const firstSave = await request(app.getHttpServer())
       .post('/api/v1/community/posts/' + publicPostId + '/save')
       .set('Authorization', 'Bearer ' + viewerToken)
       .expect(201);
+    expect(firstSave.body.data).toEqual({
+      postId: publicPostId,
+      saved: true,
+    });
+    const duplicateSave = await request(app.getHttpServer())
+      .post('/api/v1/community/posts/' + publicPostId + '/save')
+      .set('Authorization', 'Bearer ' + viewerToken)
+      .expect(201);
+    expect(duplicateSave.body.data).toEqual({
+      postId: publicPostId,
+      saved: true,
+    });
     const saved = await request(app.getHttpServer())
       .get('/api/v1/community/saved-posts')
       .set('Authorization', 'Bearer ' + viewerToken)
@@ -144,6 +177,11 @@ describe('community interaction API', () => {
     expect(saved.body.data.items.some((item: { id: string }) => item.id === publicPostId)).toBe(true);
 
     const privatePostId = await createPost(app, ownerToken, 'Private interaction post', { visibility: 'PRIVATE' });
+    await request(app.getHttpServer())
+      .post('/api/v1/community/posts/' + privatePostId + '/reactions')
+      .set('Authorization', 'Bearer ' + viewerToken)
+      .send({ type: 'HELPFUL' })
+      .expect(404);
     await request(app.getHttpServer())
       .get('/api/v1/community/posts/' + privatePostId + '/share')
       .set('Authorization', 'Bearer ' + ownerToken)
