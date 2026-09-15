@@ -338,7 +338,7 @@ export class CommunityService {
         const response = await this.toCommentResponse(reply);
         if (response) replies.push(response);
       }
-      if (comment.isDeleted && replies.length === 0) continue;
+      if (thread.comment.moderationState === 'DELETED' && replies.length === 0) continue;
       items.push({
         ...comment,
         replies,
@@ -511,6 +511,11 @@ export class CommunityService {
       post.moderationState !== 'ACTIVE' ||
       (post.visibility === 'PRIVATE' && post.authorUserId !== viewerUserId)
     ) {
+      return communityFailure('COMMUNITY_POST_UNAVAILABLE', 'Post is not available', 404);
+    }
+    const [language] = await this.profiles.findByCodes([post.targetLanguageCode]);
+    const author = await this.identities.findUserById(post.authorUserId);
+    if (!language?.active || !isActiveUser(author)) {
       return communityFailure('COMMUNITY_POST_UNAVAILABLE', 'Post is not available', 404);
     }
     return post;
