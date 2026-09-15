@@ -37,6 +37,6 @@ interface CommunityRuntimeConfig {
       },
     },
   ],
-  exports: [COMMUNITY_REPOSITORY, CommunityService],
+  exports: [COMMUNITY_REPOSITORY, CommunityService, CommunityRateLimiter],
 })
 export class CommunityModule {}

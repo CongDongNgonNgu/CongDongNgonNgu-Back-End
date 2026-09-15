@@ -1,6 +1,8 @@
 import {
   CORRECTION_INTENTS,
+  STRUCTURED_RESPONSE_KINDS,
   type CorrectionIntent,
+  type StructuredResponseKind,
 } from './corrections.types';
 
 export const MAX_PHASE06_SOURCE_CODE_POINTS = 20_000;
@@ -50,4 +52,15 @@ export function normalizeCorrectionIntent(input: unknown): CorrectionIntent {
     throw new Phase06ValidationError('CORRECTION_INTENT_INVALID');
   }
   return normalized as CorrectionIntent;
+}
+
+export function normalizeStructuredResponseKind(input: unknown): StructuredResponseKind {
+  if (typeof input !== 'string') {
+    throw new Phase06ValidationError('STRUCTURED_RESPONSE_KIND_INVALID');
+  }
+  const normalized = input.normalize('NFKC').trim().toUpperCase();
+  if (!STRUCTURED_RESPONSE_KINDS.includes(normalized as StructuredResponseKind)) {
+    throw new Phase06ValidationError('STRUCTURED_RESPONSE_KIND_INVALID');
+  }
+  return normalized as StructuredResponseKind;
 }

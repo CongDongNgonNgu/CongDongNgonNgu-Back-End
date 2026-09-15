@@ -34,17 +34,43 @@ CREATE TABLE IF NOT EXISTS community_correction_requests (
   CONSTRAINT community_correction_original_check
     CHECK (
       char_length(original_text) BETWEEN 1 AND 20000
-      AND length(btrim(original_text)) > 0
+      AND char_length(regexp_replace(original_text, '[[:space:]]', '', 'g')) > 0
     ),
-  CONSTRAINT community_correction_context_check
+    CONSTRAINT community_correction_context_check
     CHECK (context IS NULL OR (
       char_length(context) BETWEEN 1 AND 5000
-      AND length(btrim(context)) > 0
+      AND char_length(regexp_replace(context, '[[:space:]]', '', 'g')) > 0
     ))
 );
 
 CREATE INDEX IF NOT EXISTS community_correction_requests_created_idx
   ON community_correction_requests (created_at DESC, post_id DESC);
+
+CREATE OR REPLACE FUNCTION phase06_validate_correction_parent()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM community_posts
+    WHERE id = NEW.post_id
+      AND post_type = 'CORRECTION_REQUEST'::community_post_type
+  ) THEN
+    RAISE EXCEPTION 'CORRECTION_PARENT_TYPE_INVALID'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS community_correction_parent_type
+  ON community_correction_requests;
+
+CREATE TRIGGER community_correction_parent_type
+  BEFORE INSERT OR UPDATE OF post_id ON community_correction_requests
+  FOR EACH ROW
+  EXECUTE FUNCTION phase06_validate_correction_parent();
 
 CREATE OR REPLACE FUNCTION phase06_prevent_correction_original_update()
 RETURNS trigger
@@ -97,19 +123,19 @@ CREATE TABLE IF NOT EXISTS community_structured_responses (
   CONSTRAINT community_structured_response_corrected_check CHECK (
     corrected_text IS NULL OR (
       char_length(corrected_text) BETWEEN 1 AND 20000
-      AND length(btrim(corrected_text)) > 0
+      AND char_length(regexp_replace(corrected_text, '[[:space:]]', '', 'g')) > 0
     )
   ),
   CONSTRAINT community_structured_response_answer_check CHECK (
     answer_text IS NULL OR (
       char_length(answer_text) BETWEEN 1 AND 20000
-      AND length(btrim(answer_text)) > 0
+      AND char_length(regexp_replace(answer_text, '[[:space:]]', '', 'g')) > 0
     )
   ),
   CONSTRAINT community_structured_response_explanation_check CHECK (
     explanation IS NULL OR (
       char_length(explanation) BETWEEN 1 AND 5000
-      AND length(btrim(explanation)) > 0
+      AND char_length(regexp_replace(explanation, '[[:space:]]', '', 'g')) > 0
     )
   ),
   CONSTRAINT community_structured_response_id_parent_unique
@@ -121,6 +147,88 @@ CREATE INDEX IF NOT EXISTS community_structured_responses_parent_idx
 
 CREATE INDEX IF NOT EXISTS community_structured_responses_author_idx
   ON community_structured_responses (author_user_id, created_at DESC, id DESC);
+
+CREATE OR REPLACE FUNCTION phase06_validate_structured_response_parent()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  parent_type community_post_type;
+BEGIN
+  SELECT post_type
+    INTO parent_type
+  FROM community_posts
+  WHERE id = NEW.parent_post_id;
+
+  IF NEW.response_kind = 'CORRECTION_PROPOSAL'::phase06_structured_response_kind
+     AND parent_type <> 'CORRECTION_REQUEST'::community_post_type THEN
+    RAISE EXCEPTION 'CORRECTION_PROPOSAL_PARENT_TYPE_INVALID'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF NEW.response_kind = 'QA_ANSWER'::phase06_structured_response_kind
+     AND parent_type <> 'QUESTION'::community_post_type THEN
+    RAISE EXCEPTION 'QA_ANSWER_PARENT_TYPE_INVALID'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS community_structured_response_parent_type
+  ON community_structured_responses;
+
+CREATE TRIGGER community_structured_response_parent_type
+  BEFORE INSERT OR UPDATE OF parent_post_id, response_kind
+  ON community_structured_responses
+  FOR EACH ROW
+  EXECUTE FUNCTION phase06_validate_structured_response_parent();
+
+CREATE OR REPLACE FUNCTION phase06_protect_community_post_type()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.post_type = OLD.post_type THEN
+    RETURN NEW;
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM community_correction_requests
+    WHERE post_id = NEW.id
+      AND NEW.post_type <> 'CORRECTION_REQUEST'::community_post_type
+  ) THEN
+    RAISE EXCEPTION 'CORRECTION_PARENT_TYPE_IMMUTABLE'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM community_structured_responses
+    WHERE parent_post_id = NEW.id
+      AND (
+        (
+          response_kind = 'CORRECTION_PROPOSAL'::phase06_structured_response_kind
+          AND NEW.post_type <> 'CORRECTION_REQUEST'::community_post_type
+        )
+        OR (
+          response_kind = 'QA_ANSWER'::phase06_structured_response_kind
+          AND NEW.post_type <> 'QUESTION'::community_post_type
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION 'STRUCTURED_RESPONSE_PARENT_TYPE_IMMUTABLE'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS community_post_phase06_type_guard
+  ON community_posts;
+
+CREATE TRIGGER community_post_phase06_type_guard
+  BEFORE UPDATE OF post_type ON community_posts
+  FOR EACH ROW
+  EXECUTE FUNCTION phase06_protect_community_post_type();
 
 CREATE TABLE IF NOT EXISTS community_structured_response_acceptances (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

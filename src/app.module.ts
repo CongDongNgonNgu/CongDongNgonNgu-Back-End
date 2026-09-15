@@ -4,8 +4,16 @@ import { AppConfigModule } from './config/config.module';
 import { HealthModule } from './health/health.module';
 import { ProfileModule } from './profile/profile.module';
 import { CommunityModule } from './community/community.module';
+import { CorrectionsModule } from './corrections/corrections.module';
 
 @Module({
-  imports: [AppConfigModule, HealthModule, AuthModule, ProfileModule, CommunityModule],
+  imports: [
+    AppConfigModule,
+    HealthModule,
+    AuthModule,
+    ProfileModule,
+    CommunityModule,
+    CorrectionsModule,
+  ],
 })
 export class AppModule {}

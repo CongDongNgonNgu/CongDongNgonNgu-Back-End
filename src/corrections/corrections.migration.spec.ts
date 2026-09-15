@@ -19,6 +19,9 @@ describe('Phase 06 migration contract', () => {
     expect(sql).toContain('REFERENCES community_posts(id) ON DELETE RESTRICT');
     expect(sql).toContain('PRIMARY KEY (response_id, user_id)');
     expect(sql).toContain('community_correction_original_immutable');
+    expect(sql).toContain('community_correction_parent_type');
+    expect(sql).toContain('community_structured_response_parent_type');
+    expect(sql).toContain('community_post_phase06_type_guard');
     expect(sql).toContain('community_structured_responses_parent_idx');
   });
 
