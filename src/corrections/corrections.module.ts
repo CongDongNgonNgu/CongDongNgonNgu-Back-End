@@ -41,5 +41,6 @@ interface CorrectionsRuntimeConfig {
       },
     },
   ],
+  exports: [CorrectionsService, CORRECTIONS_REPOSITORY],
 })
 export class CorrectionsModule {}

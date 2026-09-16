@@ -268,6 +268,90 @@ describe('corrections and Q&A API', () => {
       .expect(200);
     expect(revokedAgain.body.data).toMatchObject({ parentPostId: postId, responseId: null, revoked: false });
   });
+
+  it('only lets the requester nominate the current accepted response once', async () => {
+    const owner = await createUser(identity, 'phase06-candidate-e2e-owner@example.com', 'Candidate E2E Owner');
+    const contributor = await createUser(identity, 'phase06-candidate-e2e-contributor@example.com', 'Candidate E2E Contributor');
+    const other = await createUser(identity, 'phase06-candidate-e2e-other@example.com', 'Candidate E2E Other');
+    const ownerToken = await accessFor(sessions, owner);
+    const contributorToken = await accessFor(sessions, contributor);
+    const otherToken = await accessFor(sessions, other);
+
+    const correction = await request(app.getHttpServer())
+      .post('/api/v1/community/correction-requests')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .send({
+        languageCode: 'en',
+        originalText: 'She go home.',
+        correctionIntent: 'GRAMMAR',
+        visibility: 'PUBLIC',
+      })
+      .expect(201);
+    const postId = correction.body.data.post.id as string;
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/community/posts/' + postId + '/structured-responses')
+      .set('Authorization', 'Bearer ' + contributorToken)
+      .send({
+        responseKind: 'CORRECTION_PROPOSAL',
+        correctedText: 'She goes home.',
+        explanation: 'Third-person singular uses goes.',
+      })
+      .expect(201);
+    const responseId = response.body.data.id as string;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/community/structured-responses/' + responseId + '/library-candidate')
+      .set('Authorization', 'Bearer ' + otherToken)
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('CORRECTIONS_CANDIDATE_FORBIDDEN'));
+
+    await request(app.getHttpServer())
+      .post('/api/v1/community/structured-responses/' + responseId + '/library-candidate')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('CORRECTIONS_CANDIDATE_NOT_ACCEPTED'));
+
+    await request(app.getHttpServer())
+      .put('/api/v1/community/posts/' + postId + '/accepted-response')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .send({ responseId })
+      .expect(200);
+
+    const candidate = await request(app.getHttpServer())
+      .post('/api/v1/community/structured-responses/' + responseId + '/library-candidate')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .expect(201);
+    expect(candidate.body.data).toMatchObject({
+      sourcePostId: postId,
+      sourceResponseId: responseId,
+      state: 'PENDING_REVIEW',
+      submittedForReview: true,
+    });
+
+    const duplicate = await request(app.getHttpServer())
+      .post('/api/v1/community/structured-responses/' + responseId + '/library-candidate')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .expect(201);
+    expect(duplicate.body.data.id).toBe(candidate.body.data.id);
+
+    const ownerView = await request(app.getHttpServer())
+      .get('/api/v1/community/posts/' + postId + '/structured-responses')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .expect(200);
+    expect(ownerView.body.data.items[0]).toMatchObject({
+      isAccepted: true,
+      libraryCandidateState: 'PENDING_REVIEW',
+      canNominateCandidate: false,
+    });
+
+    const publicView = await request(app.getHttpServer())
+      .get('/api/v1/community/posts/' + postId + '/structured-responses')
+      .expect(200);
+    expect(publicView.body.data.items[0]).toMatchObject({
+      libraryCandidateState: null,
+      canNominateCandidate: false,
+    });
+  });
 });
 
 async function createUser(

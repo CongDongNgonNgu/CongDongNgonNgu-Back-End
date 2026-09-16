@@ -322,6 +322,116 @@ describe('CorrectionsService', () => {
       service.removeStructuredResponseHelpfulVote(response.id, voter.id),
     ).rejects.toMatchObject({ code: 'CORRECTIONS_RESPONSE_UNAVAILABLE' });
   });
+
+  it('records accepted contribution evidence and creates one pending public candidate idempotently', async () => {
+    const { service, identities, correctionsRepository } = createService();
+    const owner = await createUser(identities, 'phase06-candidate-owner@example.com', 'Candidate Owner');
+    const contributor = await createUser(identities, 'phase06-candidate-contributor@example.com', 'Candidate Contributor');
+    const other = await createUser(identities, 'phase06-candidate-other@example.com', 'Candidate Other');
+    const correction = await service.createCorrectionRequest(owner.id, {
+      languageCode: 'en',
+      originalText: 'She go home.',
+      correctionIntent: 'grammar',
+      visibility: 'PUBLIC',
+    });
+    const response = await service.createStructuredResponse(correction.post.id, contributor.id, {
+      responseKind: 'CORRECTION_PROPOSAL',
+      correctedText: 'She goes home.',
+      explanation: 'Third-person singular uses goes.',
+    });
+
+    await expect(
+      service.nominateStructuredResponseAsLibraryCandidate(response.id, other.id),
+    ).rejects.toMatchObject({ code: 'CORRECTIONS_CANDIDATE_FORBIDDEN' });
+    await expect(
+      service.nominateStructuredResponseAsLibraryCandidate(response.id, owner.id),
+    ).rejects.toMatchObject({ code: 'CORRECTIONS_CANDIDATE_NOT_ACCEPTED' });
+
+    await service.acceptStructuredResponse(correction.post.id, response.id, owner.id);
+    const candidate = await service.nominateStructuredResponseAsLibraryCandidate(response.id, owner.id);
+    const duplicate = await service.nominateStructuredResponseAsLibraryCandidate(response.id, owner.id);
+
+    expect(candidate).toMatchObject({
+      sourcePostId: correction.post.id,
+      sourceResponseId: response.id,
+      responseKind: 'CORRECTION_PROPOSAL',
+      state: 'PENDING_REVIEW',
+      submittedForReview: true,
+    });
+    expect(duplicate.id).toBe(candidate.id);
+    await expect(correctionsRepository.listPendingLibraryCandidates()).resolves.toMatchObject([{
+      id: candidate.id,
+      sourcePostId: correction.post.id,
+      sourceResponseId: response.id,
+      sourceText: 'She go home.',
+      correctedText: 'She goes home.',
+      contributorUserId: contributor.id,
+      candidateCreatedByUserId: owner.id,
+      state: 'PENDING_REVIEW',
+    }]);
+
+    const events = await correctionsRepository.listContributionEvents({ responseId: response.id });
+    expect(events.map((event) => event.eventType)).toEqual([
+      'STRUCTURED_RESPONSE_CREATED',
+      'RESPONSE_ACCEPTED',
+      'LIBRARY_CANDIDATE_CREATED',
+    ]);
+  });
+
+  it('fails closed for private sources and preserves reversal evidence after acceptance revoke', async () => {
+    const { service, identities, communityRepository, correctionsRepository } = createService();
+    const owner = await createUser(identities, 'phase06-candidate-private-owner@example.com', 'Private Candidate Owner');
+    const contributor = await createUser(identities, 'phase06-candidate-private-contributor@example.com', 'Private Candidate Contributor');
+    const privateCorrection = await service.createCorrectionRequest(owner.id, {
+      languageCode: 'en',
+      originalText: 'Private source.',
+      correctionIntent: 'style',
+      visibility: 'PUBLIC',
+    });
+    const privateResponse = await service.createStructuredResponse(privateCorrection.post.id, contributor.id, {
+      responseKind: 'CORRECTION_PROPOSAL',
+      correctedText: 'Private source!',
+    });
+    await communityRepository.updatePost(privateCorrection.post.id, {
+      visibility: 'PRIVATE',
+      updatedAt: new Date(),
+      editedAt: new Date(),
+    });
+    await service.acceptStructuredResponse(privateCorrection.post.id, privateResponse.id, owner.id);
+    await expect(
+      service.nominateStructuredResponseAsLibraryCandidate(privateResponse.id, owner.id),
+    ).rejects.toMatchObject({ code: 'CORRECTIONS_CANDIDATE_SOURCE_NOT_PUBLIC' });
+
+    const publicCorrection = await service.createCorrectionRequest(owner.id, {
+      languageCode: 'en',
+      originalText: 'Reversible source.',
+      correctionIntent: 'style',
+      visibility: 'PUBLIC',
+    });
+    const publicResponse = await service.createStructuredResponse(publicCorrection.post.id, contributor.id, {
+      responseKind: 'CORRECTION_PROPOSAL',
+      correctedText: 'Reversible source!',
+    });
+    await service.acceptStructuredResponse(publicCorrection.post.id, publicResponse.id, owner.id);
+    await service.nominateStructuredResponseAsLibraryCandidate(publicResponse.id, owner.id);
+    await service.revokeStructuredResponseAcceptance(publicCorrection.post.id, owner.id);
+
+    await expect(correctionsRepository.listPendingLibraryCandidates()).resolves.toHaveLength(0);
+    const events = await correctionsRepository.listContributionEvents({ responseId: publicResponse.id });
+    expect(events.map((event) => event.eventType)).toEqual([
+      'STRUCTURED_RESPONSE_CREATED',
+      'RESPONSE_ACCEPTED',
+      'LIBRARY_CANDIDATE_CREATED',
+      'ACCEPTANCE_REVOKED',
+    ]);
+
+    await communityRepository.updatePost(publicCorrection.post.id, {
+      visibility: 'PRIVATE',
+      updatedAt: new Date(),
+      editedAt: new Date(),
+    });
+    await expect(correctionsRepository.listPendingLibraryCandidates()).resolves.toHaveLength(0);
+  });
 });
 
 function createService() {

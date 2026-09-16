@@ -159,6 +159,22 @@ export class CorrectionsController {
     );
   }
 
+  @Post('structured-responses/:responseId/library-candidate')
+  @UseGuards(AccessTokenGuard)
+  async nominateStructuredResponseAsLibraryCandidate(
+    @Param('responseId', new ParseUUIDPipe({ version: '4' })) responseId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.corrections.nominateStructuredResponseAsLibraryCandidate(
+        responseId,
+        request.user!.user.id,
+      ),
+      'Library candidate submitted for review',
+    );
+  }
+
   @Put('posts/:postId/accepted-response')
   @UseGuards(AccessTokenGuard)
   async acceptStructuredResponse(

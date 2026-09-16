@@ -44,6 +44,7 @@ import { correctionsFailure } from './corrections.errors';
 import type {
   CorrectionIntent,
   CorrectionRequestRecord,
+  LibraryCandidateRecord,
   StructuredResponseKind,
   StructuredResponseRecord,
 } from './corrections.types';
@@ -107,8 +108,26 @@ export interface StructuredResponseResponse {
   viewerHelpful: boolean;
   isAccepted: boolean;
   acceptedAt: Date | null;
+  libraryCandidateState: 'PENDING_REVIEW' | 'INVALIDATED' | null;
   canAccept: boolean;
   canVote: boolean;
+  canNominateCandidate: boolean;
+}
+
+export interface LibraryCandidateResponse {
+  id: string;
+  sourcePostId: string;
+  sourceResponseId: string;
+  contributorUserId: string;
+  targetLanguageCode: string;
+  responseKind: StructuredResponseKind;
+  sourceText: string;
+  correctedText: string | null;
+  answerText: string | null;
+  explanation: string | null;
+  state: 'PENDING_REVIEW' | 'INVALIDATED';
+  submittedForReview: true;
+  createdAt: Date;
 }
 
 export interface StructuredResponseAcceptanceResponse {
@@ -567,6 +586,68 @@ export class CorrectionsService {
     };
   }
 
+  async nominateStructuredResponseAsLibraryCandidate(
+    responseId: string,
+    userId: string,
+  ): Promise<LibraryCandidateResponse> {
+    await this.requireActiveUser(userId);
+    const { response, parent } = await this.requireActiveStructuredResponse(responseId, userId);
+    if (!parent.isOwner) {
+      return correctionsFailure(
+        'CORRECTIONS_CANDIDATE_FORBIDDEN',
+        'Only the requester can nominate a response for library review',
+        403,
+      );
+    }
+    if (parent.visibility !== 'PUBLIC') {
+      return correctionsFailure(
+        'CORRECTIONS_CANDIDATE_SOURCE_NOT_PUBLIC',
+        'Only public requests can be nominated for library review',
+        403,
+      );
+    }
+    const interaction = await this.repository.getStructuredResponseInteraction(response.id, userId);
+    if (interaction.acceptedResponseId !== response.id || !interaction.acceptedAcceptanceId) {
+      return correctionsFailure(
+        'CORRECTIONS_CANDIDATE_NOT_ACCEPTED',
+        'Only the currently accepted response can be nominated',
+        409,
+      );
+    }
+    this.consumeRate('structured-response-candidate', userId, { limit: 20, windowMs: 15 * 60 * 1000 });
+    try {
+      const candidate = await this.repository.createLibraryCandidate({
+        responseId,
+        candidateCreatedByUserId: userId,
+        createdAt: new Date(),
+      });
+      return toLibraryCandidateResponse(candidate);
+    } catch (error) {
+      if (error instanceof CorrectionsRepositoryConflictError) {
+        return correctionsFailure(
+          'CORRECTIONS_CANDIDATE_UNAVAILABLE',
+          'The response is no longer available for library review',
+          409,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Internal Phase 08 handoff; no public candidate listing route is exposed. */
+  async listPendingLibraryCandidates(limit = 100): Promise<LibraryCandidateRecord[]> {
+    return this.repository.listPendingLibraryCandidates(Math.min(Math.max(limit, 1), 100));
+  }
+
+  /** Internal Phase 10/Phase 08 evidence seam; mutations remain in their owning services. */
+  async listContributionEvents(query?: {
+    parentPostId?: string;
+    responseId?: string;
+    candidateId?: string;
+  }) {
+    return this.repository.listContributionEvents(query);
+  }
+
   private async requireVisibleParent(
     postId: string,
     viewerUserId: string | null,
@@ -615,8 +696,10 @@ export class CorrectionsService {
         viewerHelpful: false,
         isAccepted: false,
         acceptedAt: null,
+        libraryCandidateState: null,
         canAccept: false,
         canVote: false,
+        canNominateCandidate: false,
       };
     }
     return {
@@ -635,8 +718,16 @@ export class CorrectionsService {
       viewerHelpful: interaction.viewerHelpful,
       isAccepted: interaction.acceptedResponseId === response.id,
       acceptedAt: interaction.acceptedResponseId === response.id ? interaction.acceptedAt : null,
+      libraryCandidateState: readableParent.isOwner ? interaction.libraryCandidateState : null,
       canAccept: Boolean(viewerUserId && readableParent.isOwner),
       canVote: Boolean(viewerUserId && response.authorUserId !== viewerUserId),
+      canNominateCandidate: Boolean(
+        viewerUserId &&
+        readableParent.isOwner &&
+        readableParent.visibility === 'PUBLIC' &&
+        interaction.acceptedResponseId === response.id &&
+        interaction.libraryCandidateState === null,
+      ),
     };
   }
 
@@ -774,4 +865,22 @@ function phase06Message(code: string): string {
     STRUCTURED_RESPONSE_KIND_INVALID: 'Structured response kind is invalid',
   };
   return messages[code] ?? 'Phase 06 input is invalid';
+}
+
+function toLibraryCandidateResponse(candidate: LibraryCandidateRecord): LibraryCandidateResponse {
+  return {
+    id: candidate.id,
+    sourcePostId: candidate.sourcePostId,
+    sourceResponseId: candidate.sourceResponseId,
+    contributorUserId: candidate.contributorUserId,
+    targetLanguageCode: candidate.targetLanguageCode,
+    responseKind: candidate.responseKind,
+    sourceText: candidate.sourceText,
+    correctedText: candidate.correctedText,
+    answerText: candidate.answerText,
+    explanation: candidate.explanation,
+    state: candidate.state,
+    submittedForReview: true,
+    createdAt: candidate.createdAt,
+  };
 }

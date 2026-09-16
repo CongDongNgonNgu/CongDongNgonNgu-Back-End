@@ -15,6 +15,9 @@ import type {
 import type {
   CorrectionIntent,
   CorrectionRequestRecord,
+  LibraryCandidateRecord,
+  LibraryCandidateState,
+  Phase06ContributionEvent,
   StructuredResponseAcceptanceRecord,
   StructuredResponseInteractionRecord,
   StructuredResponseKind,
@@ -72,6 +75,18 @@ export interface CreateStructuredResponseAcceptanceRepositoryInput {
   acceptedAt: Date;
 }
 
+export interface CreateLibraryCandidateRepositoryInput {
+  responseId: string;
+  candidateCreatedByUserId: string;
+  createdAt: Date;
+}
+
+export interface Phase06ContributionEventQuery {
+  parentPostId?: string;
+  responseId?: string;
+  candidateId?: string;
+}
+
 export interface CorrectionsRepository {
   createCorrectionRequest(
     input: CreateCorrectionRequestRepositoryInput,
@@ -110,7 +125,15 @@ export interface CorrectionsRepository {
     id: string,
     moderationState: CommunityModerationState,
     now: Date,
+    actorUserId?: string | null,
   ): Promise<StructuredResponseRecord | null>;
+  createLibraryCandidate(
+    input: CreateLibraryCandidateRepositoryInput,
+  ): Promise<LibraryCandidateRecord>;
+  listPendingLibraryCandidates(limit?: number): Promise<LibraryCandidateRecord[]>;
+  listContributionEvents(
+    query?: Phase06ContributionEventQuery,
+  ): Promise<Phase06ContributionEvent[]>;
 }
 
 export class InMemoryCorrectionsRepository implements CorrectionsRepository {
@@ -118,6 +141,8 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
   private readonly responses = new Map<string, StructuredResponseRecord>();
   private readonly helpfulVotes = new Map<string, Date>();
   private readonly acceptances = new Map<string, StructuredResponseAcceptanceRecord[]>();
+  private readonly candidates = new Map<string, LibraryCandidateRecord>();
+  private readonly contributionEvents: Phase06ContributionEvent[] = [];
 
   constructor(private readonly community: CommunityPersistence) {}
 
@@ -197,6 +222,20 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
       deletedByUserId: null,
     };
     this.responses.set(record.id, record);
+    this.appendContributionEvent({
+      eventType: 'STRUCTURED_RESPONSE_CREATED',
+      idempotencyKey: `response:${record.id}:created`,
+      aggregateId: record.id,
+      parentPostId: record.parentPostId,
+      responseId: record.id,
+      candidateId: null,
+      acceptanceId: null,
+      actorUserId: record.authorUserId,
+      contributorUserId: record.authorUserId,
+      responseKind: record.responseKind,
+      moderationState: record.moderationState,
+      occurredAt: input.createdAt,
+    });
     return cloneResponse(record);
   }
 
@@ -238,7 +277,12 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
       helpfulCount,
       viewerHelpful,
       acceptedResponseId: activeAcceptance?.responseId ?? null,
+      acceptedAcceptanceId: activeAcceptance?.id ?? null,
+      acceptedByUserId: activeAcceptance?.acceptedByUserId ?? null,
       acceptedAt: activeAcceptance ? new Date(activeAcceptance.acceptedAt) : null,
+      libraryCandidateState: [...this.candidates.values()]
+        .find((candidate) => candidate.sourceResponseId === responseId && candidate.state === 'PENDING_REVIEW')
+        ?.state ?? null,
     };
   }
 
@@ -264,7 +308,24 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
     const history = this.acceptances.get(input.parentPostId) ?? [];
     const active = history.find((acceptance) => acceptance.revokedAt === null);
     if (active?.responseId === input.responseId) return cloneAcceptance(active);
-    if (active) active.revokedAt = new Date(input.acceptedAt);
+    if (active) {
+      active.revokedAt = new Date(input.acceptedAt);
+      this.invalidateCandidatesForResponse(active.responseId, active.id, input.acceptedAt, 'ACCEPTANCE_REVOKED');
+      this.appendContributionEvent({
+        eventType: 'ACCEPTANCE_REVOKED',
+        idempotencyKey: `acceptance:${active.id}:revoked`,
+        aggregateId: active.id,
+        parentPostId: active.parentPostId,
+        responseId: active.responseId,
+        candidateId: null,
+        acceptanceId: active.id,
+        actorUserId: input.acceptedByUserId,
+        contributorUserId: this.responses.get(active.responseId)?.authorUserId ?? null,
+        responseKind: this.responses.get(active.responseId)?.responseKind ?? null,
+        moderationState: null,
+        occurredAt: input.acceptedAt,
+      });
+    }
     const created: StructuredResponseAcceptanceRecord = {
       id: randomUUID(),
       parentPostId: input.parentPostId,
@@ -275,6 +336,21 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
     };
     history.push(created);
     this.acceptances.set(input.parentPostId, history);
+    const response = this.responses.get(input.responseId);
+    this.appendContributionEvent({
+      eventType: 'RESPONSE_ACCEPTED',
+      idempotencyKey: `acceptance:${created.id}:accepted`,
+      aggregateId: created.id,
+      parentPostId: created.parentPostId,
+      responseId: created.responseId,
+      candidateId: null,
+      acceptanceId: created.id,
+      actorUserId: created.acceptedByUserId,
+      contributorUserId: response?.authorUserId ?? null,
+      responseKind: response?.responseKind ?? null,
+      moderationState: null,
+      occurredAt: created.acceptedAt,
+    });
     return cloneAcceptance(created);
   }
 
@@ -286,6 +362,22 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
     const active = this.getActiveAcceptance(parentPostId);
     if (!active) return null;
     active.revokedAt = new Date(revokedAt);
+    this.invalidateCandidatesForResponse(active.responseId, active.id, revokedAt, 'ACCEPTANCE_REVOKED');
+    const response = this.responses.get(active.responseId);
+    this.appendContributionEvent({
+      eventType: 'ACCEPTANCE_REVOKED',
+      idempotencyKey: `acceptance:${active.id}:revoked`,
+      aggregateId: active.id,
+      parentPostId: active.parentPostId,
+      responseId: active.responseId,
+      candidateId: null,
+      acceptanceId: active.id,
+      actorUserId: _acceptedByUserId,
+      contributorUserId: response?.authorUserId ?? null,
+      responseKind: response?.responseKind ?? null,
+      moderationState: null,
+      occurredAt: revokedAt,
+    });
     return cloneAcceptance(active);
   }
 
@@ -293,6 +385,7 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
     id: string,
     moderationState: CommunityModerationState,
     now: Date,
+    actorUserId: string | null = null,
   ): Promise<StructuredResponseRecord | null> {
     const response = this.responses.get(id);
     if (!response) return null;
@@ -301,11 +394,146 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
     if (moderationState === 'DELETED' && !response.deletedAt) {
       response.deletedAt = new Date(now);
     }
+    if (moderationState !== 'ACTIVE') {
+      this.invalidateCandidatesForResponse(response.id, null, now, 'RESPONSE_MODERATED');
+    }
+    this.appendContributionEvent({
+      eventType: 'STRUCTURED_RESPONSE_MODERATED',
+      idempotencyKey: `response:${response.id}:moderated:${moderationState}:${now.toISOString()}`,
+      aggregateId: response.id,
+      parentPostId: response.parentPostId,
+      responseId: response.id,
+      candidateId: null,
+      acceptanceId: this.getActiveAcceptance(response.parentPostId)?.id ?? null,
+      actorUserId,
+      contributorUserId: response.authorUserId,
+      responseKind: response.responseKind,
+      moderationState,
+      occurredAt: now,
+    });
     return cloneResponse(response);
+  }
+
+  async createLibraryCandidate(
+    input: CreateLibraryCandidateRepositoryInput,
+  ): Promise<LibraryCandidateRecord> {
+    const response = this.responses.get(input.responseId);
+    if (!response || response.moderationState !== 'ACTIVE') {
+      throw new CorrectionsRepositoryConflictError('Structured response is unavailable');
+    }
+    const parent = await this.community.findPostById(response.parentPostId);
+    const acceptance = this.getActiveAcceptance(response.parentPostId);
+    if (!parent || parent.moderationState !== 'ACTIVE' || parent.visibility !== 'PUBLIC' || !acceptance || acceptance.responseId !== response.id) {
+      throw new CorrectionsRepositoryConflictError('Library candidate source is unavailable');
+    }
+    const existing = [...this.candidates.values()].find((candidate) => (
+      candidate.sourceResponseId === response.id && candidate.state === 'PENDING_REVIEW'
+    ));
+    if (existing) return cloneCandidate(existing);
+    const correction = response.responseKind === 'CORRECTION_PROPOSAL'
+      ? await this.findCorrectionRequest(response.parentPostId)
+      : null;
+    const candidate: LibraryCandidateRecord = {
+      id: randomUUID(),
+      sourcePostId: parent.id,
+      sourceResponseId: response.id,
+      contributorUserId: response.authorUserId,
+      targetLanguageCode: parent.targetLanguageCode,
+      responseKind: response.responseKind,
+      sourceText: correction?.originalText ?? parent.content,
+      correctedText: response.correctedText,
+      answerText: response.answerText,
+      explanation: response.explanation,
+      acceptanceId: acceptance.id,
+      acceptedByUserId: acceptance.acceptedByUserId,
+      acceptedAt: new Date(acceptance.acceptedAt),
+      candidateCreatedByUserId: input.candidateCreatedByUserId,
+      state: 'PENDING_REVIEW',
+      createdAt: new Date(input.createdAt),
+      updatedAt: new Date(input.createdAt),
+      invalidatedAt: null,
+      invalidationReason: null,
+    };
+    this.candidates.set(candidate.id, candidate);
+    this.appendContributionEvent({
+      eventType: 'LIBRARY_CANDIDATE_CREATED',
+      idempotencyKey: `candidate:${candidate.id}:created`,
+      aggregateId: candidate.id,
+      parentPostId: candidate.sourcePostId,
+      responseId: candidate.sourceResponseId,
+      candidateId: candidate.id,
+      acceptanceId: candidate.acceptanceId,
+      actorUserId: candidate.candidateCreatedByUserId,
+      contributorUserId: candidate.contributorUserId,
+      responseKind: candidate.responseKind,
+      moderationState: null,
+      occurredAt: candidate.createdAt,
+    });
+    return cloneCandidate(candidate);
+  }
+
+  async listPendingLibraryCandidates(limit = 100): Promise<LibraryCandidateRecord[]> {
+    const visible = await Promise.all([...this.candidates.values()]
+      .filter((candidate) => candidate.state === 'PENDING_REVIEW')
+      .map(async (candidate) => {
+        const parent = await this.community.findPostById(candidate.sourcePostId);
+        const response = this.responses.get(candidate.sourceResponseId);
+        const acceptance = this.getActiveAcceptance(candidate.sourcePostId);
+        return Boolean(
+          parent &&
+          parent.moderationState === 'ACTIVE' &&
+          parent.visibility === 'PUBLIC' &&
+          response?.moderationState === 'ACTIVE' &&
+          acceptance?.id === candidate.acceptanceId &&
+          acceptance.responseId === candidate.sourceResponseId,
+        ) ? candidate : null;
+      }));
+    return visible
+      .filter((candidate): candidate is LibraryCandidateRecord => Boolean(candidate))
+      .sort(compareNewestFirst)
+      .slice(0, limit)
+      .map(cloneCandidate);
+  }
+
+  async listContributionEvents(
+    query: Phase06ContributionEventQuery = {},
+  ): Promise<Phase06ContributionEvent[]> {
+    return this.contributionEvents
+      .filter((event) => !query.parentPostId || event.parentPostId === query.parentPostId)
+      .filter((event) => !query.responseId || event.responseId === query.responseId)
+      .filter((event) => !query.candidateId || event.candidateId === query.candidateId)
+      .map(cloneContributionEvent);
   }
 
   private getActiveAcceptance(parentPostId: string): StructuredResponseAcceptanceRecord | null {
     return this.acceptances.get(parentPostId)?.find((acceptance) => acceptance.revokedAt === null) ?? null;
+  }
+
+  private invalidateCandidatesForResponse(
+    responseId: string,
+    acceptanceId: string | null,
+    now: Date,
+    reason: string,
+  ): void {
+    for (const candidate of this.candidates.values()) {
+      if (
+        candidate.sourceResponseId === responseId &&
+        candidate.state === 'PENDING_REVIEW' &&
+        (!acceptanceId || candidate.acceptanceId === acceptanceId)
+      ) {
+        candidate.state = 'INVALIDATED';
+        candidate.updatedAt = new Date(now);
+        candidate.invalidatedAt = new Date(now);
+        candidate.invalidationReason = reason;
+      }
+    }
+  }
+
+  private appendContributionEvent(
+    event: Omit<Phase06ContributionEvent, 'id'>,
+  ): void {
+    if (this.contributionEvents.some((existing) => existing.idempotencyKey === event.idempotencyKey)) return;
+    this.contributionEvents.push({ id: randomUUID(), ...event });
   }
 }
 
@@ -365,4 +593,18 @@ function cloneAcceptance(
     acceptedAt: new Date(acceptance.acceptedAt),
     revokedAt: acceptance.revokedAt ? new Date(acceptance.revokedAt) : null,
   };
+}
+
+function cloneCandidate(candidate: LibraryCandidateRecord): LibraryCandidateRecord {
+  return {
+    ...candidate,
+    acceptedAt: new Date(candidate.acceptedAt),
+    createdAt: new Date(candidate.createdAt),
+    updatedAt: new Date(candidate.updatedAt),
+    invalidatedAt: candidate.invalidatedAt ? new Date(candidate.invalidatedAt) : null,
+  };
+}
+
+function cloneContributionEvent(event: Phase06ContributionEvent): Phase06ContributionEvent {
+  return { ...event, occurredAt: new Date(event.occurredAt) };
 }
