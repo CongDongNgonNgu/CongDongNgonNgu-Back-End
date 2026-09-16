@@ -9,6 +9,7 @@ import type {
   CommunityVisibility,
 } from '../community/community.types';
 import type {
+  CreateStructuredResponseAcceptanceRepositoryInput,
   CorrectionsRepository,
   CreateCorrectionRequestRepositoryInput,
   CreateQuestionRepositoryInput,
@@ -18,6 +19,8 @@ import { CorrectionsRepositoryConflictError } from './corrections.repository';
 import type {
   CorrectionIntent,
   CorrectionRequestRecord,
+  StructuredResponseAcceptanceRecord,
+  StructuredResponseInteractionRecord,
   StructuredResponseListQuery,
   StructuredResponseRecord,
 } from './corrections.types';
@@ -167,6 +170,163 @@ export class PostgresCorrectionsRepository implements CorrectionsRepository {
       values,
     );
     return page(result.rows.map(mapResponse), query.limit);
+  }
+
+  async getStructuredResponseInteraction(
+    responseId: string,
+    viewerUserId: string | null,
+  ): Promise<StructuredResponseInteractionRecord> {
+    const [count, viewer, acceptance] = await Promise.all([
+      this.pool.query(
+        `SELECT COUNT(*)::int AS count
+         FROM community_structured_response_votes
+         WHERE response_id = $1
+           AND vote_type = 'HELPFUL'::phase06_structured_response_vote_type`,
+        [responseId],
+      ),
+      viewerUserId
+        ? this.pool.query(
+          `SELECT EXISTS(
+             SELECT 1
+             FROM community_structured_response_votes
+             WHERE response_id = $1
+               AND user_id = $2
+               AND vote_type = 'HELPFUL'::phase06_structured_response_vote_type
+           ) AS exists`,
+          [responseId, viewerUserId],
+        )
+        : Promise.resolve({ rows: [{ exists: false }] }),
+      this.pool.query(
+        `SELECT acceptance.response_id, acceptance.accepted_at
+         FROM community_structured_response_acceptances AS acceptance
+         INNER JOIN community_structured_responses AS response
+           ON response.parent_post_id = acceptance.parent_post_id
+         WHERE response.id = $1
+           AND acceptance.revoked_at IS NULL
+         ORDER BY acceptance.accepted_at DESC
+         LIMIT 1`,
+        [responseId],
+      ),
+    ]);
+    return {
+      helpfulCount: Number(count.rows[0]?.count ?? 0),
+      viewerHelpful: Boolean(viewer.rows[0]?.exists),
+      acceptedResponseId: acceptance.rows[0]?.response_id
+        ? String(acceptance.rows[0].response_id)
+        : null,
+      acceptedAt: acceptance.rows[0]?.accepted_at
+        ? new Date(String(acceptance.rows[0].accepted_at))
+        : null,
+    };
+  }
+
+  async addStructuredResponseHelpfulVote(
+    responseId: string,
+    userId: string,
+    createdAt: Date,
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO community_structured_response_votes (
+         response_id, user_id, vote_type, created_at
+       )
+       VALUES ($1, $2, 'HELPFUL'::phase06_structured_response_vote_type, $3)
+       ON CONFLICT (response_id, user_id) DO NOTHING`,
+      [responseId, userId, createdAt],
+    );
+  }
+
+  async removeStructuredResponseHelpfulVote(
+    responseId: string,
+    userId: string,
+  ): Promise<void> {
+    await this.pool.query(
+      `DELETE FROM community_structured_response_votes
+       WHERE response_id = $1 AND user_id = $2`,
+      [responseId, userId],
+    );
+  }
+
+  async setStructuredResponseAcceptance(
+    input: CreateStructuredResponseAcceptanceRepositoryInput,
+  ): Promise<StructuredResponseAcceptanceRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const parent = await client.query(
+        'SELECT id FROM community_posts WHERE id = $1 FOR UPDATE',
+        [input.parentPostId],
+      );
+      if (!parent.rows[0]) {
+        throw new CorrectionsRepositoryConflictError('Acceptance parent is unavailable');
+      }
+      const current = await client.query(
+        `SELECT *
+         FROM community_structured_response_acceptances
+         WHERE parent_post_id = $1 AND revoked_at IS NULL
+         FOR UPDATE`,
+        [input.parentPostId],
+      );
+      if (current.rows[0] && String(current.rows[0].response_id) === input.responseId) {
+        await client.query('COMMIT');
+        return mapAcceptance(current.rows[0]);
+      }
+      if (current.rows[0]) {
+        await client.query(
+          `UPDATE community_structured_response_acceptances
+           SET revoked_at = $2
+           WHERE id = $1`,
+          [current.rows[0].id, input.acceptedAt],
+        );
+      }
+      const inserted = await client.query(
+        `INSERT INTO community_structured_response_acceptances (
+           parent_post_id, response_id, accepted_by_user_id, accepted_at
+         )
+         VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [input.parentPostId, input.responseId, input.acceptedByUserId, input.acceptedAt],
+      );
+      await client.query('COMMIT');
+      return mapAcceptance(inserted.rows[0]);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      if (error instanceof CorrectionsRepositoryConflictError) throw error;
+      if (isConflict(error)) {
+        throw new CorrectionsRepositoryConflictError('Acceptance conflicts with another active acceptance');
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async revokeStructuredResponseAcceptance(
+    parentPostId: string,
+    _acceptedByUserId: string,
+    revokedAt: Date,
+  ): Promise<StructuredResponseAcceptanceRecord | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'SELECT id FROM community_posts WHERE id = $1 FOR UPDATE',
+        [parentPostId],
+      );
+      const result = await client.query(
+        `UPDATE community_structured_response_acceptances
+         SET revoked_at = $2
+         WHERE parent_post_id = $1 AND revoked_at IS NULL
+         RETURNING *`,
+        [parentPostId, revokedAt],
+      );
+      await client.query('COMMIT');
+      return result.rows[0] ? mapAcceptance(result.rows[0]) : null;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async setStructuredResponseModerationState(
@@ -335,5 +495,16 @@ function mapResponse(row: Record<string, unknown>): StructuredResponseRecord {
     editedAt: row.edited_at ? new Date(String(row.edited_at)) : null,
     deletedAt: row.deleted_at ? new Date(String(row.deleted_at)) : null,
     deletedByUserId: row.deleted_by_user_id ? String(row.deleted_by_user_id) : null,
+  };
+}
+
+function mapAcceptance(row: Record<string, unknown>): StructuredResponseAcceptanceRecord {
+  return {
+    id: String(row.id),
+    parentPostId: String(row.parent_post_id),
+    responseId: String(row.response_id),
+    acceptedByUserId: String(row.accepted_by_user_id),
+    acceptedAt: new Date(String(row.accepted_at)),
+    revokedAt: row.revoked_at ? new Date(String(row.revoked_at)) : null,
   };
 }

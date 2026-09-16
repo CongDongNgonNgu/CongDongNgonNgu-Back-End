@@ -103,6 +103,19 @@ export interface StructuredResponseResponse {
   updatedAt: Date;
   editedAt: Date | null;
   isDeleted: boolean;
+  helpfulCount: number;
+  viewerHelpful: boolean;
+  isAccepted: boolean;
+  acceptedAt: Date | null;
+  canAccept: boolean;
+  canVote: boolean;
+}
+
+export interface StructuredResponseAcceptanceResponse {
+  parentPostId: string;
+  responseId: string | null;
+  acceptedAt: Date | null;
+  revoked: boolean;
 }
 
 export interface StructuredResponseListResponse {
@@ -319,7 +332,7 @@ export class CorrectionsService {
         explanation,
         createdAt: new Date(),
       });
-      const mapped = await this.toStructuredResponse(response);
+      const mapped = await this.toStructuredResponse(response, userId, parent);
       if (!mapped) {
         return correctionsFailure(
           'CORRECTIONS_RESPONSE_UNAVAILABLE',
@@ -360,7 +373,7 @@ export class CorrectionsService {
     });
     const items: StructuredResponseResponse[] = [];
     for (const response of page.items) {
-      const mapped = await this.toStructuredResponse(response);
+      const mapped = await this.toStructuredResponse(response, viewerUserId, parent);
       if (mapped) items.push(mapped);
     }
     const cursorSource = page.items.at(-1);
@@ -384,8 +397,8 @@ export class CorrectionsService {
         404,
       );
     }
-    await this.requireVisibleParent(response.parentPostId, viewerUserId);
-    const mapped = await this.toStructuredResponse(response);
+    const parent = await this.requireVisibleParent(response.parentPostId, viewerUserId);
+    const mapped = await this.toStructuredResponse(response, viewerUserId, parent);
     if (!mapped) {
       return correctionsFailure(
         'CORRECTIONS_RESPONSE_UNAVAILABLE',
@@ -394,6 +407,164 @@ export class CorrectionsService {
       );
     }
     return mapped;
+  }
+
+  async addStructuredResponseHelpfulVote(
+    responseId: string,
+    userId: string,
+  ): Promise<StructuredResponseResponse> {
+    await this.requireActiveUser(userId);
+    const { response, parent } = await this.requireActiveStructuredResponse(responseId, userId);
+    if (response.authorUserId === userId) {
+      return correctionsFailure(
+        'CORRECTIONS_SELF_VOTE',
+        'You cannot mark your own structured response as helpful',
+        403,
+      );
+    }
+    this.consumeRate('structured-response-helpful', userId, { limit: 120, windowMs: 5 * 60 * 1000 });
+    await this.repository.addStructuredResponseHelpfulVote(responseId, userId, new Date());
+    const mapped = await this.toStructuredResponse(response, userId, parent);
+    if (!mapped) {
+      return correctionsFailure(
+        'CORRECTIONS_RESPONSE_UNAVAILABLE',
+        'The structured response is not available',
+        404,
+      );
+    }
+    return mapped;
+  }
+
+  async removeStructuredResponseHelpfulVote(
+    responseId: string,
+    userId: string,
+  ): Promise<StructuredResponseResponse> {
+    await this.requireActiveUser(userId);
+    const { response, parent } = await this.requireActiveStructuredResponse(responseId, userId);
+    if (response.authorUserId === userId) {
+      return correctionsFailure(
+        'CORRECTIONS_SELF_VOTE',
+        'You cannot change a helpful vote on your own structured response',
+        403,
+      );
+    }
+    this.consumeRate('structured-response-helpful', userId, { limit: 120, windowMs: 5 * 60 * 1000 });
+    await this.repository.removeStructuredResponseHelpfulVote(responseId, userId);
+    const mapped = await this.toStructuredResponse(response, userId, parent);
+    if (!mapped) {
+      return correctionsFailure(
+        'CORRECTIONS_RESPONSE_UNAVAILABLE',
+        'The structured response is not available',
+        404,
+      );
+    }
+    return mapped;
+  }
+
+  async acceptStructuredResponse(
+    parentPostId: string,
+    responseId: string,
+    userId: string,
+  ): Promise<StructuredResponseResponse> {
+    await this.requireActiveUser(userId);
+    const parent = await this.requireVisibleParent(parentPostId, userId);
+    if (!isStructuredResponseParent(parent.postType)) {
+      return correctionsFailure(
+        'CORRECTIONS_PARENT_TYPE_INVALID',
+        'The post does not support structured responses',
+        404,
+      );
+    }
+    if (!parent.isOwner) {
+      return correctionsFailure(
+        'CORRECTIONS_ACCEPT_FORBIDDEN',
+        'Only the requester can accept a structured response',
+        403,
+      );
+    }
+    const response = await this.repository.findStructuredResponseById(responseId);
+    if (!response || response.moderationState !== 'ACTIVE' || response.parentPostId !== parentPostId) {
+      return correctionsFailure(
+        'CORRECTIONS_ACCEPT_INVALID',
+        'The structured response is not available for this request',
+        404,
+      );
+    }
+    if (!responseKindMatchesParent(response.responseKind, parent.postType)) {
+      return correctionsFailure(
+        'CORRECTIONS_ACCEPT_INVALID',
+        'The structured response kind does not match the request',
+      );
+    }
+    const author = await this.identities.findUserById(response.authorUserId);
+    if (!isActiveUser(author)) {
+      return correctionsFailure(
+        'CORRECTIONS_ACCEPT_INVALID',
+        'The structured response is not available for this request',
+        404,
+      );
+    }
+    this.consumeRate('structured-response-acceptance', userId, { limit: 60, windowMs: 15 * 60 * 1000 });
+    try {
+      await this.repository.setStructuredResponseAcceptance({
+        parentPostId,
+        responseId,
+        acceptedByUserId: userId,
+        acceptedAt: new Date(),
+      });
+    } catch (error) {
+      if (error instanceof CorrectionsRepositoryConflictError) {
+        return correctionsFailure(
+          'CORRECTIONS_ACCEPTANCE_CONFLICT',
+          'The acceptance changed concurrently; please reload and try again',
+          409,
+        );
+      }
+      throw error;
+    }
+    const mapped = await this.toStructuredResponse(response, userId, parent);
+    if (!mapped) {
+      return correctionsFailure(
+        'CORRECTIONS_RESPONSE_UNAVAILABLE',
+        'The structured response is not available',
+        404,
+      );
+    }
+    return mapped;
+  }
+
+  async revokeStructuredResponseAcceptance(
+    parentPostId: string,
+    userId: string,
+  ): Promise<StructuredResponseAcceptanceResponse> {
+    await this.requireActiveUser(userId);
+    const parent = await this.requireVisibleParent(parentPostId, userId);
+    if (!isStructuredResponseParent(parent.postType)) {
+      return correctionsFailure(
+        'CORRECTIONS_PARENT_TYPE_INVALID',
+        'The post does not support structured responses',
+        404,
+      );
+    }
+    if (!parent.isOwner) {
+      return correctionsFailure(
+        'CORRECTIONS_ACCEPT_FORBIDDEN',
+        'Only the requester can revoke a structured response acceptance',
+        403,
+      );
+    }
+    this.consumeRate('structured-response-acceptance', userId, { limit: 60, windowMs: 15 * 60 * 1000 });
+    const revoked = await this.repository.revokeStructuredResponseAcceptance(
+      parentPostId,
+      userId,
+      new Date(),
+    );
+    return {
+      parentPostId,
+      responseId: revoked?.responseId ?? null,
+      acceptedAt: revoked?.acceptedAt ?? null,
+      revoked: Boolean(revoked),
+    };
   }
 
   private async requireVisibleParent(
@@ -416,8 +587,15 @@ export class CorrectionsService {
 
   private async toStructuredResponse(
     response: StructuredResponseRecord,
+    viewerUserId: string | null = null,
+    parent?: CommunityPostResponse,
   ): Promise<StructuredResponseResponse | null> {
     if (response.moderationState === 'HIDDEN') return null;
+    const readableParent = parent ?? await this.requireVisibleParent(response.parentPostId, viewerUserId);
+    const interaction = await this.repository.getStructuredResponseInteraction(
+      response.id,
+      viewerUserId,
+    );
     const author = await this.identities.findUserById(response.authorUserId);
     const unavailable = response.moderationState === 'DELETED' || !isActiveUser(author);
     if (unavailable) {
@@ -433,6 +611,12 @@ export class CorrectionsService {
         updatedAt: response.updatedAt,
         editedAt: null,
         isDeleted: true,
+        helpfulCount: 0,
+        viewerHelpful: false,
+        isAccepted: false,
+        acceptedAt: null,
+        canAccept: false,
+        canVote: false,
       };
     }
     return {
@@ -447,7 +631,36 @@ export class CorrectionsService {
       updatedAt: response.updatedAt,
       editedAt: response.editedAt,
       isDeleted: false,
+      helpfulCount: interaction.helpfulCount,
+      viewerHelpful: interaction.viewerHelpful,
+      isAccepted: interaction.acceptedResponseId === response.id,
+      acceptedAt: interaction.acceptedResponseId === response.id ? interaction.acceptedAt : null,
+      canAccept: Boolean(viewerUserId && readableParent.isOwner),
+      canVote: Boolean(viewerUserId && response.authorUserId !== viewerUserId),
     };
+  }
+
+  private async requireActiveStructuredResponse(
+    responseId: string,
+    viewerUserId: string,
+  ): Promise<{ response: StructuredResponseRecord; parent: CommunityPostResponse }> {
+    const response = await this.repository.findStructuredResponseById(responseId);
+    if (!response || response.moderationState !== 'ACTIVE') {
+      return correctionsFailure(
+        'CORRECTIONS_RESPONSE_UNAVAILABLE',
+        'The structured response is not available',
+        404,
+      );
+    }
+    const parent = await this.requireVisibleParent(response.parentPostId, viewerUserId);
+    if (!isStructuredResponseParent(parent.postType) || !responseKindMatchesParent(response.responseKind, parent.postType)) {
+      return correctionsFailure(
+        'CORRECTIONS_RESPONSE_UNAVAILABLE',
+        'The structured response is not available',
+        404,
+      );
+    }
+    return { response, parent };
   }
 
   private async requireActiveLanguage(input: unknown): Promise<string> {
@@ -534,6 +747,22 @@ function normalizeLimit(value: number | undefined): number {
 
 function isActiveUser(user: UserRecord | null): user is UserRecord {
   return Boolean(user && user.status === 'ACTIVE' && user.emailVerifiedAt);
+}
+
+function isStructuredResponseParent(
+  postType: CommunityPostType,
+): postType is Extract<CommunityPostType, 'QUESTION' | 'CORRECTION_REQUEST'> {
+  return postType === 'QUESTION' || postType === 'CORRECTION_REQUEST';
+}
+
+function responseKindMatchesParent(
+  responseKind: StructuredResponseKind,
+  postType: CommunityPostType,
+): boolean {
+  return (
+    (responseKind === 'CORRECTION_PROPOSAL' && postType === 'CORRECTION_REQUEST') ||
+    (responseKind === 'QA_ANSWER' && postType === 'QUESTION')
+  );
 }
 
 function phase06Message(code: string): string {

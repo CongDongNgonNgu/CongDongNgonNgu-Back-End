@@ -168,6 +168,160 @@ describe('CorrectionsService', () => {
     expect(second.items[0].id).not.toBe(first.items[0].id);
     expect(second.nextCursor).toBeNull();
   });
+
+  it('keeps structured Helpful votes idempotent and rejects self-votes', async () => {
+    const { service, identities } = createService();
+    const owner = await createUser(identities, 'phase06-helpful-owner@example.com', 'Helpful Owner');
+    const contributor = await createUser(identities, 'phase06-helpful-contributor@example.com', 'Helpful Contributor');
+    const voter = await createUser(identities, 'phase06-helpful-voter@example.com', 'Helpful Voter');
+    const question = await service.createQuestion(owner.id, {
+      languageCode: 'en',
+      content: 'Which explanation is clearer?',
+    });
+    const response = await service.createStructuredResponse(question.id, contributor.id, {
+      responseKind: 'QA_ANSWER',
+      answerText: 'The shorter explanation is clearer.',
+    });
+
+    const first = await service.addStructuredResponseHelpfulVote(response.id, voter.id);
+    const duplicate = await service.addStructuredResponseHelpfulVote(response.id, voter.id);
+    expect(first).toMatchObject({ helpfulCount: 1, viewerHelpful: true, canVote: true });
+    expect(duplicate).toMatchObject({ helpfulCount: 1, viewerHelpful: true });
+
+    await expect(
+      service.addStructuredResponseHelpfulVote(response.id, contributor.id),
+    ).rejects.toMatchObject({ code: 'CORRECTIONS_SELF_VOTE' });
+
+    const removed = await service.removeStructuredResponseHelpfulVote(response.id, voter.id);
+    const removedAgain = await service.removeStructuredResponseHelpfulVote(response.id, voter.id);
+    expect(removed).toMatchObject({ helpfulCount: 0, viewerHelpful: false });
+    expect(removedAgain).toMatchObject({ helpfulCount: 0, viewerHelpful: false });
+  });
+
+  it('allows only the requester to accept, change, and revoke one response', async () => {
+    const { service, identities } = createService();
+    const owner = await createUser(identities, 'phase06-accept-owner@example.com', 'Accept Owner');
+    const contributorA = await createUser(identities, 'phase06-accept-a@example.com', 'Accept A');
+    const contributorB = await createUser(identities, 'phase06-accept-b@example.com', 'Accept B');
+    const otherOwner = await createUser(identities, 'phase06-accept-other-owner@example.com', 'Other Owner');
+    const correction = await service.createCorrectionRequest(owner.id, {
+      languageCode: 'en',
+      originalText: 'She go to school.',
+      correctionIntent: 'grammar',
+    });
+    const otherCorrection = await service.createCorrectionRequest(otherOwner.id, {
+      languageCode: 'en',
+      originalText: 'He walk home.',
+      correctionIntent: 'grammar',
+    });
+    const responseA = await service.createStructuredResponse(correction.post.id, contributorA.id, {
+      responseKind: 'CORRECTION_PROPOSAL',
+      correctedText: 'She goes to school.',
+      explanation: 'Third-person singular takes goes.',
+    });
+    const responseB = await service.createStructuredResponse(correction.post.id, contributorB.id, {
+      responseKind: 'CORRECTION_PROPOSAL',
+      correctedText: 'She attends school.',
+      explanation: 'A natural alternative.',
+    });
+
+    const accepted = await service.acceptStructuredResponse(correction.post.id, responseA.id, owner.id);
+    const acceptedAgain = await service.acceptStructuredResponse(correction.post.id, responseA.id, owner.id);
+    expect(accepted).toMatchObject({ id: responseA.id, isAccepted: true, canAccept: true });
+    expect(acceptedAgain).toMatchObject({ id: responseA.id, isAccepted: true });
+
+    await expect(
+      service.acceptStructuredResponse(correction.post.id, responseA.id, contributorA.id),
+    ).rejects.toMatchObject({ code: 'CORRECTIONS_ACCEPT_FORBIDDEN' });
+    await expect(
+      service.acceptStructuredResponse(otherCorrection.post.id, responseA.id, otherOwner.id),
+    ).rejects.toMatchObject({ code: 'CORRECTIONS_ACCEPT_INVALID' });
+
+    const changed = await service.acceptStructuredResponse(correction.post.id, responseB.id, owner.id);
+    expect(changed).toMatchObject({ id: responseB.id, isAccepted: true });
+    await expect(service.getStructuredResponse(responseA.id, owner.id)).resolves.toMatchObject({
+      id: responseA.id,
+      isAccepted: false,
+      acceptedAt: null,
+    });
+
+    const revoked = await service.revokeStructuredResponseAcceptance(correction.post.id, owner.id);
+    const revokedAgain = await service.revokeStructuredResponseAcceptance(correction.post.id, owner.id);
+    expect(revoked).toMatchObject({ parentPostId: correction.post.id, responseId: responseB.id, revoked: true });
+    expect(revokedAgain).toMatchObject({ parentPostId: correction.post.id, responseId: null, revoked: false });
+    await expect(service.getStructuredResponse(responseB.id, owner.id)).resolves.toMatchObject({
+      id: responseB.id,
+      isAccepted: false,
+      acceptedAt: null,
+    });
+  });
+
+  it('serializes concurrent in-memory acceptance changes to one active response', async () => {
+    const { service, identities } = createService();
+    const owner = await createUser(identities, 'phase06-concurrent-owner@example.com', 'Concurrent Owner');
+    const contributorA = await createUser(identities, 'phase06-concurrent-a@example.com', 'Concurrent A');
+    const contributorB = await createUser(identities, 'phase06-concurrent-b@example.com', 'Concurrent B');
+    const question = await service.createQuestion(owner.id, {
+      languageCode: 'en',
+      content: 'Which answer should be accepted?',
+    });
+    const responseA = await service.createStructuredResponse(question.id, contributorA.id, {
+      responseKind: 'QA_ANSWER',
+      answerText: 'Answer A.',
+    });
+    const responseB = await service.createStructuredResponse(question.id, contributorB.id, {
+      responseKind: 'QA_ANSWER',
+      answerText: 'Answer B.',
+    });
+
+    await Promise.all([
+      service.acceptStructuredResponse(question.id, responseA.id, owner.id),
+      service.acceptStructuredResponse(question.id, responseB.id, owner.id),
+    ]);
+
+    const listed = await service.listStructuredResponses(question.id, {}, owner.id);
+    expect(listed.items.filter((item) => item.isAccepted)).toHaveLength(1);
+  });
+
+  it('does not allow Helpful actions on hidden, deleted, or private-unreadable responses', async () => {
+    const { service, identities, communityRepository, correctionsRepository } = createService();
+    const owner = await createUser(identities, 'phase06-interaction-private-owner@example.com', 'Private Interaction Owner');
+    const contributor = await createUser(identities, 'phase06-interaction-private-contributor@example.com', 'Private Interaction Contributor');
+    const voter = await createUser(identities, 'phase06-interaction-private-voter@example.com', 'Private Interaction Voter');
+    const correction = await service.createCorrectionRequest(owner.id, {
+      languageCode: 'en',
+      originalText: 'Private source.',
+      correctionIntent: 'style',
+    });
+    const response = await service.createStructuredResponse(correction.post.id, contributor.id, {
+      responseKind: 'CORRECTION_PROPOSAL',
+      correctedText: 'Private source!',
+    });
+
+    await communityRepository.updatePost(correction.post.id, {
+      visibility: 'PRIVATE',
+      updatedAt: new Date(),
+      editedAt: new Date(),
+    });
+    await expect(
+      service.addStructuredResponseHelpfulVote(response.id, voter.id),
+    ).rejects.toMatchObject({ code: 'CORRECTIONS_PARENT_UNAVAILABLE' });
+
+    await communityRepository.updatePost(correction.post.id, {
+      visibility: 'PUBLIC',
+      updatedAt: new Date(),
+      editedAt: new Date(),
+    });
+    await correctionsRepository.setStructuredResponseModerationState(response.id, 'HIDDEN', new Date());
+    await expect(
+      service.addStructuredResponseHelpfulVote(response.id, voter.id),
+    ).rejects.toMatchObject({ code: 'CORRECTIONS_RESPONSE_UNAVAILABLE' });
+
+    await correctionsRepository.setStructuredResponseModerationState(response.id, 'DELETED', new Date());
+    await expect(
+      service.removeStructuredResponseHelpfulVote(response.id, voter.id),
+    ).rejects.toMatchObject({ code: 'CORRECTIONS_RESPONSE_UNAVAILABLE' });
+  });
 });
 
 function createService() {

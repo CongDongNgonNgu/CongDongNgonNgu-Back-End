@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -15,6 +17,7 @@ import { success } from '../common/http/api-response';
 import { OptionalAccessTokenGuard } from '../community/optional-access-token.guard';
 import { CorrectionsService } from './corrections.service';
 import {
+  AcceptStructuredResponseDto,
   CreateCorrectionRequestDto,
   CreateQuestionDto,
   CreateStructuredResponseDto,
@@ -121,6 +124,72 @@ export class CorrectionsController {
         request.user?.user.id ?? null,
       ),
       'Structured response',
+    );
+  }
+
+  @Put('structured-responses/:responseId/helpful')
+  @UseGuards(AccessTokenGuard)
+  async addStructuredResponseHelpfulVote(
+    @Param('responseId', new ParseUUIDPipe({ version: '4' })) responseId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.corrections.addStructuredResponseHelpfulVote(
+        responseId,
+        request.user!.user.id,
+      ),
+      'Structured response marked helpful',
+    );
+  }
+
+  @Delete('structured-responses/:responseId/helpful')
+  @UseGuards(AccessTokenGuard)
+  async removeStructuredResponseHelpfulVote(
+    @Param('responseId', new ParseUUIDPipe({ version: '4' })) responseId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.corrections.removeStructuredResponseHelpfulVote(
+        responseId,
+        request.user!.user.id,
+      ),
+      'Structured response helpful mark removed',
+    );
+  }
+
+  @Put('posts/:postId/accepted-response')
+  @UseGuards(AccessTokenGuard)
+  async acceptStructuredResponse(
+    @Param('postId', new ParseUUIDPipe({ version: '4' })) postId: string,
+    @Body() input: AcceptStructuredResponseDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.corrections.acceptStructuredResponse(
+        postId,
+        input.responseId,
+        request.user!.user.id,
+      ),
+      'Structured response accepted',
+    );
+  }
+
+  @Delete('posts/:postId/accepted-response')
+  @UseGuards(AccessTokenGuard)
+  async revokeStructuredResponseAcceptance(
+    @Param('postId', new ParseUUIDPipe({ version: '4' })) postId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.corrections.revokeStructuredResponseAcceptance(
+        postId,
+        request.user!.user.id,
+      ),
+      'Structured response acceptance revoked',
     );
   }
 }

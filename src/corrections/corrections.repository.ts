@@ -15,6 +15,8 @@ import type {
 import type {
   CorrectionIntent,
   CorrectionRequestRecord,
+  StructuredResponseAcceptanceRecord,
+  StructuredResponseInteractionRecord,
   StructuredResponseKind,
   StructuredResponseListQuery,
   StructuredResponseRecord,
@@ -63,6 +65,13 @@ export interface CreateStructuredResponseRepositoryInput {
   createdAt: Date;
 }
 
+export interface CreateStructuredResponseAcceptanceRepositoryInput {
+  parentPostId: string;
+  responseId: string;
+  acceptedByUserId: string;
+  acceptedAt: Date;
+}
+
 export interface CorrectionsRepository {
   createCorrectionRequest(
     input: CreateCorrectionRequestRepositoryInput,
@@ -76,6 +85,27 @@ export interface CorrectionsRepository {
   listStructuredResponses(
     query: StructuredResponseListQuery,
   ): Promise<CommunityListResult<StructuredResponseRecord>>;
+  getStructuredResponseInteraction(
+    responseId: string,
+    viewerUserId: string | null,
+  ): Promise<StructuredResponseInteractionRecord>;
+  addStructuredResponseHelpfulVote(
+    responseId: string,
+    userId: string,
+    createdAt: Date,
+  ): Promise<void>;
+  removeStructuredResponseHelpfulVote(
+    responseId: string,
+    userId: string,
+  ): Promise<void>;
+  setStructuredResponseAcceptance(
+    input: CreateStructuredResponseAcceptanceRepositoryInput,
+  ): Promise<StructuredResponseAcceptanceRecord>;
+  revokeStructuredResponseAcceptance(
+    parentPostId: string,
+    acceptedByUserId: string,
+    revokedAt: Date,
+  ): Promise<StructuredResponseAcceptanceRecord | null>;
   setStructuredResponseModerationState(
     id: string,
     moderationState: CommunityModerationState,
@@ -86,6 +116,8 @@ export interface CorrectionsRepository {
 export class InMemoryCorrectionsRepository implements CorrectionsRepository {
   private readonly correctionRequests = new Map<string, CorrectionRequestRecord>();
   private readonly responses = new Map<string, StructuredResponseRecord>();
+  private readonly helpfulVotes = new Map<string, Date>();
+  private readonly acceptances = new Map<string, StructuredResponseAcceptanceRecord[]>();
 
   constructor(private readonly community: CommunityPersistence) {}
 
@@ -186,6 +218,77 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
     return page(items, query.limit);
   }
 
+  async getStructuredResponseInteraction(
+    responseId: string,
+    viewerUserId: string | null,
+  ): Promise<StructuredResponseInteractionRecord> {
+    let helpfulCount = 0;
+    let viewerHelpful = false;
+    for (const key of this.helpfulVotes.keys()) {
+      const [voteResponseId, voteUserId] = key.split(':');
+      if (voteResponseId !== responseId) continue;
+      helpfulCount += 1;
+      if (viewerUserId && voteUserId === viewerUserId) viewerHelpful = true;
+    }
+    const response = this.responses.get(responseId);
+    const activeAcceptance = response
+      ? this.getActiveAcceptance(response.parentPostId)
+      : null;
+    return {
+      helpfulCount,
+      viewerHelpful,
+      acceptedResponseId: activeAcceptance?.responseId ?? null,
+      acceptedAt: activeAcceptance ? new Date(activeAcceptance.acceptedAt) : null,
+    };
+  }
+
+  async addStructuredResponseHelpfulVote(
+    responseId: string,
+    userId: string,
+    createdAt: Date,
+  ): Promise<void> {
+    const key = responseVoteKey(responseId, userId);
+    if (!this.helpfulVotes.has(key)) this.helpfulVotes.set(key, new Date(createdAt));
+  }
+
+  async removeStructuredResponseHelpfulVote(
+    responseId: string,
+    userId: string,
+  ): Promise<void> {
+    this.helpfulVotes.delete(responseVoteKey(responseId, userId));
+  }
+
+  async setStructuredResponseAcceptance(
+    input: CreateStructuredResponseAcceptanceRepositoryInput,
+  ): Promise<StructuredResponseAcceptanceRecord> {
+    const history = this.acceptances.get(input.parentPostId) ?? [];
+    const active = history.find((acceptance) => acceptance.revokedAt === null);
+    if (active?.responseId === input.responseId) return cloneAcceptance(active);
+    if (active) active.revokedAt = new Date(input.acceptedAt);
+    const created: StructuredResponseAcceptanceRecord = {
+      id: randomUUID(),
+      parentPostId: input.parentPostId,
+      responseId: input.responseId,
+      acceptedByUserId: input.acceptedByUserId,
+      acceptedAt: new Date(input.acceptedAt),
+      revokedAt: null,
+    };
+    history.push(created);
+    this.acceptances.set(input.parentPostId, history);
+    return cloneAcceptance(created);
+  }
+
+  async revokeStructuredResponseAcceptance(
+    parentPostId: string,
+    _acceptedByUserId: string,
+    revokedAt: Date,
+  ): Promise<StructuredResponseAcceptanceRecord | null> {
+    const active = this.getActiveAcceptance(parentPostId);
+    if (!active) return null;
+    active.revokedAt = new Date(revokedAt);
+    return cloneAcceptance(active);
+  }
+
   async setStructuredResponseModerationState(
     id: string,
     moderationState: CommunityModerationState,
@@ -199,6 +302,10 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
       response.deletedAt = new Date(now);
     }
     return cloneResponse(response);
+  }
+
+  private getActiveAcceptance(parentPostId: string): StructuredResponseAcceptanceRecord | null {
+    return this.acceptances.get(parentPostId)?.find((acceptance) => acceptance.revokedAt === null) ?? null;
   }
 }
 
@@ -243,5 +350,19 @@ function cloneResponse(response: StructuredResponseRecord): StructuredResponseRe
     updatedAt: new Date(response.updatedAt),
     editedAt: response.editedAt ? new Date(response.editedAt) : null,
     deletedAt: response.deletedAt ? new Date(response.deletedAt) : null,
+  };
+}
+
+function responseVoteKey(responseId: string, userId: string): string {
+  return responseId + ':' + userId;
+}
+
+function cloneAcceptance(
+  acceptance: StructuredResponseAcceptanceRecord,
+): StructuredResponseAcceptanceRecord {
+  return {
+    ...acceptance,
+    acceptedAt: new Date(acceptance.acceptedAt),
+    revokedAt: acceptance.revokedAt ? new Date(acceptance.revokedAt) : null,
   };
 }

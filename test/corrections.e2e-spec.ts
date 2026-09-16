@@ -163,6 +163,111 @@ describe('corrections and Q&A API', () => {
         expect(body.data.content).toBe('Why is this phrase natural?\n');
       });
   });
+
+  it('supports structured Helpful votes and requester acceptance without identity spoofing', async () => {
+    const owner = await createUser(identity, 'phase06-interactions-owner@example.com', 'Interactions Owner');
+    const contributorA = await createUser(identity, 'phase06-interactions-a@example.com', 'Interactions A');
+    const contributorB = await createUser(identity, 'phase06-interactions-b@example.com', 'Interactions B');
+    const voter = await createUser(identity, 'phase06-interactions-voter@example.com', 'Interactions Voter');
+    const ownerToken = await accessFor(sessions, owner);
+    const contributorAToken = await accessFor(sessions, contributorA);
+    const contributorBToken = await accessFor(sessions, contributorB);
+    const voterToken = await accessFor(sessions, voter);
+
+    const question = await request(app.getHttpServer())
+      .post('/api/v1/community/questions')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .send({
+        languageCode: 'en',
+        content: 'Which answer is more natural?',
+      })
+      .expect(201);
+    const postId = question.body.data.id as string;
+
+    const answerA = await request(app.getHttpServer())
+      .post('/api/v1/community/posts/' + postId + '/structured-responses')
+      .set('Authorization', 'Bearer ' + contributorAToken)
+      .send({
+        responseKind: 'QA_ANSWER',
+        answerText: 'Answer A explains the context.',
+      })
+      .expect(201);
+    const responseAId = answerA.body.data.id as string;
+    const answerB = await request(app.getHttpServer())
+      .post('/api/v1/community/posts/' + postId + '/structured-responses')
+      .set('Authorization', 'Bearer ' + contributorBToken)
+      .send({
+        responseKind: 'QA_ANSWER',
+        answerText: 'Answer B gives a shorter explanation.',
+      })
+      .expect(201);
+    const responseBId = answerB.body.data.id as string;
+
+    await request(app.getHttpServer())
+      .put('/api/v1/community/structured-responses/' + responseAId + '/helpful')
+      .expect(401);
+
+    const helpful = await request(app.getHttpServer())
+      .put('/api/v1/community/structured-responses/' + responseAId + '/helpful')
+      .set('Authorization', 'Bearer ' + voterToken)
+      .expect(200);
+    expect(helpful.body.data).toMatchObject({ helpfulCount: 1, viewerHelpful: true });
+    const duplicateHelpful = await request(app.getHttpServer())
+      .put('/api/v1/community/structured-responses/' + responseAId + '/helpful')
+      .set('Authorization', 'Bearer ' + voterToken)
+      .expect(200);
+    expect(duplicateHelpful.body.data.helpfulCount).toBe(1);
+
+    await request(app.getHttpServer())
+      .put('/api/v1/community/structured-responses/' + responseAId + '/helpful')
+      .set('Authorization', 'Bearer ' + contributorAToken)
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('CORRECTIONS_SELF_VOTE'));
+
+    await request(app.getHttpServer())
+      .put('/api/v1/community/posts/' + postId + '/accepted-response')
+      .set('Authorization', 'Bearer ' + contributorAToken)
+      .send({ responseId: responseAId })
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('CORRECTIONS_ACCEPT_FORBIDDEN'));
+
+    await request(app.getHttpServer())
+      .put('/api/v1/community/posts/' + postId + '/accepted-response')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .send({ responseId: responseAId, acceptedByUserId: contributorAToken })
+      .expect(400);
+
+    const accepted = await request(app.getHttpServer())
+      .put('/api/v1/community/posts/' + postId + '/accepted-response')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .send({ responseId: responseAId })
+      .expect(200);
+    expect(accepted.body.data).toMatchObject({ id: responseAId, isAccepted: true });
+
+    const changed = await request(app.getHttpServer())
+      .put('/api/v1/community/posts/' + postId + '/accepted-response')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .send({ responseId: responseBId })
+      .expect(200);
+    expect(changed.body.data).toMatchObject({ id: responseBId, isAccepted: true });
+
+    const listed = await request(app.getHttpServer())
+      .get('/api/v1/community/posts/' + postId + '/structured-responses')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .expect(200);
+    expect(listed.body.data.items.filter((item: { isAccepted: boolean }) => item.isAccepted)).toHaveLength(1);
+
+    const revoked = await request(app.getHttpServer())
+      .delete('/api/v1/community/posts/' + postId + '/accepted-response')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .expect(200);
+    expect(revoked.body.data).toMatchObject({ parentPostId: postId, responseId: responseBId, revoked: true });
+    const revokedAgain = await request(app.getHttpServer())
+      .delete('/api/v1/community/posts/' + postId + '/accepted-response')
+      .set('Authorization', 'Bearer ' + ownerToken)
+      .expect(200);
+    expect(revokedAgain.body.data).toMatchObject({ parentPostId: postId, responseId: null, revoked: false });
+  });
 });
 
 async function createUser(

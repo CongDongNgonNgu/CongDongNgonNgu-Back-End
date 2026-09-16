@@ -44,6 +44,22 @@ export interface StructuredResponseRecord {
   deletedByUserId: string | null;
 }
 
+export interface StructuredResponseInteractionRecord {
+  helpfulCount: number;
+  viewerHelpful: boolean;
+  acceptedResponseId: string | null;
+  acceptedAt: Date | null;
+}
+
+export interface StructuredResponseAcceptanceRecord {
+  id: string;
+  parentPostId: string;
+  responseId: string;
+  acceptedByUserId: string;
+  acceptedAt: Date;
+  revokedAt: Date | null;
+}
+
 export interface StructuredResponseListQuery {
   parentPostId: string;
   before?: CommunityPostCursor;

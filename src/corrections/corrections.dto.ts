@@ -3,6 +3,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Length,
   Max,
   MaxLength,
@@ -103,4 +104,9 @@ export class ListStructuredResponsesQueryDto {
   @IsString()
   @MaxLength(512)
   cursor?: string;
+}
+
+export class AcceptStructuredResponseDto {
+  @IsUUID('4')
+  responseId!: string;
 }
