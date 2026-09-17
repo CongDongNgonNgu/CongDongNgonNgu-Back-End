@@ -69,7 +69,44 @@ describe('OAuthService', () => {
     ).rejects.toMatchObject({ code: 'AUTH_SESSION_EXPIRED' });
   });
 
-  it('validates state once and reuses an existing provider identity without email merging', async () => {
+  it('signs in an existing Google provider account without creating another user', async () => {
+    const { repository, oauth } = createFixture();
+    const user = await repository.createUser({
+      email: 'existing-google@example.com',
+      displayName: 'Existing Google User',
+      passwordHash: null,
+      status: 'ACTIVE',
+      emailVerifiedAt: new Date(),
+    });
+    await repository.createProviderAccount({
+      userId: user.id,
+      provider: 'google',
+      providerSubject: 'existing-google-subject',
+      providerEmail: user.email,
+      providerDisplayName: user.displayName,
+      providerAvatarUrl: null,
+      emailVerified: true,
+    });
+    const createUser = jest.spyOn(repository, 'createUser');
+    jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ access_token: 'provider-access-token' }))
+      .mockResolvedValueOnce(jsonResponse({
+        sub: 'existing-google-subject',
+        email: user.email,
+        email_verified: true,
+        name: user.displayName,
+      }));
+
+    const start = await oauth.start('google', 'login');
+    const state = new URL(start).searchParams.get('state')!;
+    const result = await oauth.callback('google', { state, code: 'provider-code' }, response());
+
+    expect(result.user.id).toBe(user.id);
+    expect(result.session.accessToken).toBeTruthy();
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it('creates an active user and provider account on first Google login, then reuses both', async () => {
     const { repository, oauth } = createFixture();
     const fetchMock = jest.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(jsonResponse({ access_token: 'provider-access-token' }))
@@ -92,12 +129,15 @@ describe('OAuthService', () => {
     const first = await oauth.callback('google', { state: firstState, code: 'first-code' }, response());
     const firstProvider = await repository.findProviderAccount('google', 'google-subject-1');
     expect(first.user.email).toBe('oauth@example.com');
+    expect(first.user.status).toBe('ACTIVE');
+    expect(first.session.accessToken).toBeTruthy();
     expect(firstProvider?.userId).toBe(first.user.id);
 
     const secondStart = await oauth.start('google', 'login');
     const secondState = new URL(secondStart).searchParams.get('state')!;
     const second = await oauth.callback('google', { state: secondState, code: 'second-code' }, response());
     expect(second.user.id).toBe(first.user.id);
+    expect((await repository.findUserByEmail('oauth@example.com'))?.id).toBe(first.user.id);
     expect((await repository.findProviderAccount('google', 'google-subject-1'))?.providerEmail)
       .toBe('changed@example.com');
 
@@ -112,7 +152,7 @@ describe('OAuthService', () => {
     await repository.createUser({
       email: 'local-owner@example.com',
       displayName: 'Local Owner',
-      passwordHash: null,
+      passwordHash: 'local-password-hash',
       status: 'ACTIVE',
       emailVerifiedAt: new Date(),
     });
@@ -128,6 +168,49 @@ describe('OAuthService', () => {
 
     await expect(oauth.callback('google', { state, code: 'provider-code' }, response()))
       .rejects.toMatchObject({ code: 'AUTH_ACCOUNT_COLLISION', status: 409 });
+    expect(await repository.findProviderAccount('google', 'new-google-subject')).toBeNull();
+  });
+
+  it('rejects a known Google identity when its verified email now belongs to another account', async () => {
+    const { repository, oauth } = createFixture();
+    const googleUser = await repository.createUser({
+      email: 'google-owner@example.com',
+      displayName: 'Google Owner',
+      passwordHash: null,
+      status: 'ACTIVE',
+      emailVerifiedAt: new Date(),
+    });
+    await repository.createProviderAccount({
+      userId: googleUser.id,
+      provider: 'google',
+      providerSubject: 'stable-google-subject',
+      providerEmail: 'google-owner@example.com',
+      providerDisplayName: 'Google Owner',
+      providerAvatarUrl: null,
+      emailVerified: true,
+    });
+    await repository.createUser({
+      email: 'claimed-by-another-account@example.com',
+      displayName: 'Another Account',
+      passwordHash: 'local-password-hash',
+      status: 'ACTIVE',
+      emailVerifiedAt: new Date(),
+    });
+    jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ access_token: 'provider-access-token' }))
+      .mockResolvedValueOnce(jsonResponse({
+        sub: 'stable-google-subject',
+        email: 'claimed-by-another-account@example.com',
+        email_verified: true,
+      }));
+
+    const start = await oauth.start('google', 'login');
+    const state = new URL(start).searchParams.get('state')!;
+
+    await expect(oauth.callback('google', { state, code: 'provider-code' }, response()))
+      .rejects.toMatchObject({ code: 'AUTH_ACCOUNT_COLLISION', status: 409 });
+    expect((await repository.findProviderAccount('google', 'stable-google-subject'))?.providerEmail)
+      .toBe('google-owner@example.com');
   });
 
   it('rejects missing or unverified provider email claims', async () => {

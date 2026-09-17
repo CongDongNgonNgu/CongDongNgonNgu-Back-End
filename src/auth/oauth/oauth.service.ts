@@ -130,17 +130,11 @@ export class OAuthService {
         throw new OAuthFailure('AUTH_ACCOUNT_COLLISION', 409, 'Tài khoản này đã được liên kết với người dùng khác');
       }
       if (existingProvider) {
+        await this.assertEmailAvailable(identity.email!, owner.id);
         await this.repository.updateProviderAccount(existingProvider.id, providerMetadata(identity));
         return owner;
       }
-      const existingEmail = await this.repository.findUserByEmail(normalizeEmail(identity.email!));
-      if (existingEmail && existingEmail.id !== owner.id) {
-        throw new OAuthFailure(
-          'AUTH_ACCOUNT_COLLISION',
-          409,
-          'Email này đã có tài khoản. Hãy đăng nhập vào tài khoản đó rồi liên kết phương thức này',
-        );
-      }
+      await this.assertEmailAvailable(identity.email!, owner.id);
       try {
         await this.repository.createProviderAccount({
           userId: owner.id,
@@ -164,19 +158,13 @@ export class OAuthService {
       if (user.status !== 'ACTIVE') {
         throw new AuthFailure('AUTH_EMAIL_VERIFICATION_REQUIRED', 403, 'Vui lòng xác minh email trước khi đăng nhập');
       }
+      await this.assertEmailAvailable(identity.email!, user.id);
       await this.repository.updateProviderAccount(existingProvider.id, providerMetadata(identity));
       return user;
     }
 
     const email = normalizeEmail(identity.email!);
-    const existingEmail = await this.repository.findUserByEmail(email);
-    if (existingEmail) {
-      throw new OAuthFailure(
-        'AUTH_ACCOUNT_COLLISION',
-        409,
-        'Email này đã có tài khoản. Hãy đăng nhập rồi liên kết Google trong phần tài khoản',
-      );
-    }
+    await this.assertEmailAvailable(email, null);
     let user: UserRecord;
     try {
       user = await this.repository.createUser({
@@ -197,6 +185,17 @@ export class OAuthService {
       throw error;
     }
     return user;
+  }
+
+  private async assertEmailAvailable(email: string, allowedUserId: string | null): Promise<void> {
+    const existingEmail = await this.repository.findUserByEmail(normalizeEmail(email));
+    if (existingEmail && existingEmail.id !== allowedUserId) {
+      throw new OAuthFailure(
+        'AUTH_ACCOUNT_COLLISION',
+        409,
+        'Email này đã có tài khoản. Hãy đăng nhập vào tài khoản đó rồi liên kết phương thức này',
+      );
+    }
   }
 
   private async assertLinkSession(userId: string | null, sessionId: string | null): Promise<void> {
