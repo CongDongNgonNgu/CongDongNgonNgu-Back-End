@@ -14,7 +14,8 @@ const MIGRATIONS_DIR = path.join(__dirname, "migrations");
 const LOCK_ID = 20260910;
 
 function checksum(content) {
-  return crypto.createHash("sha256").update(content).digest("hex");
+  const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return crypto.createHash("sha256").update(normalized).digest("hex");
 }
 
 async function main() {
