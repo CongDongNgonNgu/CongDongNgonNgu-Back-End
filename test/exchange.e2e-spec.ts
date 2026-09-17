@@ -34,6 +34,10 @@ describe('language exchange API', () => {
 
   it('returns conservative defaults and rejects unauthenticated or spoofed mutations', async () => {
     await request(app.getHttpServer())
+      .get('/api/v1/exchange/discovery')
+      .expect(401);
+
+    await request(app.getHttpServer())
       .get('/api/v1/exchange/preferences')
       .set('Authorization', 'Bearer ' + accessTokenA)
       .expect(200)
@@ -124,6 +128,48 @@ describe('language exchange API', () => {
         expect(body.data.availability).toBeUndefined();
         expect(body.data.contact).toBeUndefined();
         expect(body.data.availabilitySummary.windows).toBeUndefined();
+      });
+
+    await request(app.getHttpServer())
+      .patch('/api/v1/profile')
+      .set('Authorization', 'Bearer ' + accessTokenB)
+      .send({
+        languages: [
+          { languageCode: 'en', roles: ['known'], declaredProficiency: 'C1' },
+          { languageCode: 'vi', roles: ['learning'], declaredProficiency: 'A1' },
+        ],
+        goals: ['conversation'],
+        interests: ['music'],
+        timezone: 'Asia/Tokyo',
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .patch('/api/v1/exchange/preferences')
+      .set('Authorization', 'Bearer ' + accessTokenB)
+      .send({
+        exchangeOptIn: true,
+        discoverable: true,
+        offeredLanguageCodes: ['en'],
+        wantedLanguageCodes: ['vi'],
+        preferredPartnerLevels: ['A1'],
+        matchingGoalCodes: ['conversation'],
+        matchingInterestCodes: ['music'],
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/exchange/discovery?offeredLanguageCodes=en&page=1&pageSize=1')
+      .set('Authorization', 'Bearer ' + accessTokenA)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data.pagination).toEqual({ page: 1, pageSize: 1, totalItems: 1, totalPages: 1 });
+        expect(body.data.candidates[0].user).toEqual({ id: userB.id, displayName: userB.displayName });
+        expect(body.data.candidates[0].normalizedScore).toEqual(expect.any(Number));
+        expect(body.data.candidates[0].reasons.join(' ')).toContain('English');
+        expect(body.data.candidates[0].email).toBeUndefined();
+        expect(body.data.candidates[0].availability).toBeUndefined();
+        expect(body.data.candidates[0].timezone).toBeUndefined();
       });
   });
 

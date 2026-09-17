@@ -12,6 +12,13 @@ export type ExchangeVisibilityMode = typeof EXCHANGE_VISIBILITY_MODES[number];
 export const EXCHANGE_CONTACT_PERMISSIONS = ['NO_CONTACT', 'RELATIONSHIP_GATED'] as const;
 export type ExchangeContactPermission = typeof EXCHANGE_CONTACT_PERMISSIONS[number];
 
+export const EXCHANGE_TIMEZONE_COMPATIBILITIES = [
+  'ANY',
+  'SAME_TIMEZONE',
+  'WITHIN_3_HOURS',
+] as const;
+export type ExchangeTimezoneCompatibility = typeof EXCHANGE_TIMEZONE_COMPATIBILITIES[number];
+
 export interface ExchangePreferenceRecord {
   userId: string;
   exchangeOptIn: boolean;
@@ -101,6 +108,41 @@ export interface PublicBuddyProjection {
     visibility: 'SUMMARY';
     hasAvailability: boolean;
   } | null;
+}
+
+export interface ExchangeDiscoveryQuery {
+  offeredLanguageCodes: string[];
+  wantedLanguageCodes: string[];
+  preferredPartnerLevels: ExchangeCefrLevel[];
+  matchingGoalCodes: string[];
+  matchingInterestCodes: string[];
+  timezoneCompatibility: ExchangeTimezoneCompatibility;
+  page: number;
+  pageSize: number;
+}
+
+export interface ExchangeDiscoveryCandidate {
+  user: {
+    id: string;
+    displayName: string;
+  };
+  languages: PublicBuddyLanguageResponse[];
+  goals: string[];
+  interests: string[];
+  normalizedScore: number;
+  reasons: string[];
+}
+
+export interface ExchangeDiscoveryResponse {
+  scope: 'exchange-discovery';
+  candidates: ExchangeDiscoveryCandidate[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+  };
+  filters: ExchangeDiscoveryQuery;
 }
 
 export function hasExchangeOfferRole(roles: readonly LanguageRole[]): boolean {

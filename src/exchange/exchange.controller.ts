@@ -5,13 +5,14 @@ import {
   Param,
   ParseUUIDPipe,
   Patch,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import { AccessTokenGuard, type AuthenticatedRequest } from '../auth/guards/access-token.guard';
 import { SessionService } from '../auth/session/session.service';
 import { success } from '../common/http/api-response';
-import { ExchangePreferenceUpdateDto } from './exchange.dto';
+import { ExchangeDiscoveryQueryDto, ExchangePreferenceUpdateDto } from './exchange.dto';
 import { ExchangeService } from './exchange.service';
 
 @Controller('exchange')
@@ -52,6 +53,18 @@ export class ExchangeController {
     return success(
       await this.exchanges.getPublicBuddyProjection(userId, request.user!.user.id),
       'Exchange buddy preview',
+    );
+  }
+
+  @Get('discovery')
+  @UseGuards(AccessTokenGuard)
+  async discovery(
+    @Query() query: ExchangeDiscoveryQueryDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.exchanges.discover(request.user!.user.id, query),
+      'Exchange discovery',
     );
   }
 }

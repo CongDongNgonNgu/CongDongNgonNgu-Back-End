@@ -14,6 +14,7 @@ export class ExchangeRepositoryConflictError extends Error {
 
 export interface ExchangePreferenceRepository {
   findPreferences(userId: string): Promise<ExchangePreferenceRecord>;
+  listDiscoverableUserIds(): Promise<string[]>;
   savePreferences(
     userId: string,
     input: ExchangePreferenceWriteInput,
@@ -43,6 +44,13 @@ export class InMemoryExchangePreferenceRepository implements ExchangePreferenceR
 
   async findPreferences(userId: string): Promise<ExchangePreferenceRecord> {
     return clonePreferences(this.preferences.get(userId) ?? defaultPreferences(userId));
+  }
+
+  async listDiscoverableUserIds(): Promise<string[]> {
+    return [...this.preferences.values()]
+      .filter((record) => record.exchangeOptIn && record.discoverable)
+      .map((record) => record.userId)
+      .sort((left, right) => left.localeCompare(right));
   }
 
   async savePreferences(

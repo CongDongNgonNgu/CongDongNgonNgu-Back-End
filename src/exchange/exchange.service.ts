@@ -14,6 +14,7 @@ import {
 import {
   EXCHANGE_CEFR_LEVELS,
   EXCHANGE_CONTACT_PERMISSIONS,
+  EXCHANGE_TIMEZONE_COMPATIBILITIES,
   EXCHANGE_VISIBILITY_MODES,
   hasExchangeOfferRole,
   hasExchangeWantedRole,
@@ -24,9 +25,19 @@ import {
   type ExchangePreferencesResponse,
   type ExchangePreferenceWriteInput,
   type ExchangeContactPermission,
+  type ExchangeDiscoveryCandidate,
+  type ExchangeDiscoveryQuery,
+  type ExchangeDiscoveryResponse,
+  type ExchangeTimezoneCompatibility,
   type ExchangeVisibilityMode,
   type PublicBuddyProjection,
 } from './exchange.types';
+import {
+  evaluateMatch,
+  rankMatches,
+  type MatchingParticipant,
+  type MatchingResult,
+} from './matching-engine';
 
 const LANGUAGE_CODE_PATTERN = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/;
 const PROFILE_GOAL_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -45,6 +56,17 @@ export interface ExchangePreferenceUpdateInput {
   timezoneVisibility?: string;
   availabilityVisibility?: string;
   contactPermission?: string;
+}
+
+export interface ExchangeDiscoveryInput {
+  offeredLanguageCodes?: unknown;
+  wantedLanguageCodes?: unknown;
+  preferredPartnerLevels?: unknown;
+  matchingGoalCodes?: unknown;
+  matchingInterestCodes?: unknown;
+  timezoneCompatibility?: unknown;
+  page?: unknown;
+  pageSize?: unknown;
 }
 
 export const EXCHANGE_SAFETY_GATE = 'EXCHANGE_SAFETY_GATE';
@@ -171,6 +193,84 @@ export class ExchangeService {
       availabilitySummary: preferences.availabilityVisibility === 'SUMMARY'
         ? { visibility: 'SUMMARY', hasAvailability: profile.availability.length > 0 }
         : null,
+    };
+  }
+
+  async discover(
+    userId: string,
+    input: ExchangeDiscoveryInput = {},
+  ): Promise<ExchangeDiscoveryResponse> {
+    await this.requireActiveUser(userId);
+    const query = normalizeDiscoveryQuery(input);
+    const [viewerProfile, viewerPreferences] = await Promise.all([
+      this.profiles.findProfile(userId),
+      this.repository.findPreferences(userId),
+    ]);
+    await this.validateStoredPreferences(viewerProfile, viewerPreferences);
+    const viewer: MatchingParticipant = {
+      userId,
+      profile: viewerProfile,
+      preferences: viewerPreferences,
+    };
+    const candidateIds = await this.repository.listDiscoverableUserIds();
+    const matches = (await Promise.all(
+      candidateIds
+        .filter((candidateUserId) => candidateUserId !== userId)
+        .map(async (candidateUserId) => {
+          const candidate = await this.loadDiscoveryParticipant(candidateUserId, userId);
+          if (!candidate) return null;
+          const match = evaluateMatch(viewer, candidate.participant);
+          if (!match || !passesDiscoveryFilters(query, candidate.participant.preferences, match)) {
+            return null;
+          }
+          return {
+            userId: candidateUserId,
+            match,
+            candidate: toDiscoveryCandidate(candidate.user, candidate.participant, match),
+          };
+        }),
+    )).filter((item): item is {
+      userId: string;
+      match: MatchingResult;
+      candidate: ExchangeDiscoveryCandidate;
+    } => item !== null);
+    const ranked = rankMatches(matches);
+    const totalItems = ranked.length;
+    const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / query.pageSize);
+    const start = (query.page - 1) * query.pageSize;
+    return {
+      scope: 'exchange-discovery',
+      candidates: ranked.slice(start, start + query.pageSize).map((item) => item.candidate),
+      pagination: {
+        page: query.page,
+        pageSize: query.pageSize,
+        totalItems,
+        totalPages,
+      },
+      filters: query,
+    };
+  }
+
+  private async loadDiscoveryParticipant(
+    candidateUserId: string,
+    viewerUserId: string,
+  ): Promise<{ user: UserRecord; participant: MatchingParticipant } | null> {
+    const [user, profile, preferences] = await Promise.all([
+      this.identities.findUserById(candidateUserId),
+      this.profiles.findProfile(candidateUserId),
+      this.repository.findPreferences(candidateUserId),
+    ]);
+    if (!isActiveUser(user) || !preferences.exchangeOptIn || !preferences.discoverable) return null;
+    if (preferences.offeredLanguageCodes.length === 0 || preferences.wantedLanguageCodes.length === 0) return null;
+    try {
+      await this.validateStoredPreferences(profile, preferences);
+    } catch {
+      return null;
+    }
+    if (await this.safetyGate.isBlocked(viewerUserId, candidateUserId)) return null;
+    return {
+      user,
+      participant: { userId: candidateUserId, profile, preferences },
     };
   }
 
@@ -434,4 +534,133 @@ function ineligible(reason: ExchangeEligibilityReason): ExchangeEligibilityResul
 
 function exchangeFailure(code: string, message: string, status = 400): ExchangeFailure {
   return new ExchangeFailure(code, status, message);
+}
+
+function normalizeDiscoveryQuery(input: ExchangeDiscoveryInput): ExchangeDiscoveryQuery {
+  const page = normalizePage(input.page, 1, 100, 'page');
+  const pageSize = normalizePage(input.pageSize, 10, 20, 'pageSize');
+  const timezoneCompatibility = normalizeTimezoneCompatibility(input.timezoneCompatibility);
+  return {
+    offeredLanguageCodes: normalizeFilterCodes(input.offeredLanguageCodes, 20, 'EXCHANGE_INVALID_FILTERS'),
+    wantedLanguageCodes: normalizeFilterCodes(input.wantedLanguageCodes, 20, 'EXCHANGE_INVALID_FILTERS'),
+    preferredPartnerLevels: normalizeFilterLevels(input.preferredPartnerLevels),
+    matchingGoalCodes: normalizeFilterCodes(input.matchingGoalCodes, MAX_GOAL_SELECTIONS, 'EXCHANGE_INVALID_FILTERS', PROFILE_GOAL_PATTERN),
+    matchingInterestCodes: normalizeFilterInterests(input.matchingInterestCodes),
+    timezoneCompatibility,
+    page,
+    pageSize,
+  };
+}
+
+function normalizeFilterCodes(
+  input: unknown,
+  max: number,
+  code: string,
+  pattern = LANGUAGE_CODE_PATTERN,
+): string[] {
+  if (input === undefined) return [];
+  if (!Array.isArray(input)) throw exchangeFailure(code, 'Discovery filters are invalid');
+  return normalizeCodes(input as readonly string[], max, code, pattern);
+}
+
+function normalizeFilterLevels(input: unknown): ExchangeCefrLevel[] {
+  if (input === undefined) return [];
+  if (!Array.isArray(input)) throw exchangeFailure('EXCHANGE_INVALID_FILTERS', 'Discovery filters are invalid');
+  try {
+    return normalizeLevels(input as readonly string[]);
+  } catch {
+    throw exchangeFailure('EXCHANGE_INVALID_FILTERS', 'Discovery level filters are invalid');
+  }
+}
+
+function normalizeFilterInterests(input: unknown): string[] {
+  if (input === undefined) return [];
+  if (!Array.isArray(input)) throw exchangeFailure('EXCHANGE_INVALID_FILTERS', 'Discovery filters are invalid');
+  try {
+    return normalizeInterests(input as readonly string[]);
+  } catch {
+    throw exchangeFailure('EXCHANGE_INVALID_FILTERS', 'Discovery interest filters are invalid');
+  }
+}
+
+function normalizeTimezoneCompatibility(input: unknown): ExchangeTimezoneCompatibility {
+  if (input === undefined) return 'ANY';
+  if (typeof input !== 'string') throw exchangeFailure('EXCHANGE_INVALID_FILTERS', 'Discovery timezone filter is invalid');
+  const normalized = input.trim().toUpperCase() as ExchangeTimezoneCompatibility;
+  if (!EXCHANGE_TIMEZONE_COMPATIBILITIES.includes(normalized)) {
+    throw exchangeFailure('EXCHANGE_INVALID_FILTERS', 'Discovery timezone filter is invalid');
+  }
+  return normalized;
+}
+
+function normalizePage(input: unknown, fallback: number, max: number, field: string): number {
+  const value = input === undefined ? fallback : typeof input === 'string' ? Number(input) : input;
+  if (!Number.isInteger(value) || Number(value) < 1 || Number(value) > max) {
+    throw exchangeFailure('EXCHANGE_INVALID_FILTERS', `Discovery ${field} is invalid`);
+  }
+  return Number(value);
+}
+
+function passesDiscoveryFilters(
+  query: ExchangeDiscoveryQuery,
+  preferences: ExchangePreferenceRecord,
+  match: MatchingResult,
+): boolean {
+  if (!overlaps(query.offeredLanguageCodes, preferences.offeredLanguageCodes)) return false;
+  if (!overlaps(query.wantedLanguageCodes, preferences.wantedLanguageCodes)) return false;
+  if (!overlaps(query.preferredPartnerLevels, preferences.preferredPartnerLevels)) return false;
+  if (!overlaps(query.matchingGoalCodes, preferences.matchingGoalCodes)) return false;
+  if (!overlaps(query.matchingInterestCodes, preferences.matchingInterestCodes)) return false;
+  if (query.timezoneCompatibility === 'SAME_TIMEZONE' && match.signals.timezoneOffsetDifferenceMinutes !== 0) {
+    return false;
+  }
+  if (query.timezoneCompatibility === 'WITHIN_3_HOURS' && !match.signals.timezoneCompatible) {
+    return false;
+  }
+  return true;
+}
+
+function overlaps(filter: readonly string[], values: readonly string[]): boolean {
+  if (filter.length === 0) return true;
+  const valueSet = new Set(values);
+  return filter.some((value) => valueSet.has(value));
+}
+
+function toDiscoveryCandidate(
+  user: UserRecord,
+  participant: MatchingParticipant,
+  match: MatchingResult,
+): ExchangeDiscoveryCandidate {
+  const { preferences, profile } = participant;
+  return {
+    user: { id: user.id, displayName: user.displayName },
+    languages: toPublicBuddyLanguages(profile, preferences),
+    goals: [...preferences.matchingGoalCodes],
+    interests: [...preferences.matchingInterestCodes],
+    normalizedScore: match.normalizedScore,
+    reasons: [...match.reasons],
+  };
+}
+
+function toPublicBuddyLanguages(
+  profile: ProfileRecord,
+  preferences: ExchangePreferenceRecord,
+): PublicBuddyProjection['languages'] {
+  const offered = new Set(preferences.offeredLanguageCodes);
+  const wanted = new Set(preferences.wantedLanguageCodes);
+  return profile.languages
+    .filter((language) => language.visibility === 'PUBLIC')
+    .filter((language) => offered.has(language.language.code) || wanted.has(language.language.code))
+    .map((language) => ({
+      code: language.language.code,
+      slug: language.language.slug,
+      nativeName: language.language.nativeName,
+      englishName: language.language.englishName,
+      vietnameseName: language.language.vietnameseName,
+      direction: language.language.direction,
+      offered: offered.has(language.language.code),
+      wanted: wanted.has(language.language.code),
+      declaredProficiency: language.declaredProficiency,
+      assessedProficiency: language.assessedProficiency,
+    }));
 }

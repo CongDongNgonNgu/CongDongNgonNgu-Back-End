@@ -78,6 +78,20 @@ export class PostgresExchangePreferenceRepository implements ExchangePreferenceR
     return record;
   }
 
+  async listDiscoverableUserIds(): Promise<string[]> {
+    const result = await this.pool.query(
+      `SELECT lep.user_id
+         FROM language_exchange_preferences lep
+         INNER JOIN users u ON u.id = lep.user_id
+        WHERE lep.exchange_opt_in = true
+          AND lep.discoverable = true
+          AND u.status = 'ACTIVE'::user_status
+          AND u.email_verified_at IS NOT NULL
+        ORDER BY lep.user_id ASC`,
+    );
+    return result.rows.map((row) => String(row.user_id));
+  }
+
   async savePreferences(
     userId: string,
     input: ExchangePreferenceWriteInput,
