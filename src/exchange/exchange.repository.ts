@@ -20,6 +20,24 @@ export interface ExchangePreferenceRepository {
   ): Promise<ExchangePreferenceRecord>;
 }
 
+export function defaultExchangePreferences(userId: string): ExchangePreferenceRecord {
+  return {
+    userId,
+    exchangeOptIn: false,
+    discoverable: false,
+    offeredLanguageCodes: [],
+    wantedLanguageCodes: [],
+    preferredPartnerLevels: [],
+    matchingGoalCodes: [],
+    matchingInterestCodes: [],
+    timezoneVisibility: 'HIDDEN',
+    availabilityVisibility: 'HIDDEN',
+    contactPermission: 'NO_CONTACT',
+    createdAt: null,
+    updatedAt: null,
+  };
+}
+
 export class InMemoryExchangePreferenceRepository implements ExchangePreferenceRepository {
   private readonly preferences = new Map<string, ExchangePreferenceRecord>();
 
@@ -50,21 +68,7 @@ export class InMemoryExchangePreferenceRepository implements ExchangePreferenceR
 }
 
 function defaultPreferences(userId: string): ExchangePreferenceRecord {
-  return {
-    userId,
-    exchangeOptIn: false,
-    discoverable: false,
-    offeredLanguageCodes: [],
-    wantedLanguageCodes: [],
-    preferredPartnerLevels: [],
-    matchingGoalCodes: [],
-    matchingInterestCodes: [],
-    timezoneVisibility: 'HIDDEN',
-    availabilityVisibility: 'HIDDEN',
-    contactPermission: 'NO_CONTACT',
-    createdAt: null,
-    updatedAt: null,
-  };
+  return defaultExchangePreferences(userId);
 }
 
 function clonePreferences(record: ExchangePreferenceRecord): ExchangePreferenceRecord {
