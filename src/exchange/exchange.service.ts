@@ -7,6 +7,7 @@ import type { ProfileRepository } from '../profile/profile.repository';
 import type { ProfileRecord } from '../profile/profile.types';
 import { ExchangeFailure } from './exchange.errors';
 import {
+  ExchangeRepositoryConflictError,
   EXCHANGE_PREFERENCE_REPOSITORY,
   type ExchangePreferenceRepository,
 } from './exchange.repository';
@@ -85,7 +86,18 @@ export class ExchangeService {
     const current = await this.repository.findPreferences(userId);
     const profile = await this.profiles.findProfile(userId);
     const normalized = await this.normalizePreferences(current, profile, input);
-    return toPreferencesResponse(await this.repository.savePreferences(userId, normalized));
+    try {
+      return toPreferencesResponse(await this.repository.savePreferences(userId, normalized));
+    } catch (error) {
+      if (error instanceof ExchangeRepositoryConflictError) {
+        throw exchangeFailure(
+          'EXCHANGE_PROFILE_CONFLICT',
+          'Exchange preferences changed while saving',
+          409,
+        );
+      }
+      throw error;
+    }
   }
 
   async getEligibility(
