@@ -22,3 +22,6 @@ CREATE TABLE IF NOT EXISTS language_exchange_connections (
 
 CREATE INDEX IF NOT EXISTS language_exchange_connections_requester_idx
   ON language_exchange_connections (requester_id, status);
+
+CREATE INDEX IF NOT EXISTS language_exchange_connections_participant_b_idx
+  ON language_exchange_connections (participant_b_id, status);

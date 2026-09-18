@@ -12,6 +12,10 @@ import {
   ExchangeService,
   NoopExchangeSafetyGate,
 } from './exchange.service';
+import type {
+  ExchangeConnectionEvent,
+  ExchangeConnectionEventSink,
+} from './exchange-connection.types';
 
 describe('ExchangeService', () => {
   it('defaults a new user to opt-out and non-discoverable', async () => {
@@ -256,6 +260,108 @@ describe('ExchangeService', () => {
     });
   });
 
+  it('requires requester exchange readiness without requiring discoverability', async () => {
+    const { identity, profiles, repository, service } = createService();
+    const target = await createNamedUser(identity, 'Eligible target');
+    await updateProfile(profiles, identity, target.id, {
+      languages: [language('en', ['known'], 'C1'), language('vi', ['learning'], 'A1')],
+    });
+    await service.updateOwnPreferences(target.id, {
+      exchangeOptIn: true,
+      discoverable: true,
+      offeredLanguageCodes: ['en'],
+      wantedLanguageCodes: ['vi'],
+    });
+
+    const optedOutRequester = await createNamedUser(identity, 'Opted out requester');
+    await repository.savePreferences(optedOutRequester.id, rawPreferences({ exchangeOptIn: false }));
+    await expect(service.requestConnection(optedOutRequester.id, target.id))
+      .rejects.toMatchObject({ code: 'EXCHANGE_NOT_OPTED_IN' });
+
+    const notReadyRequester = await createNamedUser(identity, 'Not ready requester');
+    await repository.savePreferences(notReadyRequester.id, rawPreferences({ exchangeOptIn: true }));
+    await expect(service.requestConnection(notReadyRequester.id, target.id))
+      .rejects.toMatchObject({ code: 'EXCHANGE_NOT_READY' });
+
+    const privateRequester = await createNamedUser(identity, 'Private requester');
+    await updateProfile(profiles, identity, privateRequester.id, {
+      languages: [language('vi', ['native'], 'NATIVE'), language('en', ['learning'], 'A1')],
+    });
+    await service.updateOwnPreferences(privateRequester.id, {
+      exchangeOptIn: true,
+      discoverable: false,
+      offeredLanguageCodes: ['vi'],
+      wantedLanguageCodes: ['en'],
+    });
+    await expect(service.requestConnection(privateRequester.id, target.id))
+      .resolves.toMatchObject({ state: 'OUTGOING_PENDING' });
+
+    await service.updateOwnPreferences(target.id, { discoverable: false });
+    await expect(service.requestConnection(privateRequester.id, target.id))
+      .rejects.toMatchObject({ code: 'EXCHANGE_PROFILE_UNAVAILABLE' });
+  });
+
+  it('publishes one event per lifecycle transition and suppresses idempotent retries', async () => {
+    const eventSink = new RecordingExchangeConnectionEventSink();
+    const { identity, profiles, service } = createService(eventSink);
+    const requester = await createNamedUser(identity, 'Event requester');
+    const target = await createNamedUser(identity, 'Event target');
+    await prepareExchangePair(identity, profiles, service, requester.id, target.id);
+    const eventTypes = () => eventSink.events.map((event) => event.type);
+
+    await service.requestConnection(requester.id, target.id);
+    expect(eventTypes()).toEqual(['exchange.connection.requested']);
+    await service.requestConnection(requester.id, target.id);
+    expect(eventTypes()).toEqual(['exchange.connection.requested']);
+
+    await service.requestConnection(target.id, requester.id);
+    expect(eventTypes()).toEqual([
+      'exchange.connection.requested',
+      'exchange.connection.connected',
+    ]);
+    expect(eventSink.events[1]).toMatchObject({ requesterUserId: requester.id });
+    await service.acceptConnection(target.id, requester.id);
+    expect(eventTypes()).toHaveLength(2);
+
+    await service.disconnect(requester.id, target.id);
+    expect(eventTypes()).toEqual([
+      'exchange.connection.requested',
+      'exchange.connection.connected',
+      'exchange.connection.disconnected',
+    ]);
+    expect(eventSink.events[2]).toMatchObject({ requesterUserId: requester.id });
+    await service.disconnect(requester.id, target.id);
+    expect(eventTypes()).toHaveLength(3);
+
+    await service.requestConnection(requester.id, target.id);
+    await service.declineConnection(target.id, requester.id);
+    expect(eventTypes()).toEqual([
+      'exchange.connection.requested',
+      'exchange.connection.connected',
+      'exchange.connection.disconnected',
+      'exchange.connection.requested',
+      'exchange.connection.declined',
+    ]);
+    expect(eventSink.events[4]).toMatchObject({ requesterUserId: requester.id });
+    await service.declineConnection(target.id, requester.id);
+    expect(eventTypes()).toHaveLength(5);
+
+    await service.requestConnection(requester.id, target.id);
+    await service.cancelConnection(requester.id, target.id);
+    expect(eventTypes()).toEqual([
+      'exchange.connection.requested',
+      'exchange.connection.connected',
+      'exchange.connection.disconnected',
+      'exchange.connection.requested',
+      'exchange.connection.declined',
+      'exchange.connection.requested',
+      'exchange.connection.cancelled',
+    ]);
+    expect(eventSink.events[6]).toMatchObject({ requesterUserId: requester.id });
+    await service.cancelConnection(requester.id, target.id);
+    expect(eventTypes()).toHaveLength(7);
+  });
+
   it('fails closed for malformed persisted preferences', async () => {
     const identity = new InMemoryIdentityRepository();
     const profiles = new InMemoryProfileRepository();
@@ -441,9 +547,10 @@ describe('ExchangeService', () => {
   });
 });
 
-function createService(): {
+function createService(eventSink: ExchangeConnectionEventSink = new NoopExchangeConnectionEventSink()): {
   identity: InMemoryIdentityRepository;
   profiles: InMemoryProfileRepository;
+  repository: InMemoryExchangePreferenceRepository;
   service: ExchangeService;
 } {
   const identity = new InMemoryIdentityRepository();
@@ -452,14 +559,44 @@ function createService(): {
   return {
     identity,
     profiles,
+    repository,
     service: new ExchangeService(
       repository,
       profiles,
       identity,
       new NoopExchangeSafetyGate(),
       new InMemoryExchangeConnectionRepository(),
-      new NoopExchangeConnectionEventSink(),
+      eventSink,
     ),
+  };
+}
+
+class RecordingExchangeConnectionEventSink implements ExchangeConnectionEventSink {
+  readonly events: ExchangeConnectionEvent[] = [];
+
+  async publish(event: ExchangeConnectionEvent): Promise<void> {
+    this.events.push(event);
+  }
+}
+
+function rawPreferences(overrides: Partial<{
+  exchangeOptIn: boolean;
+  discoverable: boolean;
+  offeredLanguageCodes: string[];
+  wantedLanguageCodes: string[];
+}> = {}) {
+  return {
+    exchangeOptIn: false,
+    discoverable: false,
+    offeredLanguageCodes: [],
+    wantedLanguageCodes: [],
+    preferredPartnerLevels: [],
+    matchingGoalCodes: [],
+    matchingInterestCodes: [],
+    timezoneVisibility: 'HIDDEN' as const,
+    availabilityVisibility: 'HIDDEN' as const,
+    contactPermission: 'NO_CONTACT' as const,
+    ...overrides,
   };
 }
 

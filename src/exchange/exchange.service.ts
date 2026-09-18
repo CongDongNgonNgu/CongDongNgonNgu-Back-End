@@ -216,6 +216,7 @@ export class ExchangeService {
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(requesterUserId);
     this.assertDifferentUsers(requesterUserId, targetUserId);
+    await this.requireRequestParticipant(requesterUserId);
     const eligibility = await this.getEligibility(targetUserId, requesterUserId);
     if (!eligibility.eligible) {
       throw new ExchangeFailure('EXCHANGE_PROFILE_UNAVAILABLE', 404, 'Buddy profile was not found');
@@ -500,6 +501,24 @@ export class ExchangeService {
       throw exchangeFailure('EXCHANGE_USER_NOT_FOUND', 'Exchange preferences were not found', 404);
     }
     return user;
+  }
+
+  private async requireRequestParticipant(userId: string): Promise<void> {
+    const [profile, preferences] = await Promise.all([
+      this.profiles.findProfile(userId),
+      this.repository.findPreferences(userId),
+    ]);
+    if (preferences.exchangeOptIn !== true) {
+      throw exchangeFailure('EXCHANGE_NOT_OPTED_IN', 'Exchange opt-in is required to request a connection', 403);
+    }
+    try {
+      await this.validateStoredPreferences(profile, preferences);
+    } catch {
+      throw exchangeFailure('EXCHANGE_INVALID_STATE', 'Exchange preferences are invalid');
+    }
+    if (preferences.offeredLanguageCodes.length === 0 || preferences.wantedLanguageCodes.length === 0) {
+      throw exchangeFailure('EXCHANGE_NOT_READY', 'Exchange requires an offered and wanted language');
+    }
   }
 
   private async getRelationshipResponse(

@@ -7,6 +7,8 @@ import { configureApp } from '../src/app.setup';
 import { SessionService } from '../src/auth/session/session.service';
 import { IDENTITY_REPOSITORY } from '../src/identity/identity.module';
 import type { IdentityRepository } from '../src/identity/identity.repository';
+import { EXCHANGE_CONNECTION_REPOSITORY } from '../src/exchange/exchange-connection.repository';
+import type { ExchangeConnectionRepository } from '../src/exchange/exchange-connection.repository';
 
 describe('language exchange API', () => {
   let app: INestApplication;
@@ -249,6 +251,12 @@ describe('language exchange API', () => {
       .expect(200)
       .expect(({ body }) => expect(body.data.state).toBe('CONNECTED'));
 
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userB.id + '/disconnect')
+      .set('Authorization', 'Bearer ' + accessTokenA)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('NONE'));
+
     const crossing = await Promise.all([
       request(app.getHttpServer())
         .post('/api/v1/exchange/relationships/' + userB.id + '/request')
@@ -258,9 +266,33 @@ describe('language exchange API', () => {
         .set('Authorization', 'Bearer ' + accessTokenB),
     ]);
     expect(crossing.map((response) => response.status)).toEqual([200, 200]);
+    await Promise.all([
+      request(app.getHttpServer())
+        .get('/api/v1/exchange/relationships/' + userB.id)
+        .set('Authorization', 'Bearer ' + accessTokenA)
+        .expect(200)
+        .expect(({ body }) => expect(body.data.state).toBe('CONNECTED')),
+      request(app.getHttpServer())
+        .get('/api/v1/exchange/relationships/' + userA.id)
+        .set('Authorization', 'Bearer ' + accessTokenB)
+        .expect(200)
+        .expect(({ body }) => expect(body.data.state).toBe('CONNECTED')),
+    ]);
+
+    const relationshipRepository = app.get<ExchangeConnectionRepository>(EXCHANGE_CONNECTION_REPOSITORY);
+    const canonicalRelationship = await relationshipRepository.findRelationship(userA.id, userB.id);
+    expect(canonicalRelationship).toMatchObject({ status: 'CONNECTED' });
+    expect(canonicalRelationship?.participantAId).toBe([userA.id, userB.id].sort()[0]);
+    expect(canonicalRelationship?.participantBId).toBe([userA.id, userB.id].sort()[1]);
+
     await request(app.getHttpServer())
-      .get('/api/v1/exchange/relationships/' + userB.id)
+      .post('/api/v1/exchange/relationships/' + userB.id + '/request')
       .set('Authorization', 'Bearer ' + accessTokenA)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('CONNECTED'));
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userA.id + '/request')
+      .set('Authorization', 'Bearer ' + accessTokenB)
       .expect(200)
       .expect(({ body }) => expect(body.data.state).toBe('CONNECTED'));
 
