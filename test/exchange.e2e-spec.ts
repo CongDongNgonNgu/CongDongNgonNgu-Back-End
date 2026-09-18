@@ -13,8 +13,10 @@ describe('language exchange API', () => {
   let identity: IdentityRepository;
   let userA: Awaited<ReturnType<typeof createUser>>;
   let userB: Awaited<ReturnType<typeof createUser>>;
+  let userC: Awaited<ReturnType<typeof createUser>>;
   let accessTokenA: string;
   let accessTokenB: string;
+  let accessTokenC: string;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -24,8 +26,10 @@ describe('language exchange API', () => {
     identity = app.get<IdentityRepository>(IDENTITY_REPOSITORY);
     userA = await createUser(identity, 'exchange-api-a@example.com', 'Exchange API A');
     userB = await createUser(identity, 'exchange-api-b@example.com', 'Exchange API B');
+    userC = await createUser(identity, 'exchange-api-c@example.com', 'Exchange API C');
     accessTokenA = (await app.get(SessionService).issue(userA, response())).accessToken;
     accessTokenB = (await app.get(SessionService).issue(userB, response())).accessToken;
+    accessTokenC = (await app.get(SessionService).issue(userC, response())).accessToken;
   });
 
   afterAll(async () => {
@@ -117,7 +121,7 @@ describe('language exchange API', () => {
         expect(body.data.interests).toEqual(['music']);
         expect(body.data.timezoneSummary).toEqual({
           visibility: 'SUMMARY',
-          identifier: 'Asia/Ho_Chi_Minh',
+          hasTimezone: true,
         });
         expect(body.data.availabilitySummary).toEqual({
           visibility: 'SUMMARY',
@@ -128,6 +132,7 @@ describe('language exchange API', () => {
         expect(body.data.availability).toBeUndefined();
         expect(body.data.contact).toBeUndefined();
         expect(body.data.availabilitySummary.windows).toBeUndefined();
+        expect(body.data.relationship).toMatchObject({ state: 'NONE', canRequest: true });
       });
 
     await request(app.getHttpServer())
@@ -171,6 +176,99 @@ describe('language exchange API', () => {
         expect(body.data.candidates[0].availability).toBeUndefined();
         expect(body.data.candidates[0].timezone).toBeUndefined();
       });
+  });
+
+  it('enforces the connection lifecycle, idempotency, and actor boundaries', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/exchange/relationships/' + userB.id)
+      .set('Authorization', 'Bearer ' + accessTokenA)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'NONE', canRequest: true }));
+
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userB.id + '/request')
+      .set('Authorization', 'Bearer ' + accessTokenA)
+      .send({ userId: userC.id })
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'OUTGOING_PENDING' }));
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userB.id + '/request')
+      .set('Authorization', 'Bearer ' + accessTokenA)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'OUTGOING_PENDING' }));
+
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userB.id + '/accept')
+      .set('Authorization', 'Bearer ' + accessTokenC)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'NONE' }));
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userB.id + '/accept')
+      .set('Authorization', 'Bearer ' + accessTokenA)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('EXCHANGE_CONNECTION_ACTION_INVALID'));
+    await request(app.getHttpServer())
+      .get('/api/v1/exchange/relationships/' + userA.id)
+      .set('Authorization', 'Bearer ' + accessTokenB)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'INCOMING_PENDING' }));
+
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userA.id + '/decline')
+      .set('Authorization', 'Bearer ' + accessTokenB)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'NONE' }));
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userA.id + '/decline')
+      .set('Authorization', 'Bearer ' + accessTokenB)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'NONE' }));
+
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userA.id + '/request')
+      .set('Authorization', 'Bearer ' + accessTokenB)
+      .expect(200);
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userA.id + '/cancel')
+      .set('Authorization', 'Bearer ' + accessTokenB)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'NONE' }));
+
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userA.id + '/request')
+      .set('Authorization', 'Bearer ' + accessTokenB)
+      .expect(200);
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userB.id + '/accept')
+      .set('Authorization', 'Bearer ' + accessTokenA)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'CONNECTED', canDisconnect: true }));
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userB.id + '/accept')
+      .set('Authorization', 'Bearer ' + accessTokenA)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('CONNECTED'));
+
+    const crossing = await Promise.all([
+      request(app.getHttpServer())
+        .post('/api/v1/exchange/relationships/' + userB.id + '/request')
+        .set('Authorization', 'Bearer ' + accessTokenA),
+      request(app.getHttpServer())
+        .post('/api/v1/exchange/relationships/' + userA.id + '/request')
+        .set('Authorization', 'Bearer ' + accessTokenB),
+    ]);
+    expect(crossing.map((response) => response.status)).toEqual([200, 200]);
+    await request(app.getHttpServer())
+      .get('/api/v1/exchange/relationships/' + userB.id)
+      .set('Authorization', 'Bearer ' + accessTokenA)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('CONNECTED'));
+
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userB.id + '/disconnect')
+      .set('Authorization', 'Bearer ' + accessTokenA)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('NONE'));
   });
 
   it('makes opt-out ineligible, isolates users, and enforces cookie-backed CSRF', async () => {

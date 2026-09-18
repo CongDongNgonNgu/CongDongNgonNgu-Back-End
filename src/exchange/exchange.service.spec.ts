@@ -2,6 +2,8 @@ import { describe, expect, it } from '@jest/globals';
 import { InMemoryIdentityRepository } from '../identity/identity.repository';
 import { InMemoryProfileRepository } from '../profile/profile.repository';
 import { ProfileService } from '../profile/profile.service';
+import { NoopExchangeConnectionEventSink } from './exchange-connection.events';
+import { InMemoryExchangeConnectionRepository } from './exchange-connection.repository';
 import {
   InMemoryExchangePreferenceRepository,
   type ExchangePreferenceRepository,
@@ -178,7 +180,7 @@ describe('ExchangeService', () => {
     expect(projection.interests).toEqual(['music']);
     expect(projection.timezoneSummary).toEqual({
       visibility: 'SUMMARY',
-      identifier: 'Asia/Ho_Chi_Minh',
+      hasTimezone: true,
     });
     expect(projection.availabilitySummary).toEqual({
       visibility: 'SUMMARY',
@@ -188,6 +190,70 @@ describe('ExchangeService', () => {
     expect(projection).not.toHaveProperty('contact');
     expect(projection).not.toHaveProperty('availability');
     expect(projection.availabilitySummary).not.toHaveProperty('windows');
+    expect(projection.relationship).toMatchObject({ state: 'NONE', canRequest: true });
+  });
+
+  it('enforces the relationship lifecycle and rejects self or ineligible requests', async () => {
+    const { identity, profiles, service } = createService();
+    const requester = await createNamedUser(identity, 'Requester');
+    const target = await createNamedUser(identity, 'Target');
+    await prepareExchangePair(identity, profiles, service, requester.id, target.id);
+
+    await expect(service.getRelationship(requester.id, target.id)).resolves.toMatchObject({
+      state: 'NONE',
+      canRequest: true,
+    });
+    await expect(service.requestConnection(requester.id, requester.id))
+      .rejects.toMatchObject({ code: 'EXCHANGE_SELF_CONNECTION' });
+
+    const outgoing = await service.requestConnection(requester.id, target.id);
+    expect(outgoing).toMatchObject({ state: 'OUTGOING_PENDING', canCancel: true });
+    await expect(service.requestConnection(requester.id, target.id)).resolves.toMatchObject({
+      state: 'OUTGOING_PENDING',
+    });
+    await expect(service.getRelationship(target.id, requester.id)).resolves.toMatchObject({
+      state: 'INCOMING_PENDING',
+      canAccept: true,
+      canDecline: true,
+    });
+
+    await expect(service.cancelConnection(target.id, requester.id))
+      .rejects.toMatchObject({ code: 'EXCHANGE_CONNECTION_ACTION_INVALID' });
+    await expect(service.declineConnection(target.id, requester.id)).resolves.toMatchObject({ state: 'NONE' });
+
+    await service.requestConnection(requester.id, target.id);
+    await expect(service.cancelConnection(requester.id, target.id)).resolves.toMatchObject({ state: 'NONE' });
+    await service.requestConnection(requester.id, target.id);
+    await expect(service.acceptConnection(target.id, requester.id)).resolves.toMatchObject({
+      state: 'CONNECTED',
+      canDisconnect: true,
+    });
+    await expect(service.acceptConnection(target.id, requester.id)).resolves.toMatchObject({ state: 'CONNECTED' });
+    await expect(service.disconnect(requester.id, target.id)).resolves.toMatchObject({ state: 'NONE' });
+
+    const inactive = await createNamedUser(identity, 'Inactive');
+    await identity.updateUser(inactive.id, { status: 'DISABLED' });
+    await expect(service.requestConnection(requester.id, inactive.id))
+      .rejects.toMatchObject({ code: 'EXCHANGE_PROFILE_UNAVAILABLE' });
+  });
+
+  it('converges reciprocal requests to one connected relationship', async () => {
+    const { identity, profiles, service } = createService();
+    const first = await createNamedUser(identity, 'First');
+    const second = await createNamedUser(identity, 'Second');
+    await prepareExchangePair(identity, profiles, service, first.id, second.id);
+
+    const results = await Promise.all([
+      service.requestConnection(first.id, second.id),
+      service.requestConnection(second.id, first.id),
+    ]);
+
+    expect(results.map((result) => result.state)).toContain('OUTGOING_PENDING');
+    expect(results.map((result) => result.state)).toContain('CONNECTED');
+    await expect(service.getRelationship(first.id, second.id)).resolves.toMatchObject({
+      state: 'CONNECTED',
+      canDisconnect: true,
+    });
   });
 
   it('fails closed for malformed persisted preferences', async () => {
@@ -220,6 +286,8 @@ describe('ExchangeService', () => {
       profiles,
       identity,
       new NoopExchangeSafetyGate(),
+      new InMemoryExchangeConnectionRepository(),
+      new NoopExchangeConnectionEventSink(),
     );
 
     await expect(service.getEligibility(user.id)).resolves.toMatchObject({ eligible: false });
@@ -389,6 +457,8 @@ function createService(): {
       profiles,
       identity,
       new NoopExchangeSafetyGate(),
+      new InMemoryExchangeConnectionRepository(),
+      new NoopExchangeConnectionEventSink(),
     ),
   };
 }
@@ -432,6 +502,33 @@ async function createDiscoverableCandidate(
     wantedLanguageCodes: ['vi'],
   });
   return user;
+}
+
+async function prepareExchangePair(
+  identity: InMemoryIdentityRepository,
+  profiles: InMemoryProfileRepository,
+  service: ExchangeService,
+  firstUserId: string,
+  secondUserId: string,
+) {
+  await updateProfile(profiles, identity, firstUserId, {
+    languages: [language('vi', ['native'], 'NATIVE'), language('en', ['learning'], 'A1')],
+  });
+  await updateProfile(profiles, identity, secondUserId, {
+    languages: [language('en', ['known'], 'C1'), language('vi', ['learning'], 'A1')],
+  });
+  await service.updateOwnPreferences(firstUserId, {
+    exchangeOptIn: true,
+    discoverable: true,
+    offeredLanguageCodes: ['vi'],
+    wantedLanguageCodes: ['en'],
+  });
+  await service.updateOwnPreferences(secondUserId, {
+    exchangeOptIn: true,
+    discoverable: true,
+    offeredLanguageCodes: ['en'],
+    wantedLanguageCodes: ['vi'],
+  });
 }
 
 async function updateProfile(

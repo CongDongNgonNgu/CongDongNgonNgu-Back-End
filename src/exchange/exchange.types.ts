@@ -2,6 +2,7 @@ import type {
   DeclaredLanguageProficiency,
   LanguageRole,
 } from '../profile/profile.types';
+import type { ExchangeRelationshipResponse } from './exchange-connection.types';
 
 export const EXCHANGE_CEFR_LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'] as const;
 export type ExchangeCefrLevel = typeof EXCHANGE_CEFR_LEVELS[number];
@@ -102,12 +103,13 @@ export interface PublicBuddyProjection {
   interests: string[];
   timezoneSummary: {
     visibility: 'SUMMARY';
-    identifier: string;
+    hasTimezone: boolean;
   } | null;
   availabilitySummary: {
     visibility: 'SUMMARY';
     hasAvailability: boolean;
   } | null;
+  relationship: ExchangeRelationshipResponse;
 }
 
 export interface ExchangeDiscoveryQuery {

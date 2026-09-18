@@ -2,9 +2,12 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   Query,
   Req,
   UseGuards,
@@ -53,6 +56,88 @@ export class ExchangeController {
     return success(
       await this.exchanges.getPublicBuddyProjection(userId, request.user!.user.id),
       'Exchange buddy preview',
+    );
+  }
+
+  @Get('relationships/:userId')
+  @UseGuards(AccessTokenGuard)
+  async relationship(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.exchanges.getRelationship(request.user!.user.id, userId),
+      'Exchange relationship',
+    );
+  }
+
+  @Post('relationships/:userId/request')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AccessTokenGuard)
+  async requestConnection(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.exchanges.requestConnection(request.user!.user.id, userId),
+      'Exchange connection requested',
+    );
+  }
+
+  @Post('relationships/:userId/accept')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AccessTokenGuard)
+  async acceptConnection(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.exchanges.acceptConnection(request.user!.user.id, userId),
+      'Exchange connection accepted',
+    );
+  }
+
+  @Post('relationships/:userId/decline')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AccessTokenGuard)
+  async declineConnection(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.exchanges.declineConnection(request.user!.user.id, userId),
+      'Exchange connection declined',
+    );
+  }
+
+  @Post('relationships/:userId/cancel')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AccessTokenGuard)
+  async cancelConnection(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.exchanges.cancelConnection(request.user!.user.id, userId),
+      'Exchange connection cancelled',
+    );
+  }
+
+  @Post('relationships/:userId/disconnect')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AccessTokenGuard)
+  async disconnect(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.exchanges.disconnect(request.user!.user.id, userId),
+      'Exchange connection disconnected',
     );
   }
 

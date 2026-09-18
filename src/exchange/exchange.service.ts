@@ -12,6 +12,21 @@ import {
   type ExchangePreferenceRepository,
 } from './exchange.repository';
 import {
+  EXCHANGE_CONNECTION_REPOSITORY,
+  type ExchangeConnectionRepository,
+} from './exchange-connection.repository';
+import {
+  EXCHANGE_CONNECTION_EVENT_SINK,
+} from './exchange-connection.events';
+import type {
+  ExchangeConnectionEvent,
+  ExchangeConnectionEventSink,
+  ExchangeConnectionMutationResult,
+  ExchangeConnectionRecord,
+  ExchangeConnectionMutationOutcome,
+  ExchangeRelationshipResponse,
+} from './exchange-connection.types';
+import {
   EXCHANGE_CEFR_LEVELS,
   EXCHANGE_CONTACT_PERMISSIONS,
   EXCHANGE_TIMEZONE_COMPATIBILITIES,
@@ -93,6 +108,10 @@ export class ExchangeService {
     private readonly identities: IdentityRepository,
     @Inject(EXCHANGE_SAFETY_GATE)
     private readonly safetyGate: ExchangeSafetyGate,
+    @Inject(EXCHANGE_CONNECTION_REPOSITORY)
+    private readonly connections: ExchangeConnectionRepository,
+    @Inject(EXCHANGE_CONNECTION_EVENT_SINK)
+    private readonly connectionEvents: ExchangeConnectionEventSink,
   ) {}
 
   async getOwnPreferences(userId: string): Promise<ExchangePreferencesResponse> {
@@ -168,32 +187,85 @@ export class ExchangeService {
     return {
       scope: 'exchange-buddy',
       user: { id: user.id, displayName: user.displayName },
-      languages: profile.languages
-        .filter((language) => (
-          preferences.offeredLanguageCodes.includes(language.language.code) ||
-          preferences.wantedLanguageCodes.includes(language.language.code)
-        ))
-        .map((language) => ({
-          code: language.language.code,
-          slug: language.language.slug,
-          nativeName: language.language.nativeName,
-          englishName: language.language.englishName,
-          vietnameseName: language.language.vietnameseName,
-          direction: language.language.direction,
-          offered: preferences.offeredLanguageCodes.includes(language.language.code),
-          wanted: preferences.wantedLanguageCodes.includes(language.language.code),
-          declaredProficiency: language.declaredProficiency,
-          assessedProficiency: language.assessedProficiency,
-        })),
+      languages: toPublicBuddyLanguages(profile, preferences),
       goals: [...preferences.matchingGoalCodes],
       interests: [...preferences.matchingInterestCodes],
       timezoneSummary: preferences.timezoneVisibility === 'SUMMARY' && profile.timezone
-        ? { visibility: 'SUMMARY', identifier: profile.timezone }
+        ? { visibility: 'SUMMARY', hasTimezone: true }
         : null,
       availabilitySummary: preferences.availabilityVisibility === 'SUMMARY'
         ? { visibility: 'SUMMARY', hasAvailability: profile.availability.length > 0 }
         : null,
+      relationship: await this.getRelationshipResponse(viewerUserId, candidateUserId),
     };
+  }
+
+  async getRelationship(
+    viewerUserId: string,
+    targetUserId: string,
+  ): Promise<ExchangeRelationshipResponse> {
+    await this.requireActiveUser(viewerUserId);
+    await this.requireActiveUser(targetUserId);
+    this.assertDifferentUsers(viewerUserId, targetUserId);
+    return this.getRelationshipResponse(viewerUserId, targetUserId);
+  }
+
+  async requestConnection(
+    requesterUserId: string,
+    targetUserId: string,
+  ): Promise<ExchangeRelationshipResponse> {
+    await this.requireActiveUser(requesterUserId);
+    this.assertDifferentUsers(requesterUserId, targetUserId);
+    const eligibility = await this.getEligibility(targetUserId, requesterUserId);
+    if (!eligibility.eligible) {
+      throw new ExchangeFailure('EXCHANGE_PROFILE_UNAVAILABLE', 404, 'Buddy profile was not found');
+    }
+    const result = await this.connections.requestConnection(requesterUserId, targetUserId);
+    return this.completeConnectionMutation(requesterUserId, targetUserId, result);
+  }
+
+  async acceptConnection(
+    actorUserId: string,
+    targetUserId: string,
+  ): Promise<ExchangeRelationshipResponse> {
+    await this.requireActiveUser(actorUserId);
+    await this.requireActiveUser(targetUserId);
+    this.assertDifferentUsers(actorUserId, targetUserId);
+    const result = await this.connections.acceptConnection(actorUserId, targetUserId);
+    return this.completeConnectionMutation(actorUserId, targetUserId, result);
+  }
+
+  async declineConnection(
+    actorUserId: string,
+    targetUserId: string,
+  ): Promise<ExchangeRelationshipResponse> {
+    await this.requireActiveUser(actorUserId);
+    await this.requireActiveUser(targetUserId);
+    this.assertDifferentUsers(actorUserId, targetUserId);
+    const result = await this.connections.declineConnection(actorUserId, targetUserId);
+    return this.completeConnectionMutation(actorUserId, targetUserId, result);
+  }
+
+  async cancelConnection(
+    actorUserId: string,
+    targetUserId: string,
+  ): Promise<ExchangeRelationshipResponse> {
+    await this.requireActiveUser(actorUserId);
+    await this.requireActiveUser(targetUserId);
+    this.assertDifferentUsers(actorUserId, targetUserId);
+    const result = await this.connections.cancelConnection(actorUserId, targetUserId);
+    return this.completeConnectionMutation(actorUserId, targetUserId, result);
+  }
+
+  async disconnect(
+    actorUserId: string,
+    targetUserId: string,
+  ): Promise<ExchangeRelationshipResponse> {
+    await this.requireActiveUser(actorUserId);
+    await this.requireActiveUser(targetUserId);
+    this.assertDifferentUsers(actorUserId, targetUserId);
+    const result = await this.connections.disconnect(actorUserId, targetUserId);
+    return this.completeConnectionMutation(actorUserId, targetUserId, result);
   }
 
   async discover(
@@ -429,6 +501,55 @@ export class ExchangeService {
     }
     return user;
   }
+
+  private async getRelationshipResponse(
+    viewerUserId: string,
+    targetUserId: string,
+  ): Promise<ExchangeRelationshipResponse> {
+    const record = await this.connections.findRelationship(viewerUserId, targetUserId);
+    return toRelationshipResponse(viewerUserId, targetUserId, record);
+  }
+
+  private async completeConnectionMutation(
+    actorUserId: string,
+    targetUserId: string,
+    result: ExchangeConnectionMutationResult,
+  ): Promise<ExchangeRelationshipResponse> {
+    if (result.outcome === 'INVALID_ACTION') {
+      throw new ExchangeFailure(
+        'EXCHANGE_CONNECTION_ACTION_INVALID',
+        409,
+        'This connection action is not available for the current relationship state',
+      );
+    }
+    await this.publishConnectionEvent(actorUserId, targetUserId, result);
+    return toRelationshipResponse(actorUserId, targetUserId, result.record);
+  }
+
+  private async publishConnectionEvent(
+    actorUserId: string,
+    targetUserId: string,
+    result: ExchangeConnectionMutationResult,
+  ): Promise<void> {
+    const eventType = eventTypeForOutcome(result.outcome);
+    const connectionId = result.connectionId ?? result.record?.id;
+    if (!eventType || !connectionId) return;
+    const event: ExchangeConnectionEvent = {
+      type: eventType,
+      connectionId,
+      actorUserId,
+      targetUserId,
+      requesterUserId: result.record?.requesterId ?? actorUserId,
+      occurredAt: new Date().toISOString(),
+    };
+    await this.connectionEvents.publish(event);
+  }
+
+  private assertDifferentUsers(viewerUserId: string, targetUserId: string): void {
+    if (viewerUserId === targetUserId) {
+      throw new ExchangeFailure('EXCHANGE_SELF_CONNECTION', 400, 'You cannot connect with yourself');
+    }
+  }
 }
 
 function isActiveUser(user: UserRecord | null): user is UserRecord {
@@ -663,4 +784,66 @@ function toPublicBuddyLanguages(
       declaredProficiency: language.declaredProficiency,
       assessedProficiency: language.assessedProficiency,
     }));
+}
+
+function toRelationshipResponse(
+  viewerUserId: string,
+  targetUserId: string,
+  record: ExchangeConnectionRecord | null,
+): ExchangeRelationshipResponse {
+  if (!record) {
+    return {
+      scope: 'exchange-relationship',
+      targetUserId,
+      state: 'NONE',
+      canRequest: true,
+      canAccept: false,
+      canDecline: false,
+      canCancel: false,
+      canDisconnect: false,
+    };
+  }
+  if (record.status === 'CONNECTED') {
+    return {
+      scope: 'exchange-relationship',
+      targetUserId,
+      state: 'CONNECTED',
+      canRequest: false,
+      canAccept: false,
+      canDecline: false,
+      canCancel: false,
+      canDisconnect: true,
+    };
+  }
+  const outgoing = record.requesterId === viewerUserId;
+  return {
+    scope: 'exchange-relationship',
+    targetUserId,
+    state: outgoing ? 'OUTGOING_PENDING' : 'INCOMING_PENDING',
+    canRequest: false,
+    canAccept: !outgoing,
+    canDecline: !outgoing,
+    canCancel: outgoing,
+    canDisconnect: false,
+  };
+}
+
+function eventTypeForOutcome(
+  outcome: ExchangeConnectionMutationOutcome,
+): ExchangeConnectionEvent['type'] | null {
+  switch (outcome) {
+    case 'REQUESTED':
+      return 'exchange.connection.requested';
+    case 'CONNECTED':
+    case 'ACCEPTED':
+      return 'exchange.connection.connected';
+    case 'DECLINED':
+      return 'exchange.connection.declined';
+    case 'CANCELLED':
+      return 'exchange.connection.cancelled';
+    case 'DISCONNECTED':
+      return 'exchange.connection.disconnected';
+    default:
+      return null;
+  }
 }
