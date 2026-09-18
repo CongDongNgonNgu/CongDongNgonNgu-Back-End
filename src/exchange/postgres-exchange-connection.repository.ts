@@ -90,7 +90,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
         return { record: current, outcome: 'INVALID_ACTION' as const };
       }
       await client.query('DELETE FROM language_exchange_connections WHERE id = $1', [current.id]);
-      return { record: null, connectionId: current.id, outcome: 'DECLINED' as const };
+      return { record: null, connectionId: current.id, requesterUserId: current.requesterId, outcome: 'DECLINED' as const };
     });
   }
 
@@ -101,7 +101,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
         return { record: current, outcome: 'INVALID_ACTION' as const };
       }
       await client.query('DELETE FROM language_exchange_connections WHERE id = $1', [current.id]);
-      return { record: null, connectionId: current.id, outcome: 'CANCELLED' as const };
+      return { record: null, connectionId: current.id, requesterUserId: current.requesterId, outcome: 'CANCELLED' as const };
     });
   }
 
@@ -112,7 +112,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
         return { record: current, outcome: 'INVALID_ACTION' as const };
       }
       await client.query('DELETE FROM language_exchange_connections WHERE id = $1', [current.id]);
-      return { record: null, connectionId: current.id, outcome: 'DISCONNECTED' as const };
+      return { record: null, connectionId: current.id, requesterUserId: current.requesterId, outcome: 'DISCONNECTED' as const };
     });
   }
 

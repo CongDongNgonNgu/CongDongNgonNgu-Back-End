@@ -34,6 +34,7 @@ export interface ExchangeConnectionMutationResult {
   record: ExchangeConnectionRecord | null;
   outcome: ExchangeConnectionMutationOutcome;
   connectionId?: string;
+  requesterUserId?: string;
 }
 
 export interface ExchangeRelationshipResponse {

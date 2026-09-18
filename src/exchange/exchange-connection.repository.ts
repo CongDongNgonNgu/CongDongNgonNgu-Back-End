@@ -87,7 +87,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
         return { record: cloneRecord(current), outcome: 'INVALID_ACTION' as const };
       }
       this.relationships.delete(key);
-      return { record: null, connectionId: current.id, outcome: 'CANCELLED' as const };
+      return { record: null, connectionId: current.id, requesterUserId: current.requesterId, outcome: 'CANCELLED' as const };
     });
   }
 
@@ -100,7 +100,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
         return { record: cloneRecord(current), outcome: 'INVALID_ACTION' as const };
       }
       this.relationships.delete(key);
-      return { record: null, connectionId: current.id, outcome: 'DISCONNECTED' as const };
+      return { record: null, connectionId: current.id, requesterUserId: current.requesterId, outcome: 'DISCONNECTED' as const };
     });
   }
 
@@ -116,7 +116,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
       return { record: cloneRecord(current), outcome: 'INVALID_ACTION' };
     }
     this.relationships.delete(key);
-    return { record: null, connectionId: current.id, outcome };
+    return { record: null, connectionId: current.id, requesterUserId: current.requesterId, outcome };
   }
 
   private withLock<T>(operation: () => T | Promise<T>): Promise<T> {

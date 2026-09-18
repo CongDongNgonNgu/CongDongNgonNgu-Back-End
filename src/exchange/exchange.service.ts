@@ -539,7 +539,7 @@ export class ExchangeService {
       connectionId,
       actorUserId,
       targetUserId,
-      requesterUserId: result.record?.requesterId ?? actorUserId,
+      requesterUserId: result.requesterUserId ?? result.record?.requesterId ?? actorUserId,
       occurredAt: new Date().toISOString(),
     };
     await this.connectionEvents.publish(event);
