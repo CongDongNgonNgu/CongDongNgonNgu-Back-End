@@ -3,6 +3,7 @@ import type {
   LanguageRole,
 } from '../profile/profile.types';
 import type { ExchangeRelationshipResponse } from './exchange-connection.types';
+import type { ExchangeReportCategory } from './exchange-safety.types';
 
 export const EXCHANGE_CEFR_LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'] as const;
 export type ExchangeCefrLevel = typeof EXCHANGE_CEFR_LEVELS[number];
@@ -12,6 +13,43 @@ export type ExchangeVisibilityMode = typeof EXCHANGE_VISIBILITY_MODES[number];
 
 export const EXCHANGE_CONTACT_PERMISSIONS = ['NO_CONTACT', 'RELATIONSHIP_GATED'] as const;
 export type ExchangeContactPermission = typeof EXCHANGE_CONTACT_PERMISSIONS[number];
+
+export const EXCHANGE_CONTACT_PERMISSION_DECISIONS = [
+  'ALLOWED',
+  'DENIED_NOT_CONNECTED',
+  'DENIED_BLOCKED',
+  'DENIED_PERMISSION',
+  'DENIED_INELIGIBLE',
+] as const;
+export type ExchangeContactPermissionDecision = typeof EXCHANGE_CONTACT_PERMISSION_DECISIONS[number];
+
+export interface ExchangeContactPermissionResponse {
+  scope: 'exchange-contact-permission';
+  targetUserId: string;
+  decision: ExchangeContactPermissionDecision;
+}
+
+export interface ExchangeBlockStatusResponse {
+  scope: 'exchange-block-status';
+  targetUserId: string;
+  blockedByMe: boolean;
+}
+
+export interface ExchangeBlockResponse {
+  scope: 'exchange-block';
+  targetUserId: string;
+  blocked: boolean;
+}
+
+export interface ExchangeReportResponse {
+  scope: 'exchange-report';
+  submitted: true;
+}
+
+export interface ExchangeReportSubmissionInput {
+  category: ExchangeReportCategory | string;
+  context?: string;
+}
 
 export const EXCHANGE_TIMEZONE_COMPATIBILITIES = [
   'ANY',

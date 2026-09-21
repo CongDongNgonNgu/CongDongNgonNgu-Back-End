@@ -28,6 +28,8 @@ export type ExchangeConnectionMutationOutcome =
   | 'DECLINED'
   | 'CANCELLED'
   | 'DISCONNECTED'
+  | 'SAFETY_BLOCKED'
+  | 'SAFETY_REMOVED'
   | 'INVALID_ACTION';
 
 export interface ExchangeConnectionMutationResult {
@@ -53,7 +55,8 @@ export type ExchangeConnectionEventType =
   | 'exchange.connection.connected'
   | 'exchange.connection.declined'
   | 'exchange.connection.cancelled'
-  | 'exchange.connection.disconnected';
+  | 'exchange.connection.disconnected'
+  | 'exchange.connection.safety_removed';
 
 export interface ExchangeConnectionEvent {
   type: ExchangeConnectionEventType;

@@ -3,6 +3,7 @@ import type {
   ExchangeConnectionMutationResult,
   ExchangeConnectionRecord,
 } from './exchange-connection.types';
+import type { ExchangeSafetyReadStore } from './exchange-safety.types';
 
 export const EXCHANGE_CONNECTION_REPOSITORY = 'EXCHANGE_CONNECTION_REPOSITORY';
 
@@ -13,21 +14,30 @@ export interface ExchangeConnectionRepository {
   declineConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult>;
   cancelConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult>;
   disconnect(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult>;
+  removeRelationshipForSafety(firstUserId: string, secondUserId: string): Promise<ExchangeConnectionMutationResult>;
 }
 
 export class InMemoryExchangeConnectionRepository implements ExchangeConnectionRepository {
   private readonly relationships = new Map<string, ExchangeConnectionRecord>();
   private operationTail: Promise<void> = Promise.resolve();
 
+  constructor(private readonly safety?: ExchangeSafetyReadStore) {}
+
   findRelationship(firstUserId: string, secondUserId: string): Promise<ExchangeConnectionRecord | null> {
-    return this.withLock(() => cloneRecord(this.relationships.get(pairKey(firstUserId, secondUserId)) ?? null));
+    return this.withLock(async () => {
+      if (await this.isBlocked(firstUserId, secondUserId)) return null;
+      return cloneRecord(this.relationships.get(pairKey(firstUserId, secondUserId)) ?? null);
+    });
   }
 
   requestConnection(
     requesterUserId: string,
     targetUserId: string,
   ): Promise<ExchangeConnectionMutationResult> {
-    return this.withLock(() => {
+    return this.withLock(async () => {
+      if (await this.isBlocked(requesterUserId, targetUserId)) {
+        return { record: null, outcome: 'SAFETY_BLOCKED' as const };
+      }
       const key = pairKey(requesterUserId, targetUserId);
       const current = this.relationships.get(key);
       if (!current) {
@@ -58,7 +68,10 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
   }
 
   acceptConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
-    return this.withLock(() => {
+    return this.withLock(async () => {
+      if (await this.isBlocked(actorUserId, targetUserId)) {
+        return { record: null, outcome: 'SAFETY_BLOCKED' as const };
+      }
       const key = pairKey(actorUserId, targetUserId);
       const current = this.relationships.get(key);
       if (!current) return { record: null, outcome: 'NONE' as const };
@@ -75,11 +88,19 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
   }
 
   declineConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
-    return this.withLock(() => this.deletePending(actorUserId, targetUserId, 'DECLINED'));
+    return this.withLock(async () => {
+      if (await this.isBlocked(actorUserId, targetUserId)) {
+        return { record: null, outcome: 'SAFETY_BLOCKED' as const };
+      }
+      return this.deletePending(actorUserId, targetUserId, 'DECLINED');
+    });
   }
 
   cancelConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
-    return this.withLock(() => {
+    return this.withLock(async () => {
+      if (await this.isBlocked(actorUserId, targetUserId)) {
+        return { record: null, outcome: 'SAFETY_BLOCKED' as const };
+      }
       const key = pairKey(actorUserId, targetUserId);
       const current = this.relationships.get(key);
       if (!current) return { record: null, outcome: 'NONE' as const };
@@ -92,7 +113,10 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
   }
 
   disconnect(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
-    return this.withLock(() => {
+    return this.withLock(async () => {
+      if (await this.isBlocked(actorUserId, targetUserId)) {
+        return { record: null, outcome: 'SAFETY_BLOCKED' as const };
+      }
       const key = pairKey(actorUserId, targetUserId);
       const current = this.relationships.get(key);
       if (!current) return { record: null, outcome: 'NONE' as const };
@@ -101,6 +125,24 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
       }
       this.relationships.delete(key);
       return { record: null, connectionId: current.id, requesterUserId: current.requesterId, outcome: 'DISCONNECTED' as const };
+    });
+  }
+
+  removeRelationshipForSafety(
+    firstUserId: string,
+    secondUserId: string,
+  ): Promise<ExchangeConnectionMutationResult> {
+    return this.withLock(() => {
+      const key = pairKey(firstUserId, secondUserId);
+      const current = this.relationships.get(key);
+      if (!current) return { record: null, outcome: 'NONE' as const };
+      this.relationships.delete(key);
+      return {
+        record: null,
+        connectionId: current.id,
+        requesterUserId: current.requesterId,
+        outcome: 'SAFETY_REMOVED' as const,
+      };
     });
   }
 
@@ -123,6 +165,10 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
     const result = this.operationTail.then(operation, operation);
     this.operationTail = result.then(() => undefined, () => undefined);
     return result;
+  }
+
+  private async isBlocked(firstUserId: string, secondUserId: string): Promise<boolean> {
+    return this.safety ? this.safety.isBlocked(firstUserId, secondUserId) : false;
   }
 }
 

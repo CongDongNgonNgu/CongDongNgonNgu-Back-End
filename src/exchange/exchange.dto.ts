@@ -20,6 +20,7 @@ import {
   EXCHANGE_TIMEZONE_COMPATIBILITIES,
   EXCHANGE_VISIBILITY_MODES,
 } from './exchange.types';
+import { EXCHANGE_REPORT_CATEGORIES } from './exchange-safety.types';
 
 const LANGUAGE_CODE_PATTERN = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/;
 const PROFILE_CODE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -170,6 +171,19 @@ export class ExchangeDiscoveryQueryDto {
   @Min(1)
   @Max(20)
   pageSize?: number;
+}
+
+export class ExchangeReportDto {
+  @Transform(({ value }) => normalizeEnum(value))
+  @IsString()
+  @IsIn(EXCHANGE_REPORT_CATEGORIES)
+  category!: string;
+
+  @Transform(({ value }) => typeof value === 'string' ? value.normalize('NFKC').trim() : value)
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  context?: string;
 }
 
 function normalizeArray(

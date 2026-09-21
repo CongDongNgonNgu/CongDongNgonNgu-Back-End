@@ -4,19 +4,19 @@ import type {
   ExchangeConnectionRecord,
 } from './exchange-connection.types';
 import type { ExchangeConnectionRepository } from './exchange-connection.repository';
+import { lockExchangePair } from './exchange-safety.repository';
+import type { ExchangeSafetyReadStore } from './exchange-safety.types';
 
 export class PostgresExchangeConnectionRepository implements ExchangeConnectionRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly safety?: ExchangeSafetyReadStore,
+  ) {}
 
   async findRelationship(firstUserId: string, secondUserId: string): Promise<ExchangeConnectionRecord | null> {
-    const result = await this.pool.query(
-      `SELECT id, participant_a_id, participant_b_id, requester_id, status, created_at, updated_at
-         FROM language_exchange_connections
-        WHERE participant_a_id = LEAST($1::uuid, $2::uuid)
-          AND participant_b_id = GREATEST($1::uuid, $2::uuid)`,
-      [firstUserId, secondUserId],
-    );
-    return mapRow(result.rows[0]);
+    return this.withLockedRelationship(firstUserId, secondUserId, async (_client, current, blocked) => {
+      return blocked ? null : current;
+    });
   }
 
   async requestConnection(
@@ -25,7 +25,8 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   ): Promise<ExchangeConnectionMutationResult> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        return await this.withLockedRelationship(requesterUserId, targetUserId, async (client, current) => {
+        return await this.withLockedRelationship(requesterUserId, targetUserId, async (client, current, blocked) => {
+          if (blocked) return { record: null, outcome: 'SAFETY_BLOCKED' as const };
           if (current?.status === 'CONNECTED') {
             return { record: current, outcome: 'ALREADY_CONNECTED' as const };
           }
@@ -67,7 +68,8 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   }
 
   acceptConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
-    return this.withLockedRelationship(actorUserId, targetUserId, async (client, current) => {
+    return this.withLockedRelationship(actorUserId, targetUserId, async (client, current, blocked) => {
+      if (blocked) return { record: null, outcome: 'SAFETY_BLOCKED' as const };
       if (!current) return { record: null, outcome: 'NONE' as const };
       if (current.status === 'CONNECTED') return { record: current, outcome: 'ALREADY_CONNECTED' as const };
       if (current.requesterId === actorUserId) return { record: current, outcome: 'INVALID_ACTION' as const };
@@ -84,7 +86,8 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   }
 
   declineConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
-    return this.withLockedRelationship(actorUserId, targetUserId, async (client, current) => {
+    return this.withLockedRelationship(actorUserId, targetUserId, async (client, current, blocked) => {
+      if (blocked) return { record: null, outcome: 'SAFETY_BLOCKED' as const };
       if (!current) return { record: null, outcome: 'NONE' as const };
       if (current.status !== 'PENDING' || current.requesterId === actorUserId) {
         return { record: current, outcome: 'INVALID_ACTION' as const };
@@ -95,7 +98,8 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   }
 
   cancelConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
-    return this.withLockedRelationship(actorUserId, targetUserId, async (client, current) => {
+    return this.withLockedRelationship(actorUserId, targetUserId, async (client, current, blocked) => {
+      if (blocked) return { record: null, outcome: 'SAFETY_BLOCKED' as const };
       if (!current) return { record: null, outcome: 'NONE' as const };
       if (current.status !== 'PENDING' || current.requesterId !== actorUserId) {
         return { record: current, outcome: 'INVALID_ACTION' as const };
@@ -106,7 +110,8 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   }
 
   disconnect(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
-    return this.withLockedRelationship(actorUserId, targetUserId, async (client, current) => {
+    return this.withLockedRelationship(actorUserId, targetUserId, async (client, current, blocked) => {
+      if (blocked) return { record: null, outcome: 'SAFETY_BLOCKED' as const };
       if (!current) return { record: null, outcome: 'NONE' as const };
       if (current.status !== 'CONNECTED') {
         return { record: current, outcome: 'INVALID_ACTION' as const };
@@ -116,14 +121,14 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
     });
   }
 
-  private async withLockedRelationship<T>(
+  async removeRelationshipForSafety(
     firstUserId: string,
     secondUserId: string,
-    operation: (client: PoolClient, current: ExchangeConnectionRecord | null) => Promise<T>,
-  ): Promise<T> {
+  ): Promise<ExchangeConnectionMutationResult> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await lockExchangePair(client, firstUserId, secondUserId);
       const currentResult = await client.query(
         `SELECT id, participant_a_id, participant_b_id, requester_id, status, created_at, updated_at
            FROM language_exchange_connections
@@ -132,7 +137,52 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
           FOR UPDATE`,
         [firstUserId, secondUserId],
       );
-      const result = await operation(client, mapRow(currentResult.rows[0]));
+      const current = mapRow(currentResult.rows[0]);
+      if (!current) {
+        await client.query('COMMIT');
+        return { record: null, outcome: 'NONE' as const };
+      }
+      await client.query('DELETE FROM language_exchange_connections WHERE id = $1', [current.id]);
+      await client.query('COMMIT');
+      return {
+        record: null,
+        connectionId: current.id,
+        requesterUserId: current.requesterId,
+        outcome: 'SAFETY_REMOVED' as const,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async withLockedRelationship<T>(
+    firstUserId: string,
+    secondUserId: string,
+    operation: (
+      client: PoolClient,
+      current: ExchangeConnectionRecord | null,
+      blocked: boolean,
+    ) => Promise<T>,
+  ): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await lockExchangePair(client, firstUserId, secondUserId);
+      const blocked = this.safety
+        ? await this.safety.isBlockedOnClient(client, firstUserId, secondUserId)
+        : false;
+      const currentResult = await client.query(
+        `SELECT id, participant_a_id, participant_b_id, requester_id, status, created_at, updated_at
+           FROM language_exchange_connections
+          WHERE participant_a_id = LEAST($1::uuid, $2::uuid)
+            AND participant_b_id = GREATEST($1::uuid, $2::uuid)
+          FOR UPDATE`,
+        [firstUserId, secondUserId],
+      );
+      const result = await operation(client, mapRow(currentResult.rows[0]), blocked);
       await client.query('COMMIT');
       return result;
     } catch (error) {

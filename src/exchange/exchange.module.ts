@@ -17,10 +17,12 @@ import { ExchangeController } from './exchange.controller';
 import {
   EXCHANGE_SAFETY_GATE,
   ExchangeService,
-  NoopExchangeSafetyGate,
+  type ExchangeSafetyGate,
 } from './exchange.service';
 import { PostgresExchangePreferenceRepository } from './postgres-exchange.repository';
 import { PostgresExchangeConnectionRepository } from './postgres-exchange-connection.repository';
+import { InMemoryExchangeSafetyRepository } from './exchange-safety.repository';
+import { PostgresExchangeSafetyRepository } from './postgres-exchange-safety.repository';
 
 interface ExchangeRuntimeConfig {
   persistence: 'postgres' | 'memory';
@@ -33,7 +35,18 @@ interface ExchangeRuntimeConfig {
     ExchangeService,
     {
       provide: EXCHANGE_SAFETY_GATE,
-      useClass: NoopExchangeSafetyGate,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService): ExchangeSafetyGate => {
+        const auth = config.get<ExchangeRuntimeConfig>('auth');
+        if (auth?.persistence === 'memory') {
+          return new InMemoryExchangeSafetyRepository();
+        }
+        const databaseUrl = config.get<string>('database.url');
+        if (!databaseUrl) {
+          throw new Error('DATABASE_URL is required for Postgres exchange safety persistence');
+        }
+        return new PostgresExchangeSafetyRepository(new Pool({ connectionString: databaseUrl }));
+      },
     },
     {
       provide: EXCHANGE_PREFERENCE_REPOSITORY,
@@ -52,17 +65,17 @@ interface ExchangeRuntimeConfig {
     },
     {
       provide: EXCHANGE_CONNECTION_REPOSITORY,
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => {
+      inject: [ConfigService, EXCHANGE_SAFETY_GATE],
+      useFactory: (config: ConfigService, safety: ExchangeSafetyGate) => {
         const auth = config.get<ExchangeRuntimeConfig>('auth');
         if (auth?.persistence === 'memory') {
-          return new InMemoryExchangeConnectionRepository();
+          return new InMemoryExchangeConnectionRepository(safety);
         }
         const databaseUrl = config.get<string>('database.url');
         if (!databaseUrl) {
           throw new Error('DATABASE_URL is required for Postgres exchange persistence');
         }
-        return new PostgresExchangeConnectionRepository(new Pool({ connectionString: databaseUrl }));
+        return new PostgresExchangeConnectionRepository(new Pool({ connectionString: databaseUrl }), safety);
       },
     },
     {

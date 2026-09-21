@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -15,7 +16,7 @@ import {
 import { AccessTokenGuard, type AuthenticatedRequest } from '../auth/guards/access-token.guard';
 import { SessionService } from '../auth/session/session.service';
 import { success } from '../common/http/api-response';
-import { ExchangeDiscoveryQueryDto, ExchangePreferenceUpdateDto } from './exchange.dto';
+import { ExchangeDiscoveryQueryDto, ExchangePreferenceUpdateDto, ExchangeReportDto } from './exchange.dto';
 import { ExchangeService } from './exchange.service';
 
 @Controller('exchange')
@@ -44,6 +45,73 @@ export class ExchangeController {
     return success(
       await this.exchanges.updateOwnPreferences(request.user!.user.id, input),
       'Exchange preferences updated',
+    );
+  }
+
+  @Get('blocks/:userId')
+  @UseGuards(AccessTokenGuard)
+  async blockStatus(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.exchanges.getBlockStatus(request.user!.user.id, userId),
+      'Exchange block status',
+    );
+  }
+
+  @Post('blocks/:userId')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AccessTokenGuard)
+  async block(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.exchanges.blockUser(request.user!.user.id, userId),
+      'Exchange member blocked',
+    );
+  }
+
+  @Delete('blocks/:userId')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AccessTokenGuard)
+  async unblock(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.exchanges.unblockUser(request.user!.user.id, userId),
+      'Exchange member unblocked',
+    );
+  }
+
+  @Post('reports/:userId')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AccessTokenGuard)
+  async report(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Body() input: ExchangeReportDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.exchanges.reportUser(request.user!.user.id, userId, input),
+      'Exchange report submitted',
+    );
+  }
+
+  @Get('contact-permission/:userId')
+  @UseGuards(AccessTokenGuard)
+  async contactPermission(
+    @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.exchanges.getContactPermission(request.user!.user.id, userId),
+      'Exchange contact permission',
     );
   }
 

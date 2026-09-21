@@ -10,6 +10,7 @@ describe('PostgresExchangeConnectionRepository', () => {
     const firstClient = fakeClient(async (sql: string) => {
       calls.push(sql);
       if (sql === 'BEGIN' || sql === 'ROLLBACK') return { rows: [] };
+      if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
       if (sql.includes('FOR UPDATE')) return { rows: [] };
       if (sql.includes('INSERT INTO language_exchange_connections')) {
         const error = new Error('duplicate pair') as Error & { code: string };
@@ -21,6 +22,7 @@ describe('PostgresExchangeConnectionRepository', () => {
     const secondClient = fakeClient(async (sql: string) => {
       calls.push(sql);
       if (sql === 'BEGIN' || sql === 'COMMIT') return { rows: [] };
+      if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
       if (sql.includes('FOR UPDATE')) return { rows: [pendingRow] };
       if (sql.includes('UPDATE language_exchange_connections')) return { rows: [connectedRow] };
       throw new Error('Unexpected retry SQL: ' + sql);
@@ -40,6 +42,7 @@ describe('PostgresExchangeConnectionRepository', () => {
     expect(calls.filter((sql) => sql === 'BEGIN')).toHaveLength(2);
     expect(calls.filter((sql) => sql === 'ROLLBACK')).toHaveLength(1);
     expect(calls.filter((sql) => sql.includes('FOR UPDATE'))).toHaveLength(2);
+    expect(calls.filter((sql) => sql.includes('pg_advisory_xact_lock'))).toHaveLength(2);
     expect(calls.filter((sql) => sql.includes('INSERT INTO language_exchange_connections'))).toHaveLength(1);
     expect(calls.filter((sql) => sql.includes('UPDATE language_exchange_connections'))).toHaveLength(1);
     expect(calls.every((sql) => !sql.includes('SELECT *'))).toBe(true);

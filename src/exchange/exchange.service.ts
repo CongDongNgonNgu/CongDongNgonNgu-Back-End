@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { PoolClient } from 'pg';
 import { IDENTITY_REPOSITORY } from '../identity/identity.module';
 import type { IdentityRepository } from '../identity/identity.repository';
 import type { UserRecord } from '../identity/identity.types';
@@ -40,6 +41,12 @@ import {
   type ExchangePreferencesResponse,
   type ExchangePreferenceWriteInput,
   type ExchangeContactPermission,
+  type ExchangeContactPermissionDecision,
+  type ExchangeContactPermissionResponse,
+  type ExchangeBlockResponse,
+  type ExchangeBlockStatusResponse,
+  type ExchangeReportResponse,
+  type ExchangeReportSubmissionInput,
   type ExchangeDiscoveryCandidate,
   type ExchangeDiscoveryQuery,
   type ExchangeDiscoveryResponse,
@@ -47,6 +54,11 @@ import {
   type ExchangeVisibilityMode,
   type PublicBuddyProjection,
 } from './exchange.types';
+import {
+  EXCHANGE_REPORT_CATEGORIES,
+  type ExchangeReportInput,
+  type ExchangeSafetyRepository,
+} from './exchange-safety.types';
 import {
   evaluateMatch,
   rankMatches,
@@ -86,14 +98,36 @@ export interface ExchangeDiscoveryInput {
 
 export const EXCHANGE_SAFETY_GATE = 'EXCHANGE_SAFETY_GATE';
 
-export interface ExchangeSafetyGate {
-  isBlocked(viewerUserId: string, candidateUserId: string): Promise<boolean>;
-}
+export interface ExchangeSafetyGate extends ExchangeSafetyRepository {}
 
 @Injectable()
 export class NoopExchangeSafetyGate implements ExchangeSafetyGate {
   async isBlocked(_viewerUserId: string, _candidateUserId: string): Promise<boolean> {
     return false;
+  }
+
+  async isBlockedBy(_blockerUserId: string, _blockedUserId: string): Promise<boolean> {
+    return false;
+  }
+
+  async isBlockedOnClient(
+    _client: PoolClient,
+    _firstUserId: string,
+    _secondUserId: string,
+  ): Promise<boolean> {
+    return false;
+  }
+
+  async blockUser(_blockerUserId: string, blockedUserId: string) {
+    return { targetUserId: blockedUserId, outcome: 'CREATED' as const };
+  }
+
+  async unblockUser(_blockerUserId: string, blockedUserId: string) {
+    return { targetUserId: blockedUserId, outcome: 'NOT_BLOCKED' as const };
+  }
+
+  async submitReport(_input: ExchangeReportInput) {
+    return { duplicate: false };
   }
 }
 
@@ -141,6 +175,69 @@ export class ExchangeService {
     }
   }
 
+  async getBlockStatus(
+    viewerUserId: string,
+    targetUserId: string,
+  ): Promise<ExchangeBlockStatusResponse> {
+    await this.requireActiveUser(viewerUserId);
+    this.assertDifferentUsers(viewerUserId, targetUserId);
+    return {
+      scope: 'exchange-block-status',
+      targetUserId,
+      blockedByMe: await this.safetyGate.isBlockedBy(viewerUserId, targetUserId),
+    };
+  }
+
+  async blockUser(viewerUserId: string, targetUserId: string): Promise<ExchangeBlockResponse> {
+    await this.requireActiveUser(viewerUserId);
+    await this.requireActiveUser(targetUserId);
+    this.assertDifferentUsers(viewerUserId, targetUserId);
+    const result = await this.safetyGate.blockUser(viewerUserId, targetUserId);
+    const removed = await this.connections.removeRelationshipForSafety(viewerUserId, targetUserId);
+    if (removed.outcome === 'SAFETY_REMOVED') {
+      await this.publishConnectionEvent(viewerUserId, targetUserId, removed);
+    }
+    return {
+      scope: 'exchange-block',
+      targetUserId: result.targetUserId,
+      blocked: true,
+    };
+  }
+
+  async unblockUser(viewerUserId: string, targetUserId: string): Promise<ExchangeBlockResponse> {
+    await this.requireActiveUser(viewerUserId);
+    this.assertDifferentUsers(viewerUserId, targetUserId);
+    const result = await this.safetyGate.unblockUser(viewerUserId, targetUserId);
+    return {
+      scope: 'exchange-block',
+      targetUserId: result.targetUserId,
+      blocked: false,
+    };
+  }
+
+  async reportUser(
+    reporterUserId: string,
+    targetUserId: string,
+    input: ExchangeReportSubmissionInput,
+  ): Promise<ExchangeReportResponse> {
+    await this.requireActiveUser(reporterUserId);
+    if (reporterUserId === targetUserId) {
+      throw exchangeFailure('EXCHANGE_SELF_REPORT', 'You cannot report yourself');
+    }
+    const category = normalizeReportCategory(input.category);
+    const context = normalizeReportContext(input.context);
+    const target = await this.identities.findUserById(targetUserId);
+    if (target) {
+      await this.safetyGate.submitReport({
+        reporterUserId,
+        targetUserId,
+        category,
+        context,
+      });
+    }
+    return { scope: 'exchange-report', submitted: true };
+  }
+
   async getEligibility(
     candidateUserId: string,
     viewerUserId: string | null = null,
@@ -174,6 +271,7 @@ export class ExchangeService {
     candidateUserId: string,
     viewerUserId: string,
   ): Promise<PublicBuddyProjection> {
+    await this.requireActiveUser(viewerUserId);
     const eligibility = await this.getEligibility(candidateUserId, viewerUserId);
     if (!eligibility.eligible) {
       throw new ExchangeFailure('EXCHANGE_PROFILE_UNAVAILABLE', 404, 'Buddy profile was not found');
@@ -207,7 +305,40 @@ export class ExchangeService {
     await this.requireActiveUser(viewerUserId);
     await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(viewerUserId, targetUserId);
+    await this.assertPairAvailable(viewerUserId, targetUserId);
     return this.getRelationshipResponse(viewerUserId, targetUserId);
+  }
+
+  async getContactPermission(
+    viewerUserId: string,
+    targetUserId: string,
+  ): Promise<ExchangeContactPermissionResponse> {
+    await this.requireActiveUser(viewerUserId);
+    this.assertDifferentUsers(viewerUserId, targetUserId);
+    const target = await this.identities.findUserById(targetUserId);
+    if (!isActiveUser(target)) return contactPermission(targetUserId, 'DENIED_INELIGIBLE');
+
+    const blockedByMe = await this.safetyGate.isBlockedBy(viewerUserId, targetUserId);
+    if (await this.safetyGate.isBlocked(viewerUserId, targetUserId)) {
+      return contactPermission(targetUserId, blockedByMe ? 'DENIED_BLOCKED' : 'DENIED_INELIGIBLE');
+    }
+
+    const [viewerEligibility, targetEligibility, targetPreferences, relationship] = await Promise.all([
+      this.getEligibility(viewerUserId),
+      this.getEligibility(targetUserId, viewerUserId),
+      this.repository.findPreferences(targetUserId),
+      this.connections.findRelationship(viewerUserId, targetUserId),
+    ]);
+    if (!viewerEligibility.eligible || !targetEligibility.eligible) {
+      return contactPermission(targetUserId, 'DENIED_INELIGIBLE');
+    }
+    if (targetPreferences.contactPermission === 'NO_CONTACT') {
+      return contactPermission(targetUserId, 'DENIED_PERMISSION');
+    }
+    if (!relationship || relationship.status !== 'CONNECTED') {
+      return contactPermission(targetUserId, 'DENIED_NOT_CONNECTED');
+    }
+    return contactPermission(targetUserId, 'ALLOWED');
   }
 
   async requestConnection(
@@ -232,6 +363,7 @@ export class ExchangeService {
     await this.requireActiveUser(actorUserId);
     await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(actorUserId, targetUserId);
+    await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.acceptConnection(actorUserId, targetUserId);
     return this.completeConnectionMutation(actorUserId, targetUserId, result);
   }
@@ -243,6 +375,7 @@ export class ExchangeService {
     await this.requireActiveUser(actorUserId);
     await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(actorUserId, targetUserId);
+    await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.declineConnection(actorUserId, targetUserId);
     return this.completeConnectionMutation(actorUserId, targetUserId, result);
   }
@@ -254,6 +387,7 @@ export class ExchangeService {
     await this.requireActiveUser(actorUserId);
     await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(actorUserId, targetUserId);
+    await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.cancelConnection(actorUserId, targetUserId);
     return this.completeConnectionMutation(actorUserId, targetUserId, result);
   }
@@ -265,6 +399,7 @@ export class ExchangeService {
     await this.requireActiveUser(actorUserId);
     await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(actorUserId, targetUserId);
+    await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.disconnect(actorUserId, targetUserId);
     return this.completeConnectionMutation(actorUserId, targetUserId, result);
   }
@@ -526,7 +661,16 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     const record = await this.connections.findRelationship(viewerUserId, targetUserId);
-    return toRelationshipResponse(viewerUserId, targetUserId, record);
+    const canRequest = record
+      ? true
+      : (await this.getEligibility(targetUserId, viewerUserId)).eligible;
+    return toRelationshipResponse(viewerUserId, targetUserId, record, canRequest);
+  }
+
+  private async assertPairAvailable(firstUserId: string, secondUserId: string): Promise<void> {
+    if (await this.safetyGate.isBlocked(firstUserId, secondUserId)) {
+      throw new ExchangeFailure('EXCHANGE_PROFILE_UNAVAILABLE', 404, 'Buddy profile was not found');
+    }
   }
 
   private async completeConnectionMutation(
@@ -534,6 +678,9 @@ export class ExchangeService {
     targetUserId: string,
     result: ExchangeConnectionMutationResult,
   ): Promise<ExchangeRelationshipResponse> {
+    if (result.outcome === 'SAFETY_BLOCKED') {
+      throw new ExchangeFailure('EXCHANGE_PROFILE_UNAVAILABLE', 404, 'Buddy profile was not found');
+    }
     if (result.outcome === 'INVALID_ACTION') {
       throw new ExchangeFailure(
         'EXCHANGE_CONNECTION_ACTION_INVALID',
@@ -676,6 +823,30 @@ function exchangeFailure(code: string, message: string, status = 400): ExchangeF
   return new ExchangeFailure(code, status, message);
 }
 
+function normalizeReportCategory(input: unknown): ExchangeReportInput['category'] {
+  if (typeof input !== 'string') {
+    throw exchangeFailure('EXCHANGE_INVALID_REPORT_CATEGORY', 'Report category is invalid');
+  }
+  const normalized = input.trim().toUpperCase() as ExchangeReportInput['category'];
+  if (!EXCHANGE_REPORT_CATEGORIES.includes(normalized)) {
+    throw exchangeFailure('EXCHANGE_INVALID_REPORT_CATEGORY', 'Report category is invalid');
+  }
+  return normalized;
+}
+
+function normalizeReportContext(input: unknown): string | null {
+  if (input === undefined || input === null) return null;
+  if (typeof input !== 'string') {
+    throw exchangeFailure('EXCHANGE_INVALID_REPORT_CONTEXT', 'Report context is invalid');
+  }
+  const normalized = input.normalize('NFKC').replace(/\r\n?/g, '\n').trim();
+  if (normalized.length === 0) return null;
+  if (Array.from(normalized).length > 1000) {
+    throw exchangeFailure('EXCHANGE_INVALID_REPORT_CONTEXT', 'Report context is too long');
+  }
+  return normalized;
+}
+
 function normalizeDiscoveryQuery(input: ExchangeDiscoveryInput): ExchangeDiscoveryQuery {
   const page = normalizePage(input.page, 1, 100, 'page');
   const pageSize = normalizePage(input.pageSize, 10, 20, 'pageSize');
@@ -809,13 +980,14 @@ function toRelationshipResponse(
   viewerUserId: string,
   targetUserId: string,
   record: ExchangeConnectionRecord | null,
+  canRequest = true,
 ): ExchangeRelationshipResponse {
   if (!record) {
     return {
       scope: 'exchange-relationship',
       targetUserId,
       state: 'NONE',
-      canRequest: true,
+      canRequest,
       canAccept: false,
       canDecline: false,
       canCancel: false,
@@ -862,7 +1034,20 @@ function eventTypeForOutcome(
       return 'exchange.connection.cancelled';
     case 'DISCONNECTED':
       return 'exchange.connection.disconnected';
+    case 'SAFETY_REMOVED':
+      return 'exchange.connection.safety_removed';
     default:
       return null;
   }
+}
+
+function contactPermission(
+  targetUserId: string,
+  decision: ExchangeContactPermissionDecision,
+): ExchangeContactPermissionResponse {
+  return {
+    scope: 'exchange-contact-permission',
+    targetUserId,
+    decision,
+  };
 }

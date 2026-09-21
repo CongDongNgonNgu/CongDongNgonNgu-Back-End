@@ -40,4 +40,28 @@ describe('Language exchange migration contract', () => {
     }
     expect(sql).not.toMatch(/DROP TABLE IF EXISTS (users|languages|user_languages|user_profiles)/);
   });
+
+  it('defines directional safety blocks and moderation-ready exchange reports', () => {
+    const sql = readFileSync(resolve(migrations, '0008_language_exchange_safety.sql'), 'utf8');
+    expect(sql).toContain("CREATE TYPE exchange_report_category AS ENUM");
+    expect(sql).toContain("'INAPPROPRIATE_CONTENT'");
+    expect(sql).toContain("'IMPERSONATION'");
+    expect(sql).toContain("'SAFETY_CONCERN'");
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS language_exchange_blocks');
+    expect(sql).toContain('language_exchange_blocks_actor_target_unique');
+    expect(sql).toContain('language_exchange_blocks_actor_check');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS language_exchange_reports');
+    expect(sql).toContain('language_exchange_reports_unique_category_idx');
+    expect(sql).toContain('language_exchange_reports_context_check');
+    expect(sql).toContain("DEFAULT 'OPEN'");
+  });
+
+  it('rolls back only exchange safety objects', () => {
+    const sql = readFileSync(resolve(migrations, '0008_language_exchange_safety.down.sql'), 'utf8');
+    expect(sql).toContain('DROP TABLE IF EXISTS language_exchange_reports');
+    expect(sql).toContain('DROP TABLE IF EXISTS language_exchange_blocks');
+    expect(sql).toContain('DROP TYPE IF EXISTS exchange_report_state');
+    expect(sql).toContain('DROP TYPE IF EXISTS exchange_report_category');
+    expect(sql).not.toMatch(/DROP TABLE IF EXISTS (users|languages|community_reports)/);
+  });
 });
