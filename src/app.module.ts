@@ -6,6 +6,7 @@ import { ProfileModule } from './profile/profile.module';
 import { CommunityModule } from './community/community.module';
 import { CorrectionsModule } from './corrections/corrections.module';
 import { ExchangeModule } from './exchange/exchange.module';
+import { LibraryModule } from './library/library.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { ExchangeModule } from './exchange/exchange.module';
     CommunityModule,
     CorrectionsModule,
     ExchangeModule,
+    LibraryModule,
   ],
 })
 export class AppModule {}
