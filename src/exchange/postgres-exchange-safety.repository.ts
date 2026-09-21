@@ -52,16 +52,30 @@ export class PostgresExchangeSafetyRepository implements ExchangeSafetyRepositor
          RETURNING blocker_user_id`,
         [blockerUserId, blockedUserId],
       );
-      await client.query(
+      const removed = await client.query(
         `DELETE FROM language_exchange_connections
           WHERE participant_a_id = LEAST($1::uuid, $2::uuid)
-            AND participant_b_id = GREATEST($1::uuid, $2::uuid)`,
+            AND participant_b_id = GREATEST($1::uuid, $2::uuid)
+          RETURNING id, requester_user_id`,
         [blockerUserId, blockedUserId],
       );
       await client.query('COMMIT');
+      const removedRelationship = removed.rows[0] as {
+        id?: unknown;
+        requester_user_id?: unknown;
+      } | undefined;
       return {
         targetUserId: blockedUserId,
         outcome: inserted.rows.length > 0 ? 'CREATED' : 'ALREADY_BLOCKED',
+        relationshipRemoval: 'ATOMIC',
+        ...(removedRelationship?.id
+          ? {
+              removedConnectionId: String(removedRelationship.id),
+              removedRequesterUserId: removedRelationship.requester_user_id
+                ? String(removedRelationship.requester_user_id)
+                : undefined,
+            }
+          : {}),
       };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -101,7 +115,9 @@ export class PostgresExchangeSafetyRepository implements ExchangeSafetyRepositor
          reporter_user_id, target_user_id, category, context
        )
        VALUES ($1::uuid, $2::uuid, $3::exchange_report_category, $4)
-       ON CONFLICT (reporter_user_id, target_user_id, category) DO NOTHING
+       ON CONFLICT (reporter_user_id, target_user_id, category)
+         WHERE state IN ('OPEN'::exchange_report_state, 'IN_REVIEW'::exchange_report_state)
+       DO NOTHING
        RETURNING id`,
       [input.reporterUserId, input.targetUserId, input.category, input.context],
     );

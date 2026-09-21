@@ -52,6 +52,7 @@ describe('Language exchange migration contract', () => {
     expect(sql).toContain('language_exchange_blocks_actor_check');
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS language_exchange_reports');
     expect(sql).toContain('language_exchange_reports_unique_category_idx');
+    expect(sql).toContain("WHERE state IN ('OPEN'::exchange_report_state, 'IN_REVIEW'::exchange_report_state)");
     expect(sql).toContain('language_exchange_reports_context_check');
     expect(sql).toContain("DEFAULT 'OPEN'");
   });

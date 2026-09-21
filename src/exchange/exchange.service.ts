@@ -119,7 +119,11 @@ export class NoopExchangeSafetyGate implements ExchangeSafetyGate {
   }
 
   async blockUser(_blockerUserId: string, blockedUserId: string) {
-    return { targetUserId: blockedUserId, outcome: 'CREATED' as const };
+    return {
+      targetUserId: blockedUserId,
+      outcome: 'CREATED' as const,
+      relationshipRemoval: 'DEFERRED' as const,
+    };
   }
 
   async unblockUser(_blockerUserId: string, blockedUserId: string) {
@@ -190,12 +194,23 @@ export class ExchangeService {
 
   async blockUser(viewerUserId: string, targetUserId: string): Promise<ExchangeBlockResponse> {
     await this.requireActiveUser(viewerUserId);
-    await this.requireActiveUser(targetUserId);
+    await this.requireExistingUser(targetUserId);
     this.assertDifferentUsers(viewerUserId, targetUserId);
     const result = await this.safetyGate.blockUser(viewerUserId, targetUserId);
-    const removed = await this.connections.removeRelationshipForSafety(viewerUserId, targetUserId);
-    if (removed.outcome === 'SAFETY_REMOVED') {
-      await this.publishConnectionEvent(viewerUserId, targetUserId, removed);
+    if (result.relationshipRemoval === 'ATOMIC') {
+      if (result.removedConnectionId) {
+        await this.publishConnectionEvent(viewerUserId, targetUserId, {
+          record: null,
+          outcome: 'SAFETY_REMOVED',
+          connectionId: result.removedConnectionId,
+          requesterUserId: result.removedRequesterUserId,
+        });
+      }
+    } else {
+      const removed = await this.connections.removeRelationshipForSafety(viewerUserId, targetUserId);
+      if (removed.outcome === 'SAFETY_REMOVED') {
+        await this.publishConnectionEvent(viewerUserId, targetUserId, removed);
+      }
     }
     return {
       scope: 'exchange-block',
@@ -323,13 +338,12 @@ export class ExchangeService {
       return contactPermission(targetUserId, blockedByMe ? 'DENIED_BLOCKED' : 'DENIED_INELIGIBLE');
     }
 
-    const [viewerEligibility, targetEligibility, targetPreferences, relationship] = await Promise.all([
-      this.getEligibility(viewerUserId),
-      this.getEligibility(targetUserId, viewerUserId),
-      this.repository.findPreferences(targetUserId),
+    const [viewerPreferences, targetPreferences, relationship] = await Promise.all([
+      this.getContactParticipant(viewerUserId),
+      this.getContactParticipant(targetUserId),
       this.connections.findRelationship(viewerUserId, targetUserId),
     ]);
-    if (!viewerEligibility.eligible || !targetEligibility.eligible) {
+    if (!viewerPreferences || !targetPreferences) {
       return contactPermission(targetUserId, 'DENIED_INELIGIBLE');
     }
     if (targetPreferences.contactPermission === 'NO_CONTACT') {
@@ -636,6 +650,33 @@ export class ExchangeService {
       throw exchangeFailure('EXCHANGE_USER_NOT_FOUND', 'Exchange preferences were not found', 404);
     }
     return user;
+  }
+
+  private async requireExistingUser(userId: string): Promise<UserRecord> {
+    const user = await this.identities.findUserById(userId);
+    if (!user) {
+      throw exchangeFailure('EXCHANGE_USER_NOT_FOUND', 'Exchange preferences were not found', 404);
+    }
+    return user;
+  }
+
+  private async getContactParticipant(userId: string): Promise<ExchangePreferenceRecord | null> {
+    const user = await this.identities.findUserById(userId);
+    if (!isActiveUser(user)) return null;
+    const [profile, preferences] = await Promise.all([
+      this.profiles.findProfile(userId),
+      this.repository.findPreferences(userId),
+    ]);
+    if (!preferences.exchangeOptIn) return null;
+    try {
+      await this.validateStoredPreferences(profile, preferences);
+    } catch {
+      return null;
+    }
+    if (preferences.offeredLanguageCodes.length === 0 || preferences.wantedLanguageCodes.length === 0) {
+      return null;
+    }
+    return preferences;
   }
 
   private async requireRequestParticipant(userId: string): Promise<void> {

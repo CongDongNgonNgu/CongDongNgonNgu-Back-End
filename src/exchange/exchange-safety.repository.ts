@@ -39,6 +39,7 @@ export class InMemoryExchangeSafetyRepository implements ExchangeSafetyRepositor
     return {
       targetUserId: blockedUserId,
       outcome: exists ? 'ALREADY_BLOCKED' : 'CREATED',
+      relationshipRemoval: 'DEFERRED',
     };
   }
 

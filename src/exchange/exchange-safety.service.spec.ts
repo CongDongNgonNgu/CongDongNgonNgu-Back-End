@@ -1,4 +1,5 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
+import type { ExchangeConnectionEvent, ExchangeConnectionEventSink } from './exchange-connection.types';
 import { InMemoryIdentityRepository } from '../identity/identity.repository';
 import { InMemoryProfileRepository } from '../profile/profile.repository';
 import { ProfileService } from '../profile/profile.service';
@@ -33,6 +34,46 @@ describe('ExchangeService safety reconciliation', () => {
     await expect(service.requestConnection(first.id, second.id)).resolves.toMatchObject({
       state: 'OUTGOING_PENDING',
     });
+  });
+
+  it('publishes exactly one safety removal event in memory mode', async () => {
+    const eventSink = new RecordingExchangeConnectionEventSink();
+    const { identity, profiles, service } = createHarness(eventSink);
+    const first = await createUser(identity, 'safety-event-first@example.com', 'First');
+    const second = await createUser(identity, 'safety-event-second@example.com', 'Second');
+    await preparePair(identity, profiles, service, first.id, second.id);
+
+    await service.requestConnection(first.id, second.id);
+    await service.blockUser(first.id, second.id);
+    await service.blockUser(first.id, second.id);
+
+    expect(eventSink.events.filter((event) => event.type === 'exchange.connection.safety_removed')).toHaveLength(1);
+  });
+
+  it('publishes atomic safety removal metadata without issuing a second relationship delete', async () => {
+    const eventSink = new RecordingExchangeConnectionEventSink();
+    const safety = new InMemoryExchangeSafetyRepository();
+    const originalBlockUser = safety.blockUser.bind(safety);
+    let blockCount = 0;
+    safety.blockUser = async (blockerUserId, blockedUserId) => ({
+      ...(await originalBlockUser(blockerUserId, blockedUserId)),
+      relationshipRemoval: 'ATOMIC' as const,
+      ...(blockCount++ === 0
+        ? { removedConnectionId: 'connection-atomic', removedRequesterUserId: blockerUserId }
+        : {}),
+    });
+    const connections = new InMemoryExchangeConnectionRepository(safety);
+    const removeRelationship = jest.spyOn(connections, 'removeRelationshipForSafety');
+    const { identity, profiles, service } = createHarness(eventSink, safety, connections);
+    const first = await createUser(identity, 'atomic-event-first@example.com', 'First');
+    const second = await createUser(identity, 'atomic-event-second@example.com', 'Second');
+    await preparePair(identity, profiles, service, first.id, second.id);
+
+    await service.blockUser(first.id, second.id);
+    await service.blockUser(first.id, second.id);
+
+    expect(removeRelationship).not.toHaveBeenCalled();
+    expect(eventSink.events.filter((event) => event.type === 'exchange.connection.safety_removed')).toHaveLength(1);
   });
 
   it('makes block win against a concurrent relationship mutation', async () => {
@@ -81,6 +122,38 @@ describe('ExchangeService safety reconciliation', () => {
     });
   });
 
+  it('keeps connected contact permission allowed when either side turns off discoverability', async () => {
+    const { identity, profiles, service } = createHarness();
+    const first = await createUser(identity, 'contact-private-first@example.com', 'First');
+    const second = await createUser(identity, 'contact-private-second@example.com', 'Second');
+    await preparePair(identity, profiles, service, first.id, second.id);
+    await service.updateOwnPreferences(second.id, { contactPermission: 'RELATIONSHIP_GATED' });
+    await service.requestConnection(first.id, second.id);
+    await service.acceptConnection(second.id, first.id);
+
+    await service.updateOwnPreferences(first.id, { discoverable: false });
+    await expect(service.getContactPermission(first.id, second.id)).resolves.toMatchObject({ decision: 'ALLOWED' });
+
+    await service.updateOwnPreferences(second.id, { discoverable: false });
+    await expect(service.getContactPermission(first.id, second.id)).resolves.toMatchObject({ decision: 'ALLOWED' });
+  });
+
+  it('allows an active actor to block an existing inactive target and removes stale contact state', async () => {
+    const { identity, profiles, service, connections } = createHarness();
+    const first = await createUser(identity, 'inactive-block-first@example.com', 'First');
+    const second = await createUser(identity, 'inactive-block-second@example.com', 'Second');
+    await preparePair(identity, profiles, service, first.id, second.id);
+    await service.requestConnection(first.id, second.id);
+    await service.acceptConnection(second.id, first.id);
+    await identity.updateUser(second.id, { status: 'DISABLED' });
+
+    await expect(service.blockUser(first.id, second.id)).resolves.toMatchObject({ blocked: true });
+    await expect(connections.findRelationship(first.id, second.id)).resolves.toBeNull();
+    await expect(service.getContactPermission(first.id, second.id)).resolves.toMatchObject({
+      decision: 'DENIED_INELIGIBLE',
+    });
+  });
+
   it('accepts bounded reports, keeps duplicate submission idempotent, and rejects self-reporting', async () => {
     const { identity, profiles, service } = createHarness();
     const reporter = await createUser(identity, 'reporter@example.com', 'Reporter');
@@ -103,12 +176,14 @@ describe('ExchangeService safety reconciliation', () => {
   });
 });
 
-function createHarness() {
+function createHarness(
+  eventSink: ExchangeConnectionEventSink = new NoopExchangeConnectionEventSink(),
+  safety = new InMemoryExchangeSafetyRepository(),
+  connections = new InMemoryExchangeConnectionRepository(safety),
+) {
   const identity = new InMemoryIdentityRepository();
   const profiles = new InMemoryProfileRepository();
   const preferences = new InMemoryExchangePreferenceRepository();
-  const safety = new InMemoryExchangeSafetyRepository();
-  const connections = new InMemoryExchangeConnectionRepository(safety);
   return {
     identity,
     profiles,
@@ -119,9 +194,17 @@ function createHarness() {
       identity,
       safety,
       connections,
-      new NoopExchangeConnectionEventSink(),
+      eventSink,
     ),
   };
+}
+
+class RecordingExchangeConnectionEventSink implements ExchangeConnectionEventSink {
+  readonly events: ExchangeConnectionEvent[] = [];
+
+  async publish(event: ExchangeConnectionEvent): Promise<void> {
+    this.events.push(event);
+  }
 }
 
 async function createUser(repository: InMemoryIdentityRepository, email: string, displayName: string) {

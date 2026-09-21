@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS language_exchange_reports (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS language_exchange_reports_unique_category_idx
-  ON language_exchange_reports (reporter_user_id, target_user_id, category);
+  ON language_exchange_reports (reporter_user_id, target_user_id, category)
+ WHERE state IN ('OPEN'::exchange_report_state, 'IN_REVIEW'::exchange_report_state);
 
 CREATE INDEX IF NOT EXISTS language_exchange_reports_target_idx
   ON language_exchange_reports (target_user_id, state, created_at DESC);

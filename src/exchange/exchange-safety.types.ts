@@ -17,9 +17,14 @@ export type ExchangeBlockMutationOutcome =
   | 'REMOVED'
   | 'NOT_BLOCKED';
 
+export type ExchangeRelationshipRemovalMode = 'ATOMIC' | 'DEFERRED';
+
 export interface ExchangeBlockMutationResult {
   targetUserId: string;
   outcome: ExchangeBlockMutationOutcome;
+  relationshipRemoval?: ExchangeRelationshipRemovalMode;
+  removedConnectionId?: string;
+  removedRequesterUserId?: string;
 }
 
 export interface ExchangeReportInput {
