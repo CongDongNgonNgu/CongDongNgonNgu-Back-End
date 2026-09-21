@@ -130,6 +130,7 @@ export interface CorrectionsRepository {
   createLibraryCandidate(
     input: CreateLibraryCandidateRepositoryInput,
   ): Promise<LibraryCandidateRecord>;
+  findLibraryCandidateById(id: string): Promise<LibraryCandidateRecord | null>;
   listPendingLibraryCandidates(limit?: number): Promise<LibraryCandidateRecord[]>;
   listContributionEvents(
     query?: Phase06ContributionEventQuery,
@@ -493,6 +494,23 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
       .sort(compareNewestFirst)
       .slice(0, limit)
       .map(cloneCandidate);
+  }
+
+  async findLibraryCandidateById(id: string): Promise<LibraryCandidateRecord | null> {
+    const candidate = this.candidates.get(id);
+    if (!candidate || candidate.state !== 'PENDING_REVIEW') return null;
+    const parent = await this.community.findPostById(candidate.sourcePostId);
+    const response = this.responses.get(candidate.sourceResponseId);
+    const acceptance = this.getActiveAcceptance(candidate.sourcePostId);
+    if (
+      !parent ||
+      parent.moderationState !== 'ACTIVE' ||
+      parent.visibility !== 'PUBLIC' ||
+      response?.moderationState !== 'ACTIVE' ||
+      acceptance?.id !== candidate.acceptanceId ||
+      acceptance.responseId !== candidate.sourceResponseId
+    ) return null;
+    return cloneCandidate(candidate);
   }
 
   async listContributionEvents(

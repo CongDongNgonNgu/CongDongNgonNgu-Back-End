@@ -43,7 +43,8 @@ DO $$ BEGIN
     'SUBMIT',
     'VERIFY',
     'REJECT',
-    'INVALIDATE'
+    'INVALIDATE',
+    'REOPEN'
   );
 EXCEPTION
   WHEN duplicate_object THEN NULL;
@@ -193,6 +194,62 @@ CREATE INDEX IF NOT EXISTS library_resource_provenance_resource_idx
 CREATE INDEX IF NOT EXISTS library_resource_provenance_source_idx
   ON library_resource_provenance (source_type, source_id);
 
+CREATE OR REPLACE FUNCTION library_validate_provenance_source()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.source_type = 'PHASE06_LIBRARY_CANDIDATE'::library_source_type THEN
+    IF NEW.source_post_id IS NULL
+      OR NEW.source_response_id IS NULL
+      OR NEW.source_candidate_id IS NULL
+      OR NEW.source_acceptance_id IS NULL
+      OR NEW.source_id <> NEW.source_candidate_id::text
+    THEN
+      RAISE EXCEPTION 'LIBRARY_PHASE06_SOURCE_INVALID'
+        USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1
+      FROM community_library_candidates AS candidate
+      INNER JOIN community_structured_response_acceptances AS acceptance
+        ON acceptance.id = candidate.acceptance_id
+       AND acceptance.parent_post_id = candidate.source_post_id
+       AND acceptance.response_id = candidate.source_response_id
+       AND acceptance.revoked_at IS NULL
+      WHERE candidate.id = NEW.source_candidate_id
+        AND candidate.source_post_id = NEW.source_post_id
+        AND candidate.source_response_id = NEW.source_response_id
+        AND candidate.acceptance_id = NEW.source_acceptance_id
+        AND candidate.state = 'PENDING_REVIEW'::phase06_library_candidate_state
+    ) THEN
+      RAISE EXCEPTION 'LIBRARY_PHASE06_SOURCE_INVALID'
+        USING ERRCODE = 'check_violation';
+    END IF;
+  ELSIF NEW.source_post_id IS NOT NULL
+    OR NEW.source_response_id IS NOT NULL
+    OR NEW.source_candidate_id IS NOT NULL
+    OR NEW.source_acceptance_id IS NOT NULL
+  THEN
+    RAISE EXCEPTION 'LIBRARY_SOURCE_REFERENCE_INVALID'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS library_resource_provenance_source_guard
+  ON library_resource_provenance;
+
+CREATE TRIGGER library_resource_provenance_source_guard
+  BEFORE INSERT OR UPDATE OF source_type, source_id, source_post_id,
+    source_response_id, source_candidate_id, source_acceptance_id
+  ON library_resource_provenance
+  FOR EACH ROW
+  EXECUTE FUNCTION library_validate_provenance_source();
+
 CREATE TABLE IF NOT EXISTS library_resource_review_audits (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   resource_id uuid NOT NULL REFERENCES library_resources(id) ON DELETE RESTRICT,
@@ -208,7 +265,16 @@ CREATE TABLE IF NOT EXISTS library_resource_review_audits (
     CHECK (note IS NULL OR (
       char_length(note) BETWEEN 1 AND 2000
       AND length(btrim(note)) > 0
-    ))
+    )),
+  CONSTRAINT library_resource_review_audit_reopen_note_check
+    CHECK (
+      action <> 'REOPEN'::library_review_action
+      OR (
+        note IS NOT NULL
+        AND char_length(note) BETWEEN 1 AND 2000
+        AND length(btrim(note)) > 0
+      )
+    )
 );
 
 CREATE INDEX IF NOT EXISTS library_resource_review_audits_resource_idx

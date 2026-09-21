@@ -172,6 +172,7 @@ describe('Open Language Library contracts', () => {
     expect(assertLibraryReviewTransition('COMMUNITY_REVIEW', 'VERIFIED')).toBe('VERIFY');
     expect(assertLibraryReviewTransition('COMMUNITY_REVIEW', 'REJECTED')).toBe('REJECT');
     expect(assertLibraryReviewTransition('VERIFIED', 'REJECTED')).toBe('INVALIDATE');
+    expect(assertLibraryReviewTransition('REJECTED', 'DRAFT')).toBe('REOPEN');
     expect(() => assertLibraryReviewTransition('DRAFT', 'VERIFIED'))
       .toThrow('LIBRARY_REVIEW_TRANSITION_INVALID');
   });

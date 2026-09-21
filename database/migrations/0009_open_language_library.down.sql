@@ -17,6 +17,7 @@ DROP TABLE IF EXISTS library_licenses;
 
 DROP FUNCTION IF EXISTS library_protect_resource_type();
 DROP FUNCTION IF EXISTS library_validate_collection_member_types();
+DROP FUNCTION IF EXISTS library_validate_provenance_source();
 DROP FUNCTION IF EXISTS library_validate_resource_type();
 
 DROP TYPE IF EXISTS library_review_action;

@@ -85,6 +85,26 @@ describe('PostgresCorrectionsRepository', () => {
     expect(calls).not.toContain('COMMIT');
     expect(client.release).toHaveBeenCalledTimes(1);
   });
+
+  it('looks up only a pending candidate with active coherent source joins', async () => {
+    const query = jest.fn(async (..._args: unknown[]) => ({ rows: [candidateRow()] }));
+    const repository = new PostgresCorrectionsRepository({ query } as unknown as Pool);
+
+    await expect(repository.findLibraryCandidateById(candidateRow().id)).resolves.toMatchObject({
+      id: candidateRow().id,
+      sourcePostId: candidateRow().source_post_id,
+      sourceResponseId: candidateRow().source_response_id,
+      acceptanceId: candidateRow().acceptance_id,
+      state: 'PENDING_REVIEW',
+    });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('candidate.state = \'PENDING_REVIEW\'::phase06_library_candidate_state'),
+      [candidateRow().id],
+    );
+    const sql = String(query.mock.calls[0]?.[0]);
+    expect(sql).toContain('acceptance.parent_post_id = candidate.source_post_id');
+    expect(sql).toContain('acceptance.response_id = candidate.source_response_id');
+  });
 });
 
 function postRow() {
@@ -114,5 +134,29 @@ function correctionRow() {
     context: null,
     created_at: '2026-09-15T08:00:00.000Z',
     updated_at: '2026-09-15T08:00:00.000Z',
+  };
+}
+
+function candidateRow() {
+  return {
+    id: '00000000-0000-4000-8000-000000000020',
+    source_post_id: '00000000-0000-4000-8000-000000000010',
+    source_response_id: '00000000-0000-4000-8000-000000000011',
+    contributor_user_id: '00000000-0000-4000-8000-000000000001',
+    target_language_code: 'en',
+    response_kind: 'CORRECTION_PROPOSAL',
+    source_text: 'I has a book.',
+    corrected_text: 'I have a book.',
+    answer_text: null,
+    explanation: 'Subject-verb agreement.',
+    acceptance_id: '00000000-0000-4000-8000-000000000012',
+    accepted_by_user_id: '00000000-0000-4000-8000-000000000003',
+    accepted_at: '2026-09-15T08:00:00.000Z',
+    candidate_created_by_user_id: '00000000-0000-4000-8000-000000000004',
+    state: 'PENDING_REVIEW',
+    created_at: '2026-09-15T08:00:00.000Z',
+    updated_at: '2026-09-15T08:00:00.000Z',
+    invalidated_at: null,
+    invalidation_reason: null,
   };
 }

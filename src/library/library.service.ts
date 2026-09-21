@@ -1,4 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { CORRECTIONS_REPOSITORY } from '../corrections/corrections.repository';
+import type { CorrectionsRepository } from '../corrections/corrections.repository';
 import { PROFILE_REPOSITORY } from '../profile/profile.repository';
 import type { ProfileRepository } from '../profile/profile.repository';
 import {
@@ -35,6 +37,8 @@ export class LibraryService {
   constructor(
     @Inject(LIBRARY_REPOSITORY) private readonly repository: LibraryRepository,
     @Inject(PROFILE_REPOSITORY) private readonly profiles: ProfileRepository,
+    @Inject(CORRECTIONS_REPOSITORY)
+    private readonly corrections: Pick<CorrectionsRepository, 'findLibraryCandidateById'>,
   ) {}
 
   async registerLicense(
@@ -90,9 +94,10 @@ export class LibraryService {
   ): Promise<LibraryProvenanceRecord> {
     this.requireActor(actor);
     const resource = await this.requireResource(resourceId);
-    this.requireResourceEditor(actor, resource);
+    this.requireProvenanceEditor(actor, resource);
     const normalized = this.normalize(() => normalizeLibraryProvenanceInput(input));
-    this.requirePhase06SourcePair(normalized);
+    this.requireSourceAuthority(actor, normalized);
+    await this.requireSourceIntegrity(normalized);
     await this.requireActiveLicense(normalized.licenseKey);
 
     try {
@@ -109,9 +114,12 @@ export class LibraryService {
   ): Promise<LibraryProvenanceRecord[]> {
     this.requireActor(actor);
     const resource = await this.requireResource(resourceId);
-    this.requireResourceEditor(actor, resource);
+    this.requireProvenanceEditor(actor, resource);
     const normalized = inputs.map((input) => this.normalize(() => normalizeLibraryProvenanceInput(input)));
-    normalized.forEach(this.requirePhase06SourcePair);
+    for (const entry of normalized) {
+      this.requireSourceAuthority(actor, entry);
+      await this.requireSourceIntegrity(entry);
+    }
     for (const entry of normalized) await this.requireActiveLicense(entry.licenseKey);
 
     try {
@@ -145,11 +153,14 @@ export class LibraryService {
         if (resource.provenance.length === 0) {
           libraryFailure('LIBRARY_PROVENANCE_REQUIRED', 'A resource needs provenance before verification');
         }
-        for (const entry of resource.provenance) await this.requireActiveLicense(entry.licenseKey);
+        await this.requireCurrentProvenanceLicenses(resource, resource.visibility === 'PUBLIC');
       }
     }
 
-    const normalizedNote = this.normalizeReviewNote(note, action === 'REJECT' || action === 'INVALIDATE');
+    const normalizedNote = this.normalizeReviewNote(
+      note,
+      action === 'REJECT' || action === 'INVALIDATE' || action === 'REOPEN',
+    );
     try {
       return await this.repository.transitionReview({
         resourceId,
@@ -185,7 +196,13 @@ export class LibraryService {
     ) {
       return null;
     }
-    if (resource.provenance.some((entry) => !entry.license.active)) return null;
+    const provenance = await this.refreshProvenanceLicenses(resource.provenance);
+    if (
+      !provenance ||
+      provenance.some((entry) => (
+        !entry.license.active || entry.license.redistributionAllowed !== true
+      ))
+    ) return null;
 
     return {
       id: resource.id,
@@ -196,7 +213,7 @@ export class LibraryService {
       topics: [...resource.topics],
       reviewState: 'VERIFIED',
       details: cloneDetails(resource.details),
-      provenance: resource.provenance.map(toPublicProvenance),
+      provenance: provenance.map(toPublicProvenance),
       createdAt: new Date(resource.createdAt),
       updatedAt: new Date(resource.updatedAt),
     };
@@ -215,6 +232,40 @@ export class LibraryService {
     if (!license) libraryFailure('LIBRARY_LICENSE_UNKNOWN', 'The referenced library license is not registered');
     if (!license.active) libraryFailure('LIBRARY_LICENSE_DISABLED', 'The referenced library license is disabled');
     return license;
+  }
+
+  private async requireCurrentProvenanceLicenses(
+    resource: LibraryResourceRecord,
+    requireRedistribution: boolean,
+  ): Promise<LibraryProvenanceRecord[]> {
+    const provenance = await this.refreshProvenanceLicenses(resource.provenance);
+    if (!provenance) {
+      libraryFailure('LIBRARY_LICENSE_UNKNOWN', 'A referenced library license is not registered');
+    }
+    for (const entry of provenance) {
+      if (!entry.license.active) {
+        libraryFailure('LIBRARY_LICENSE_DISABLED', 'A referenced library license is disabled');
+      }
+      if (requireRedistribution && entry.license.redistributionAllowed !== true) {
+        libraryFailure(
+          'LIBRARY_LICENSE_REDISTRIBUTION_REQUIRED',
+          'A public resource requires explicit redistribution permission for every license',
+        );
+      }
+    }
+    return provenance;
+  }
+
+  private async refreshProvenanceLicenses(
+    provenance: readonly LibraryProvenanceRecord[],
+  ): Promise<LibraryProvenanceRecord[] | null> {
+    const refreshed: LibraryProvenanceRecord[] = [];
+    for (const entry of provenance) {
+      const license = await this.repository.findLicense(entry.licenseKey);
+      if (!license) return null;
+      refreshed.push({ ...entry, license });
+    }
+    return refreshed;
   }
 
   private async requireResource(resourceId: string): Promise<LibraryResourceRecord> {
@@ -246,14 +297,82 @@ export class LibraryService {
     }
   }
 
-  private requirePhase06SourcePair(input: NormalizedLibraryProvenanceInput): void {
+  private requireProvenanceEditor(actor: LibraryActor, resource: LibraryResourceRecord): void {
+    if (resource.reviewState === 'DRAFT') {
+      this.requireResourceEditor(actor, resource);
+      return;
+    }
+    if (resource.reviewState === 'COMMUNITY_REVIEW') {
+      this.requireReviewer(actor);
+      return;
+    }
+    libraryFailure(
+      'LIBRARY_PROVENANCE_IMMUTABLE',
+      'Provenance is immutable until a rejected resource is explicitly reopened',
+      409,
+    );
+  }
+
+  private requireSourceAuthority(
+    actor: LibraryActor,
+    input: NormalizedLibraryProvenanceInput,
+  ): void {
+    const reviewer = actor.roles.includes('MODERATOR') || actor.roles.includes('ADMIN');
+    if (reviewer) return;
     if (
-      input.sourceType === 'PHASE06_LIBRARY_CANDIDATE' &&
-      (!input.sourcePostId || !input.sourceResponseId)
+      input.sourceType !== 'ORIGINAL_AUTHOR' ||
+      (input.originalContributorUserId !== null && input.originalContributorUserId !== actor.userId)
+    ) {
+      libraryFailure(
+        'LIBRARY_PROVENANCE_SOURCE_FORBIDDEN',
+        'This provenance source requires an authorized reviewer or system flow',
+        403,
+      );
+    }
+  }
+
+  private async requireSourceIntegrity(input: NormalizedLibraryProvenanceInput): Promise<void> {
+    const hasPhase06Reference = Boolean(
+      input.sourcePostId ||
+      input.sourceResponseId ||
+      input.sourceCandidateId ||
+      input.sourceAcceptanceId,
+    );
+    if (input.sourceType !== 'PHASE06_LIBRARY_CANDIDATE') {
+      if (hasPhase06Reference) {
+        libraryFailure(
+          'LIBRARY_SOURCE_REFERENCE_INVALID',
+          'Phase 06 source references are only valid for Phase 06 candidate provenance',
+        );
+      }
+      return;
+    }
+
+    if (
+      !input.sourcePostId ||
+      !input.sourceResponseId ||
+      !input.sourceCandidateId ||
+      !input.sourceAcceptanceId ||
+      input.sourceId !== input.sourceCandidateId
     ) {
       libraryFailure(
         'LIBRARY_PHASE06_SOURCE_INVALID',
-        'Phase 06 candidate provenance requires source post and response references',
+        'Phase 06 candidate provenance requires a complete coherent source bundle',
+      );
+    }
+
+    const candidate = await this.corrections.findLibraryCandidateById(input.sourceCandidateId);
+    if (
+      !candidate ||
+      candidate.state !== 'PENDING_REVIEW' ||
+      candidate.id !== input.sourceCandidateId ||
+      candidate.sourcePostId !== input.sourcePostId ||
+      candidate.sourceResponseId !== input.sourceResponseId ||
+      candidate.acceptanceId !== input.sourceAcceptanceId
+    ) {
+      libraryFailure(
+        'LIBRARY_PHASE06_SOURCE_INVALID',
+        'The Phase 06 candidate references do not match an active pending candidate',
       );
     }
   }
@@ -271,7 +390,7 @@ export class LibraryService {
 
   private normalizeReviewNote(input: unknown, required: boolean): string | null {
     if (input === undefined || input === null || input === '') {
-      if (required) libraryFailure('LIBRARY_REVIEW_NOTE_REQUIRED', 'A rejection or invalidation note is required');
+      if (required) libraryFailure('LIBRARY_REVIEW_NOTE_REQUIRED', 'A review note is required');
       return null;
     }
     if (typeof input !== 'string') libraryFailure('LIBRARY_REVIEW_NOTE_INVALID', 'The review note is invalid');
@@ -304,11 +423,6 @@ function toPublicProvenance(record: LibraryProvenanceRecord): LibraryPublicProve
     },
     attribution: record.attribution,
     originalAuthorReference: record.originalAuthorReference,
-    importBatch: record.importBatch,
-    transformationHistory: record.transformationHistory.map((transformation) => ({
-      ...transformation,
-      metadata: transformation.metadata ? { ...transformation.metadata } : null,
-    })),
   };
 }
 

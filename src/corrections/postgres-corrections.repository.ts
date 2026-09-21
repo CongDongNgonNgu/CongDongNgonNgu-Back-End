@@ -686,6 +686,31 @@ export class PostgresCorrectionsRepository implements CorrectionsRepository {
     return result.rows.map(mapCandidate);
   }
 
+  async findLibraryCandidateById(id: string): Promise<LibraryCandidateRecord | null> {
+    const result = await this.pool.query(
+      `SELECT candidate.*, languages.code AS target_language_code
+       FROM community_library_candidates AS candidate
+       INNER JOIN community_posts AS post
+         ON post.id = candidate.source_post_id
+       INNER JOIN community_structured_responses AS response
+         ON response.id = candidate.source_response_id
+        AND response.parent_post_id = candidate.source_post_id
+       INNER JOIN languages ON languages.id = candidate.target_language_id
+       INNER JOIN community_structured_response_acceptances AS acceptance
+         ON acceptance.id = candidate.acceptance_id
+        AND acceptance.parent_post_id = candidate.source_post_id
+        AND acceptance.response_id = candidate.source_response_id
+        AND acceptance.revoked_at IS NULL
+       WHERE candidate.id = $1
+         AND candidate.state = 'PENDING_REVIEW'::phase06_library_candidate_state
+         AND post.visibility = 'PUBLIC'::community_post_visibility
+         AND post.moderation_state = 'ACTIVE'::community_moderation_state
+         AND response.moderation_state = 'ACTIVE'::community_moderation_state`,
+      [id],
+    );
+    return result.rows[0] ? mapCandidate(result.rows[0]) : null;
+  }
+
   async listContributionEvents(
     query: Phase06ContributionEventQuery = {},
   ): Promise<Phase06ContributionEvent[]> {

@@ -44,6 +44,7 @@ export const LIBRARY_REVIEW_ACTIONS = [
   'VERIFY',
   'REJECT',
   'INVALIDATE',
+  'REOPEN',
 ] as const;
 
 export type LibraryReviewAction = typeof LIBRARY_REVIEW_ACTIONS[number];
@@ -150,8 +151,6 @@ export interface LibraryPublicProvenance {
   license: LibraryPublicLicense;
   attribution: string;
   originalAuthorReference: string | null;
-  importBatch: string | null;
-  transformationHistory: LibraryTransformationRecord[];
 }
 
 export interface VocabularyDetails {

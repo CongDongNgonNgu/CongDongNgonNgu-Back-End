@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { AuthModule } from '../auth/auth.module';
+import { CorrectionsModule } from '../corrections/corrections.module';
 import { ProfileModule } from '../profile/profile.module';
 import { LibraryController } from './library.controller';
 import { LIBRARY_REPOSITORY } from './library.repository';
@@ -14,7 +15,7 @@ interface LibraryRuntimeConfig {
 }
 
 @Module({
-  imports: [AuthModule, ProfileModule],
+  imports: [AuthModule, CorrectionsModule, ProfileModule],
   controllers: [LibraryController],
   providers: [
     LibraryService,

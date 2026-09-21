@@ -156,6 +156,7 @@ export function assertLibraryReviewTransition(
     'COMMUNITY_REVIEW:VERIFIED': 'VERIFY',
     'COMMUNITY_REVIEW:REJECTED': 'REJECT',
     'VERIFIED:REJECTED': 'INVALIDATE',
+    'REJECTED:DRAFT': 'REOPEN',
   };
   const action = transitions[previousState + ':' + nextState];
   if (!action || !LIBRARY_REVIEW_ACTIONS.includes(action)) {

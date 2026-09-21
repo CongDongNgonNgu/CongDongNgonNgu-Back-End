@@ -36,11 +36,18 @@ describe('Phase 08A migration contract', () => {
     expect(sql).toContain('CREATE TYPE library_review_state AS ENUM');
     expect(sql).toContain('CREATE TYPE library_source_type AS ENUM');
     expect(sql).toContain('CREATE TYPE library_review_action AS ENUM');
+    expect(sql).toContain("'REOPEN'");
     expect(sql).toContain('UNIQUE (resource_id, source_type, source_id)');
     expect(sql).toContain('REFERENCES library_licenses(license_key) ON DELETE RESTRICT');
     expect(sql).toContain('REFERENCES community_posts(id) ON DELETE RESTRICT');
     expect(sql).toContain('REFERENCES community_library_candidates(id) ON DELETE RESTRICT');
     expect(sql).toContain('REFERENCES community_structured_response_acceptances(id) ON DELETE RESTRICT');
+    expect(sql).toContain('library_validate_provenance_source');
+    expect(sql).toContain('source_candidate_id');
+    expect(sql).toContain('source_acceptance_id');
+    expect(sql).toContain('LIBRARY_PHASE06_SOURCE_INVALID');
+    expect(sql).toContain('LIBRARY_SOURCE_REFERENCE_INVALID');
+    expect(sql).toContain('library_resource_review_audit_reopen_note_check');
     expect(sql).toContain('library_validate_resource_type');
     expect(sql).toContain("'DRAFT'");
     expect(sql).toContain("'COMMUNITY_REVIEW'");
@@ -76,6 +83,7 @@ describe('Phase 08A migration contract', () => {
       expect(sql).toContain(`DROP TABLE IF EXISTS ${table}`);
     }
     expect(sql).not.toMatch(/DROP TABLE IF EXISTS (users|languages|community_posts)/);
+    expect(sql).toContain('library_validate_provenance_source');
   });
 
   it('keeps migrations 0001 through 0008 byte-for-byte unchanged', () => {
