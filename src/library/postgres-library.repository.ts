@@ -293,18 +293,18 @@ export class PostgresLibraryRepository implements LibraryRepository {
          SET review_state = $3::library_review_state,
              reviewed_by_user_id = CASE
                WHEN $3::library_review_state IN ('VERIFIED'::library_review_state, 'REJECTED'::library_review_state)
-               THEN $4
+               THEN $4::uuid
                ELSE NULL
              END,
              reviewed_at = CASE
                WHEN $3::library_review_state IN ('VERIFIED'::library_review_state, 'REJECTED'::library_review_state)
-               THEN $5
+               THEN $5::timestamptz
                ELSE NULL
              END,
-             updated_at = $5
-         WHERE id = $1
+             updated_at = $5::timestamptz
+         WHERE id = $1::uuid
            AND review_state = $2::library_review_state
-           AND provenance_revision = $6
+           AND provenance_revision = $6::bigint
          RETURNING *`,
         [
           input.resourceId,
@@ -331,7 +331,7 @@ export class PostgresLibraryRepository implements LibraryRepository {
            note,
            created_at
          )
-         VALUES ($1, $2, $3::library_review_state, $4::library_review_state, $5::library_review_action, $6, $7)
+         VALUES ($1::uuid, $2::uuid, $3::library_review_state, $4::library_review_state, $5::library_review_action, $6, $7::timestamptz)
          RETURNING *`,
         [
           input.resourceId,
