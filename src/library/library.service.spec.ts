@@ -149,6 +149,7 @@ describe('LibraryService', () => {
       attribution: 'Owner attribution',
     });
 
+    await expect(service.getPublicResource(resource.id)).resolves.toBeNull();
     await expect(service.transitionReview(actor('other-1'), resource.id, 'COMMUNITY_REVIEW'))
       .rejects.toMatchObject({ code: 'LIBRARY_SUBMIT_FORBIDDEN' });
     await expect(service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW'))
