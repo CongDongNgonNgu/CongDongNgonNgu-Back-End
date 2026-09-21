@@ -24,6 +24,13 @@ describe('Language exchange migration contract', () => {
     expect(sql).toContain('INSERT INTO language_exchange_preferences (user_id)');
   });
 
+  it('keeps relationship requester column aligned with repository SQL', () => {
+    const sql = readFileSync(resolve(migrations, '0007_language_exchange_connections.sql'), 'utf8');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS language_exchange_connections');
+    expect(sql).toContain('requester_id uuid NOT NULL');
+    expect(sql).not.toContain('requester_user_id');
+  });
+
   it('has a rollback limited to exchange-owned objects', () => {
     const sql = readFileSync(
       resolve(migrations, '0006_language_exchange_preferences.down.sql'),

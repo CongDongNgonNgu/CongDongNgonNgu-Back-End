@@ -56,13 +56,13 @@ export class PostgresExchangeSafetyRepository implements ExchangeSafetyRepositor
         `DELETE FROM language_exchange_connections
           WHERE participant_a_id = LEAST($1::uuid, $2::uuid)
             AND participant_b_id = GREATEST($1::uuid, $2::uuid)
-          RETURNING id, requester_user_id`,
+          RETURNING id, requester_id`,
         [blockerUserId, blockedUserId],
       );
       await client.query('COMMIT');
       const removedRelationship = removed.rows[0] as {
         id?: unknown;
-        requester_user_id?: unknown;
+        requester_id?: unknown;
       } | undefined;
       return {
         targetUserId: blockedUserId,
@@ -71,8 +71,8 @@ export class PostgresExchangeSafetyRepository implements ExchangeSafetyRepositor
         ...(removedRelationship?.id
           ? {
               removedConnectionId: String(removedRelationship.id),
-              removedRequesterUserId: removedRelationship.requester_user_id
-                ? String(removedRelationship.requester_user_id)
+              removedRequesterUserId: removedRelationship.requester_id
+                ? String(removedRelationship.requester_id)
                 : undefined,
             }
           : {}),

@@ -11,7 +11,7 @@ describe('PostgresExchangeSafetyRepository', () => {
       if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 0 };
       if (sql.includes('INSERT INTO language_exchange_blocks')) return { rows: [{ blocker_user_id: 'first' }], rowCount: 1 };
       if (sql.includes('DELETE FROM language_exchange_connections')) {
-        return { rows: [{ id: 'connection-1', requester_user_id: 'requester-1' }], rowCount: 1 };
+        return { rows: [{ id: 'connection-1', requester_id: 'requester-1' }], rowCount: 1 };
       }
       throw new Error('Unexpected SQL: ' + sql);
     });
@@ -31,8 +31,9 @@ describe('PostgresExchangeSafetyRepository', () => {
     expect(calls[0]).toBe('BEGIN');
     expect(calls[1]).toContain('pg_advisory_xact_lock');
     expect(calls.some((sql) => sql.includes('INSERT INTO language_exchange_blocks'))).toBe(true);
-    expect(calls.find((sql) => sql.includes('DELETE FROM language_exchange_connections')))
-      .toContain('RETURNING id, requester_user_id');
+    const deleteSql = calls.find((sql) => sql.includes('DELETE FROM language_exchange_connections'));
+    expect(deleteSql).toContain('RETURNING id, requester_id');
+    expect(deleteSql).not.toContain('requester_user_id');
     expect(calls.at(-1)).toBe('COMMIT');
     expect(client.release).toHaveBeenCalledTimes(1);
   });
