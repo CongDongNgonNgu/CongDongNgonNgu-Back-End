@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
 import {
-  mergeProvenanceEntries,
+  mergeNormalizedProvenanceEntries,
   LibraryValidationError,
 } from './library.normalization';
 import {
@@ -8,6 +8,7 @@ import {
   type CreateLibraryResourceRepositoryInput,
   type LibraryRepository,
   type LibraryReviewTransitionResult,
+  type LibraryProvenanceMutationExpectation,
   type TransitionLibraryReviewRepositoryInput,
 } from './library.repository';
 import type {
@@ -160,10 +161,15 @@ export class PostgresLibraryRepository implements LibraryRepository {
   async addProvenance(
     resourceId: string,
     input: NormalizedLibraryProvenanceInput,
+    expectation: LibraryProvenanceMutationExpectation,
     now = new Date(),
   ): Promise<LibraryProvenanceRecord> {
-    const result = await this.pool.query(
-      `INSERT INTO library_resource_provenance (
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await this.lockAndValidateProvenanceMutation(client, resourceId, expectation);
+      const result = await client.query(
+        `INSERT INTO library_resource_provenance (
          resource_id,
          source_type,
          source_id,
@@ -200,25 +206,32 @@ export class PostgresLibraryRepository implements LibraryRepository {
          $15
        )
        RETURNING *`,
-      provenanceValues(resourceId, input, now),
-    ).catch((error) => {
+        provenanceValues(resourceId, input, now),
+      );
+      await client.query('COMMIT');
+      const license = await this.findLicense(input.licenseKey);
+      if (!license) {
+        throw new LibraryRepositoryConflictError('LIBRARY_LICENSE_UNKNOWN', 'Library license was not found');
+      }
+      return mapProvenance({ ...result.rows[0], license }, license);
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
       throw mapPostgresError(error);
-    });
-    const license = await this.findLicense(input.licenseKey);
-    if (!license) {
-      throw new LibraryRepositoryConflictError('LIBRARY_LICENSE_UNKNOWN', 'Library license was not found');
+    } finally {
+      client.release();
     }
-    return mapProvenance({ ...result.rows[0], license }, license);
   }
 
   async mergeProvenance(
     resourceId: string,
     inputs: readonly NormalizedLibraryProvenanceInput[],
+    expectation: LibraryProvenanceMutationExpectation,
     now = new Date(),
   ): Promise<LibraryProvenanceRecord[]> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await this.lockAndValidateProvenanceMutation(client, resourceId, expectation);
       const existingResult = await client.query(
         provenanceSelect('WHERE provenance.resource_id = $1', true),
         [resourceId],
@@ -226,7 +239,7 @@ export class PostgresLibraryRepository implements LibraryRepository {
       const existing = existingResult.rows.map((row) => mapProvenance(row, mapLicenseFromProvenanceRow(row)));
       let merged: NormalizedLibraryProvenanceInput[];
       try {
-        merged = mergeProvenanceEntries(existing.map(toNormalizedProvenance), inputs);
+        merged = mergeNormalizedProvenanceEntries(existing.map(toNormalizedProvenance), inputs);
       } catch (error) {
         if (error instanceof LibraryValidationError && error.code === 'LIBRARY_PROVENANCE_DUPLICATE') {
           throw new LibraryRepositoryConflictError(
@@ -291,6 +304,7 @@ export class PostgresLibraryRepository implements LibraryRepository {
              updated_at = $5
          WHERE id = $1
            AND review_state = $2::library_review_state
+           AND provenance_revision = $6
          RETURNING *`,
         [
           input.resourceId,
@@ -298,6 +312,7 @@ export class PostgresLibraryRepository implements LibraryRepository {
           input.nextState,
           input.actorUserId,
           input.occurredAt,
+          input.expectedProvenanceRevision,
         ],
       );
       if (!updated.rows[0]) {
@@ -484,6 +499,42 @@ export class PostgresLibraryRepository implements LibraryRepository {
     if (!result.rows[0]) throw new LibraryRepositoryConflictError('LIBRARY_RESOURCE_DETAILS_MISSING', 'Library resource details are missing');
     return mapDetails(resourceType, result.rows[0]);
   }
+
+  private async lockAndValidateProvenanceMutation(
+    client: PoolClient,
+    resourceId: string,
+    expectation: LibraryProvenanceMutationExpectation,
+  ): Promise<void> {
+    const result = await client.query(
+      `SELECT review_state, provenance_revision
+       FROM library_resources
+       WHERE id = $1
+       FOR UPDATE`,
+      [resourceId],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_RESOURCE_NOT_FOUND',
+        'Library resource was not found',
+      );
+    }
+    if (row.review_state !== 'DRAFT' && row.review_state !== 'COMMUNITY_REVIEW') {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_PROVENANCE_IMMUTABLE',
+        'Provenance cannot be changed in the current review state',
+      );
+    }
+    if (
+      row.review_state !== expectation.expectedReviewState ||
+      Number(row.provenance_revision) !== expectation.expectedProvenanceRevision
+    ) {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_REVIEW_CONFLICT',
+        'The resource review state or provenance changed before this mutation',
+      );
+    }
+  }
 }
 
 function provenanceSelect(where: string, lock: boolean): string {
@@ -609,6 +660,7 @@ function mapResource(
     updatedAt: new Date(String(row.updated_at)),
     reviewedByUserId: row.reviewed_by_user_id ? String(row.reviewed_by_user_id) : null,
     reviewedAt: row.reviewed_at ? new Date(String(row.reviewed_at)) : null,
+    provenanceRevision: Number(row.provenance_revision ?? 0),
     details,
     provenance,
   };
@@ -757,6 +809,19 @@ function mapAudit(row: Record<string, unknown>): LibraryReviewAuditRecord {
 function mapPostgresError(error: unknown): Error {
   if (error instanceof LibraryRepositoryConflictError) return error;
   const code = isPostgresError(error) ? error.code : null;
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('LIBRARY_PROVENANCE_IMMUTABLE')) {
+    return new LibraryRepositoryConflictError(
+      'LIBRARY_PROVENANCE_IMMUTABLE',
+      'Provenance cannot be changed in the current review state',
+    );
+  }
+  if (message.includes('LIBRARY_PROVENANCE_RESOURCE_MOVE')) {
+    return new LibraryRepositoryConflictError(
+      'LIBRARY_PROVENANCE_RESOURCE_MOVE',
+      'Provenance cannot move between resources',
+    );
+  }
   if (code === '23505') {
     return new LibraryRepositoryConflictError(
       'LIBRARY_PROVENANCE_DUPLICATE',

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
-  mergeProvenanceEntries,
+  mergeNormalizedProvenanceEntries,
   type LibraryValidationError,
 } from './library.normalization';
 import type {
@@ -35,11 +35,17 @@ export interface CreateLibraryResourceRepositoryInput extends NormalizedLibraryR
 export interface TransitionLibraryReviewRepositoryInput {
   resourceId: string;
   expectedPreviousState: LibraryReviewState;
+  expectedProvenanceRevision: number;
   nextState: LibraryReviewState;
   action: LibraryReviewAction;
   actorUserId: string;
   note: string | null;
   occurredAt: Date;
+}
+
+export interface LibraryProvenanceMutationExpectation {
+  expectedReviewState: LibraryReviewState;
+  expectedProvenanceRevision: number;
 }
 
 export interface LibraryReviewTransitionResult {
@@ -58,11 +64,13 @@ export interface LibraryRepository {
   addProvenance(
     resourceId: string,
     input: NormalizedLibraryProvenanceInput,
+    expectation: LibraryProvenanceMutationExpectation,
     now?: Date,
   ): Promise<LibraryProvenanceRecord>;
   mergeProvenance(
     resourceId: string,
     inputs: readonly NormalizedLibraryProvenanceInput[],
+    expectation: LibraryProvenanceMutationExpectation,
     now?: Date,
   ): Promise<LibraryProvenanceRecord[]>;
   transitionReview(
@@ -111,6 +119,7 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       updatedAt: new Date(input.createdAt),
       reviewedByUserId: null,
       reviewedAt: null,
+      provenanceRevision: 0,
       details: cloneDetails(input.details),
       provenance: [],
     };
@@ -126,9 +135,11 @@ export class InMemoryLibraryRepository implements LibraryRepository {
   async addProvenance(
     resourceId: string,
     input: NormalizedLibraryProvenanceInput,
+    expectation: LibraryProvenanceMutationExpectation,
     now = new Date(),
   ): Promise<LibraryProvenanceRecord> {
     const resource = this.requireResource(resourceId);
+    this.requireProvenanceMutationState(resource, expectation);
     this.requireActiveLicense(input.licenseKey);
     if (resource.provenance.some((entry) => provenanceKey(entry) === provenanceKey(input))) {
       throw new LibraryRepositoryConflictError(
@@ -139,6 +150,7 @@ export class InMemoryLibraryRepository implements LibraryRepository {
     const license = this.licenses.get(input.licenseKey)!;
     const record = createProvenance(resourceId, input, license, now);
     resource.provenance.push(record);
+    resource.provenanceRevision += 1;
     resource.updatedAt = new Date(now);
     return cloneProvenance(record);
   }
@@ -146,13 +158,15 @@ export class InMemoryLibraryRepository implements LibraryRepository {
   async mergeProvenance(
     resourceId: string,
     inputs: readonly NormalizedLibraryProvenanceInput[],
+    expectation: LibraryProvenanceMutationExpectation,
     now = new Date(),
   ): Promise<LibraryProvenanceRecord[]> {
     const resource = this.requireResource(resourceId);
+    this.requireProvenanceMutationState(resource, expectation);
     const existingInputs = resource.provenance.map(toNormalizedProvenance);
     let merged: NormalizedLibraryProvenanceInput[];
     try {
-      merged = mergeProvenanceEntries(existingInputs, inputs);
+      merged = mergeNormalizedProvenanceEntries(existingInputs, inputs);
     } catch (error) {
       if (isValidationError(error) && error.code === 'LIBRARY_PROVENANCE_DUPLICATE') {
         throw new LibraryRepositoryConflictError(
@@ -168,6 +182,7 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       this.requireActiveLicense(entry.licenseKey);
       const license = this.licenses.get(entry.licenseKey)!;
       resource.provenance.push(createProvenance(resourceId, entry, license, now));
+      resource.provenanceRevision += 1;
     }
     resource.updatedAt = new Date(now);
     return resource.provenance.map(cloneProvenance);
@@ -177,10 +192,13 @@ export class InMemoryLibraryRepository implements LibraryRepository {
     input: TransitionLibraryReviewRepositoryInput,
   ): Promise<LibraryReviewTransitionResult> {
     const resource = this.requireResource(input.resourceId);
-    if (resource.reviewState !== input.expectedPreviousState) {
+    if (
+      resource.reviewState !== input.expectedPreviousState ||
+      resource.provenanceRevision !== input.expectedProvenanceRevision
+    ) {
       throw new LibraryRepositoryConflictError(
         'LIBRARY_REVIEW_CONFLICT',
-        'The resource review state changed before this transition',
+        'The resource review state or provenance changed before this transition',
       );
     }
     const previousState = resource.reviewState;
@@ -239,6 +257,27 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       throw new LibraryRepositoryConflictError(
         'LIBRARY_LICENSE_DISABLED',
         'Library license is disabled',
+      );
+    }
+  }
+
+  private requireProvenanceMutationState(
+    resource: LibraryResourceRecord,
+    expectation: LibraryProvenanceMutationExpectation,
+  ): void {
+    if (resource.reviewState !== 'DRAFT' && resource.reviewState !== 'COMMUNITY_REVIEW') {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_PROVENANCE_IMMUTABLE',
+        'Provenance cannot be changed in the current review state',
+      );
+    }
+    if (
+      resource.reviewState !== expectation.expectedReviewState ||
+      resource.provenanceRevision !== expectation.expectedProvenanceRevision
+    ) {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_REVIEW_CONFLICT',
+        'The resource review state or provenance changed before this mutation',
       );
     }
   }

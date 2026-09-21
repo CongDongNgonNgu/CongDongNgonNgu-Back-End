@@ -10,6 +10,8 @@ DROP TABLE IF EXISTS library_translations;
 DROP TABLE IF EXISTS library_sentences;
 DROP TABLE IF EXISTS library_vocabularies;
 DROP TABLE IF EXISTS library_resource_review_audits;
+DROP TRIGGER IF EXISTS library_resource_provenance_mutation_guard
+  ON library_resource_provenance;
 DROP TABLE IF EXISTS library_resource_provenance;
 DROP TABLE IF EXISTS library_resource_topics;
 DROP TABLE IF EXISTS library_resources;
@@ -17,6 +19,7 @@ DROP TABLE IF EXISTS library_licenses;
 
 DROP FUNCTION IF EXISTS library_protect_resource_type();
 DROP FUNCTION IF EXISTS library_validate_collection_member_types();
+DROP FUNCTION IF EXISTS library_guard_provenance_mutation();
 DROP FUNCTION IF EXISTS library_validate_provenance_source();
 DROP FUNCTION IF EXISTS library_validate_resource_type();
 

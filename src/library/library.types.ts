@@ -264,6 +264,7 @@ export interface LibraryResourceRecord {
   updatedAt: Date;
   reviewedByUserId: string | null;
   reviewedAt: Date | null;
+  provenanceRevision: number;
   details: LibraryResourceDetails;
   provenance: LibraryProvenanceRecord[];
 }

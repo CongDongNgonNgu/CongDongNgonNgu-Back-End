@@ -96,8 +96,11 @@ CREATE TABLE IF NOT EXISTS library_resources (
   updated_at timestamptz NOT NULL DEFAULT now(),
   reviewed_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
   reviewed_at timestamptz,
+  provenance_revision bigint NOT NULL DEFAULT 0,
   CONSTRAINT library_resource_languages_distinct_check
     CHECK (secondary_language_id IS NULL OR secondary_language_id <> primary_language_id),
+  CONSTRAINT library_resource_provenance_revision_check
+    CHECK (provenance_revision >= 0),
   CONSTRAINT library_resource_review_metadata_check
     CHECK (
       (
@@ -249,6 +252,54 @@ CREATE TRIGGER library_resource_provenance_source_guard
   ON library_resource_provenance
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_provenance_source();
+
+CREATE OR REPLACE FUNCTION library_guard_provenance_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  parent_state library_review_state;
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW.resource_id IS DISTINCT FROM OLD.resource_id THEN
+    RAISE EXCEPTION 'LIBRARY_PROVENANCE_RESOURCE_MOVE'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  SELECT review_state INTO parent_state
+  FROM library_resources
+  WHERE id = NEW.resource_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'LIBRARY_RESOURCE_NOT_FOUND'
+      USING ERRCODE = 'foreign_key_violation';
+  END IF;
+
+  IF parent_state NOT IN (
+    'DRAFT'::library_review_state,
+    'COMMUNITY_REVIEW'::library_review_state
+  ) THEN
+    RAISE EXCEPTION 'LIBRARY_PROVENANCE_IMMUTABLE'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  UPDATE library_resources
+  SET provenance_revision = provenance_revision + 1,
+      updated_at = now()
+  WHERE id = NEW.resource_id;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS library_resource_provenance_mutation_guard
+  ON library_resource_provenance;
+
+CREATE TRIGGER library_resource_provenance_mutation_guard
+  BEFORE INSERT OR UPDATE
+  ON library_resource_provenance
+  FOR EACH ROW
+  EXECUTE FUNCTION library_guard_provenance_mutation();
 
 CREATE TABLE IF NOT EXISTS library_resource_review_audits (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

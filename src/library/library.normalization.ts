@@ -126,11 +126,20 @@ export function mergeProvenanceEntries(
   existing: readonly NormalizedLibraryProvenanceInput[],
   incoming: readonly LibraryProvenanceInput[],
 ): NormalizedLibraryProvenanceInput[] {
+  return mergeNormalizedProvenanceEntries(
+    existing,
+    incoming.map((candidate) => normalizeLibraryProvenanceInput(candidate)),
+  );
+}
+
+export function mergeNormalizedProvenanceEntries(
+  existing: readonly NormalizedLibraryProvenanceInput[],
+  incoming: readonly NormalizedLibraryProvenanceInput[],
+): NormalizedLibraryProvenanceInput[] {
   const result = existing.map(cloneProvenance);
   const byKey = new Map(result.map((entry) => [provenanceKey(entry), entry]));
 
-  for (const candidate of incoming) {
-    const normalized = normalizeLibraryProvenanceInput(candidate);
+  for (const normalized of incoming) {
     const key = provenanceKey(normalized);
     const prior = byKey.get(key);
     if (!prior) {

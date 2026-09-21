@@ -8,6 +8,7 @@ import { LibraryService } from './library.service';
 import type {
   LibraryActor,
   LibraryLicenseInput,
+  NormalizedLibraryProvenanceInput,
   LibraryResourceType,
 } from './library.types';
 
@@ -450,19 +451,226 @@ describe('LibraryService', () => {
     })).resolves.toMatchObject({ sourceId: 'reviewer-correction' });
     await expect(service.getResource(resource.id)).resolves.toMatchObject({ reviewState: 'COMMUNITY_REVIEW' });
   });
+
+  it('binds member original-author provenance to the authenticated actor and keeps the id private', async () => {
+    const member = actor(uuid(101));
+    const reviewer = actor(uuid(102), ['MODERATOR']);
+    const { service } = createService();
+    await service.registerLicense(reviewer, license('ACTOR-BOUND-V1', true, true));
+    const resource = await service.createDraftResource(member, {
+      resourceType: 'VOCABULARY',
+      primaryLanguageCode: 'en',
+      visibility: 'PUBLIC',
+      details: { term: 'word', definition: 'meaning' },
+    });
+
+    await service.attachProvenance(member, resource.id, {
+      sourceType: 'ORIGINAL_AUTHOR',
+      sourceId: 'member-original-1',
+      licenseKey: 'ACTOR-BOUND-V1',
+      attribution: 'Member attribution',
+      originalContributorUserId: member.userId,
+    });
+    await expect(service.attachProvenance(member, resource.id, {
+      sourceType: 'ORIGINAL_AUTHOR',
+      sourceId: 'member-original-spoof',
+      licenseKey: 'ACTOR-BOUND-V1',
+      attribution: 'Spoofed attribution',
+      originalContributorUserId: uuid(103),
+    })).rejects.toMatchObject({ code: 'LIBRARY_PROVENANCE_SOURCE_FORBIDDEN' });
+
+    expect(await service.getResource(resource.id)).toMatchObject({
+      provenance: [{ originalContributorUserId: member.userId }],
+    });
+    await service.transitionReview(member, resource.id, 'COMMUNITY_REVIEW');
+    await service.transitionReview(reviewer, resource.id, 'VERIFIED');
+    const publicResource = await service.getPublicResource(resource.id);
+    expect(publicResource?.provenance[0]).not.toHaveProperty('originalContributorUserId');
+  });
+
+  it('keeps the creator frozen in community review even when the creator is a moderator', async () => {
+    const creator = actor(uuid(104), ['MODERATOR']);
+    const otherReviewer = actor(uuid(105), ['ADMIN']);
+    const { service } = createService();
+    await service.registerLicense(otherReviewer, license('CREATOR-MOD-V1'));
+    const resource = await service.createDraftResource(creator, {
+      resourceType: 'VOCABULARY',
+      primaryLanguageCode: 'en',
+      details: { term: 'word', definition: 'meaning' },
+    });
+    await service.attachProvenance(creator, resource.id, {
+      sourceType: 'ORIGINAL_AUTHOR',
+      sourceId: 'creator-mod-original',
+      licenseKey: 'CREATOR-MOD-V1',
+      attribution: 'Creator attribution',
+    });
+    await service.transitionReview(creator, resource.id, 'COMMUNITY_REVIEW');
+
+    await expect(service.attachProvenance(creator, resource.id, {
+      sourceType: 'ORIGINAL_AUTHOR',
+      sourceId: 'creator-mod-forbidden',
+      licenseKey: 'CREATOR-MOD-V1',
+      attribution: 'Creator correction',
+    })).rejects.toMatchObject({ code: 'LIBRARY_REVIEW_FORBIDDEN' });
+    await expect(service.attachProvenance(otherReviewer, resource.id, {
+      sourceType: 'ORIGINAL_AUTHOR',
+      sourceId: 'other-reviewer-correction',
+      licenseKey: 'CREATOR-MOD-V1',
+      attribution: 'Reviewer correction',
+    })).resolves.toMatchObject({ sourceId: 'other-reviewer-correction' });
+  });
+
+  it('rejects verification when provenance changes after the verifier loaded its revision', async () => {
+    const repository = new RevisionRaceRepository();
+    const { service } = createService(async () => null, repository);
+    const reviewer = actor('moderator-race-1', ['MODERATOR']);
+    await service.registerLicense(reviewer, license('RACE-V1', true, true));
+    const resource = await createVocabulary(service, 'PUBLIC');
+    await service.attachProvenance(actor('owner-1'), resource.id, {
+      sourceType: 'ORIGINAL_AUTHOR',
+      sourceId: 'race-original',
+      licenseKey: 'RACE-V1',
+      attribution: 'Original attribution',
+    });
+    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    const loaded = await service.getResource(resource.id);
+    expect(loaded?.provenanceRevision).toBe(1);
+
+    repository.runBeforeNextLicenseLookup(async () => {
+      await repository.addProvenance(resource.id, normalizedProvenance('race-concurrent', 'RACE-V1'), {
+        expectedReviewState: 'COMMUNITY_REVIEW',
+        expectedProvenanceRevision: 1,
+      }, new Date());
+    });
+    await expect(service.transitionReview(reviewer, resource.id, 'VERIFIED'))
+      .rejects.toMatchObject({ code: 'LIBRARY_REVIEW_CONFLICT' });
+    await expect(service.getResource(resource.id)).resolves.toMatchObject({
+      reviewState: 'COMMUNITY_REVIEW',
+      provenanceRevision: 2,
+    });
+  });
+
+  it('rejects stale draft provenance after submit and rejects provenance after verification', async () => {
+    const { service, repository } = createService();
+    const reviewer = actor('moderator-race-2', ['MODERATOR']);
+    await service.registerLicense(reviewer, license('STATE-GUARD-V1', true, true));
+    const resource = await createVocabulary(service, 'PUBLIC');
+    await service.attachProvenance(actor('owner-1'), resource.id, {
+      sourceType: 'ORIGINAL_AUTHOR',
+      sourceId: 'state-guard-original',
+      licenseKey: 'STATE-GUARD-V1',
+      attribution: 'Original attribution',
+    });
+    const staleDraft = await service.getResource(resource.id);
+    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await expect(repository.addProvenance(
+      resource.id,
+      normalizedProvenance('stale-draft-mutation', 'STATE-GUARD-V1'),
+      {
+        expectedReviewState: 'DRAFT',
+        expectedProvenanceRevision: staleDraft!.provenanceRevision,
+      },
+      new Date(),
+    )).rejects.toMatchObject({ code: 'LIBRARY_REVIEW_CONFLICT' });
+    await expect(service.getResource(resource.id)).resolves.toMatchObject({
+      reviewState: 'COMMUNITY_REVIEW',
+      provenanceRevision: staleDraft?.provenanceRevision,
+    });
+
+    await service.transitionReview(reviewer, resource.id, 'VERIFIED');
+    await expect(repository.addProvenance(
+      resource.id,
+      normalizedProvenance('after-verify', 'STATE-GUARD-V1'),
+      {
+        expectedReviewState: 'COMMUNITY_REVIEW',
+        expectedProvenanceRevision: staleDraft!.provenanceRevision,
+      },
+      new Date(),
+    )).rejects.toMatchObject({ code: 'LIBRARY_PROVENANCE_IMMUTABLE' });
+  });
+
+  it('requires a fresh review revision after a reviewer provenance correction', async () => {
+    const { service, repository } = createService();
+    const reviewer = actor('moderator-race-3', ['MODERATOR']);
+    await service.registerLicense(reviewer, license('CORRECTION-RACE-V1', true, true));
+    const resource = await createVocabulary(service, 'PRIVATE');
+    await service.attachProvenance(actor('owner-1'), resource.id, {
+      sourceType: 'ORIGINAL_AUTHOR',
+      sourceId: 'correction-race-original',
+      licenseKey: 'CORRECTION-RACE-V1',
+      attribution: 'Original attribution',
+    });
+    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    const staleVerifierSnapshot = await service.getResource(resource.id);
+    await service.attachProvenance(reviewer, resource.id, {
+      sourceType: 'ORIGINAL_AUTHOR',
+      sourceId: 'correction-race-reviewer',
+      licenseKey: 'CORRECTION-RACE-V1',
+      attribution: 'Reviewer correction',
+    });
+
+    await expect(repository.transitionReview({
+      resourceId: resource.id,
+      expectedPreviousState: 'COMMUNITY_REVIEW',
+      expectedProvenanceRevision: staleVerifierSnapshot!.provenanceRevision,
+      nextState: 'VERIFIED',
+      action: 'VERIFY',
+      actorUserId: reviewer.userId,
+      note: null,
+      occurredAt: new Date(),
+    })).rejects.toMatchObject({ code: 'LIBRARY_REVIEW_CONFLICT' });
+    await expect(service.transitionReview(reviewer, resource.id, 'VERIFIED'))
+      .resolves.toMatchObject({ resource: { reviewState: 'VERIFIED' } });
+  });
 });
 
 function createService(
   findLibraryCandidateById: (id: string) => Promise<LibraryCandidateRecord | null> = async () => null,
+  repository: LibraryRepository = new InMemoryLibraryRepository(),
 ): {
   service: LibraryService;
   repository: LibraryRepository;
 } {
-  const repository = new InMemoryLibraryRepository();
   const profiles = new InMemoryProfileRepository();
   return {
     repository,
     service: new LibraryService(repository, profiles, { findLibraryCandidateById }),
+  };
+}
+
+class RevisionRaceRepository extends InMemoryLibraryRepository {
+  private beforeNextLicenseLookup: (() => Promise<void>) | null = null;
+
+  runBeforeNextLicenseLookup(callback: () => Promise<void>): void {
+    this.beforeNextLicenseLookup = callback;
+  }
+
+  override async findLicense(licenseKey: string) {
+    const callback = this.beforeNextLicenseLookup;
+    this.beforeNextLicenseLookup = null;
+    if (callback) await callback();
+    return super.findLicense(licenseKey);
+  }
+}
+
+function normalizedProvenance(
+  sourceId: string,
+  licenseKey: string,
+): NormalizedLibraryProvenanceInput {
+  return {
+    sourceType: 'ORIGINAL_AUTHOR',
+    sourceId,
+    sourceUrl: null,
+    licenseKey,
+    attribution: 'Concurrent attribution',
+    originalAuthorReference: null,
+    originalContributorUserId: null,
+    importBatch: null,
+    transformationHistory: [],
+    sourcePostId: null,
+    sourceResponseId: null,
+    sourceCandidateId: null,
+    sourceAcceptanceId: null,
   };
 }
 

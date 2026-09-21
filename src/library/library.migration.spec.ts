@@ -43,6 +43,14 @@ describe('Phase 08A migration contract', () => {
     expect(sql).toContain('REFERENCES community_library_candidates(id) ON DELETE RESTRICT');
     expect(sql).toContain('REFERENCES community_structured_response_acceptances(id) ON DELETE RESTRICT');
     expect(sql).toContain('library_validate_provenance_source');
+    expect(sql).toContain('provenance_revision bigint NOT NULL DEFAULT 0');
+    expect(sql).toContain('CHECK (provenance_revision >= 0)');
+    expect(sql).toContain('library_guard_provenance_mutation');
+    expect(sql).toContain('library_resource_provenance_mutation_guard');
+    expect(sql).toContain('FOR UPDATE');
+    expect(sql).toContain('provenance_revision = provenance_revision + 1');
+    expect(sql).toContain("parent_state NOT IN");
+    expect(sql).toContain('NEW.resource_id IS DISTINCT FROM OLD.resource_id');
     expect(sql).toContain('source_candidate_id');
     expect(sql).toContain('source_acceptance_id');
     expect(sql).toContain('LIBRARY_PHASE06_SOURCE_INVALID');
@@ -84,6 +92,9 @@ describe('Phase 08A migration contract', () => {
     }
     expect(sql).not.toMatch(/DROP TABLE IF EXISTS (users|languages|community_posts)/);
     expect(sql).toContain('library_validate_provenance_source');
+    expect(sql).toContain('library_resource_provenance_mutation_guard');
+    expect(sql).toContain('library_guard_provenance_mutation');
+    expect(sql).toContain('DROP FUNCTION IF EXISTS library_guard_provenance_mutation()');
   });
 
   it('keeps migrations 0001 through 0008 byte-for-byte unchanged', () => {

@@ -95,13 +95,18 @@ export class LibraryService {
     this.requireActor(actor);
     const resource = await this.requireResource(resourceId);
     this.requireProvenanceEditor(actor, resource);
-    const normalized = this.normalize(() => normalizeLibraryProvenanceInput(input));
-    this.requireSourceAuthority(actor, normalized);
+    const normalized = this.bindSourceAuthority(
+      actor,
+      this.normalize(() => normalizeLibraryProvenanceInput(input)),
+    );
     await this.requireSourceIntegrity(normalized);
     await this.requireActiveLicense(normalized.licenseKey);
 
     try {
-      return await this.repository.addProvenance(resourceId, normalized, new Date());
+      return await this.repository.addProvenance(resourceId, normalized, {
+        expectedReviewState: resource.reviewState,
+        expectedProvenanceRevision: resource.provenanceRevision,
+      }, new Date());
     } catch (error) {
       throw this.mapRepositoryError(error);
     }
@@ -115,15 +120,20 @@ export class LibraryService {
     this.requireActor(actor);
     const resource = await this.requireResource(resourceId);
     this.requireProvenanceEditor(actor, resource);
-    const normalized = inputs.map((input) => this.normalize(() => normalizeLibraryProvenanceInput(input)));
+    const normalized = inputs.map((input) => this.bindSourceAuthority(
+      actor,
+      this.normalize(() => normalizeLibraryProvenanceInput(input)),
+    ));
     for (const entry of normalized) {
-      this.requireSourceAuthority(actor, entry);
       await this.requireSourceIntegrity(entry);
     }
     for (const entry of normalized) await this.requireActiveLicense(entry.licenseKey);
 
     try {
-      return await this.repository.mergeProvenance(resourceId, normalized, new Date());
+      return await this.repository.mergeProvenance(resourceId, normalized, {
+        expectedReviewState: resource.reviewState,
+        expectedProvenanceRevision: resource.provenanceRevision,
+      }, new Date());
     } catch (error) {
       throw this.mapRepositoryError(error);
     }
@@ -165,6 +175,7 @@ export class LibraryService {
       return await this.repository.transitionReview({
         resourceId,
         expectedPreviousState: resource.reviewState,
+        expectedProvenanceRevision: resource.provenanceRevision,
         nextState,
         action,
         actorUserId: actor.userId,
@@ -303,6 +314,13 @@ export class LibraryService {
       return;
     }
     if (resource.reviewState === 'COMMUNITY_REVIEW') {
+      if (resource.createdByUserId === actor.userId) {
+        libraryFailure(
+          'LIBRARY_REVIEW_FORBIDDEN',
+          'The resource creator cannot correct provenance after submission',
+          403,
+        );
+      }
       this.requireReviewer(actor);
       return;
     }
@@ -313,22 +331,33 @@ export class LibraryService {
     );
   }
 
-  private requireSourceAuthority(
+  private bindSourceAuthority(
     actor: LibraryActor,
     input: NormalizedLibraryProvenanceInput,
-  ): void {
+  ): NormalizedLibraryProvenanceInput {
     const reviewer = actor.roles.includes('MODERATOR') || actor.roles.includes('ADMIN');
-    if (reviewer) return;
-    if (
-      input.sourceType !== 'ORIGINAL_AUTHOR' ||
-      (input.originalContributorUserId !== null && input.originalContributorUserId !== actor.userId)
-    ) {
+    if (reviewer) return input;
+    if (input.sourceType !== 'ORIGINAL_AUTHOR') {
       libraryFailure(
         'LIBRARY_PROVENANCE_SOURCE_FORBIDDEN',
         'This provenance source requires an authorized reviewer or system flow',
         403,
       );
     }
+    if (
+      input.originalContributorUserId !== null &&
+      input.originalContributorUserId !== actor.userId
+    ) {
+      libraryFailure(
+        'LIBRARY_PROVENANCE_SOURCE_FORBIDDEN',
+        'A member original-author provenance must identify the authenticated contributor',
+        403,
+      );
+    }
+    return {
+      ...input,
+      originalContributorUserId: actor.userId,
+    };
   }
 
   private async requireSourceIntegrity(input: NormalizedLibraryProvenanceInput): Promise<void> {
