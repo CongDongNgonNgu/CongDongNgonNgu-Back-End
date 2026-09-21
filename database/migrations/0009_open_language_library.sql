@@ -428,60 +428,96 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS library_resources_type_guard
+  ON library_resources;
+
 CREATE TRIGGER library_resources_type_guard
   BEFORE UPDATE OF resource_type ON library_resources
   FOR EACH ROW
   EXECUTE FUNCTION library_protect_resource_type();
+
+DROP TRIGGER IF EXISTS library_vocabularies_type_guard
+  ON library_vocabularies;
 
 CREATE TRIGGER library_vocabularies_type_guard
   BEFORE INSERT OR UPDATE OF resource_id ON library_vocabularies
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_resource_type('VOCABULARY');
 
+DROP TRIGGER IF EXISTS library_sentences_type_guard
+  ON library_sentences;
+
 CREATE TRIGGER library_sentences_type_guard
   BEFORE INSERT OR UPDATE OF resource_id ON library_sentences
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_resource_type('SENTENCE');
+
+DROP TRIGGER IF EXISTS library_translations_type_guard
+  ON library_translations;
 
 CREATE TRIGGER library_translations_type_guard
   BEFORE INSERT OR UPDATE OF resource_id ON library_translations
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_resource_type('TRANSLATION');
 
+DROP TRIGGER IF EXISTS library_grammar_items_type_guard
+  ON library_grammar_items;
+
 CREATE TRIGGER library_grammar_items_type_guard
   BEFORE INSERT OR UPDATE OF resource_id ON library_grammar_items
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_resource_type('GRAMMAR_ITEM');
+
+DROP TRIGGER IF EXISTS library_dialogues_type_guard
+  ON library_dialogues;
 
 CREATE TRIGGER library_dialogues_type_guard
   BEFORE INSERT OR UPDATE OF resource_id ON library_dialogues
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_resource_type('DIALOGUE');
 
+DROP TRIGGER IF EXISTS library_idioms_type_guard
+  ON library_idioms;
+
 CREATE TRIGGER library_idioms_type_guard
   BEFORE INSERT OR UPDATE OF resource_id ON library_idioms
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_resource_type('IDIOM');
+
+DROP TRIGGER IF EXISTS library_slang_type_guard
+  ON library_slang;
 
 CREATE TRIGGER library_slang_type_guard
   BEFORE INSERT OR UPDATE OF resource_id ON library_slang
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_resource_type('SLANG');
 
+DROP TRIGGER IF EXISTS library_cultural_notes_type_guard
+  ON library_cultural_notes;
+
 CREATE TRIGGER library_cultural_notes_type_guard
   BEFORE INSERT OR UPDATE OF resource_id ON library_cultural_notes
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_resource_type('CULTURAL_NOTE');
+
+DROP TRIGGER IF EXISTS library_pronunciations_type_guard
+  ON library_pronunciations;
 
 CREATE TRIGGER library_pronunciations_type_guard
   BEFORE INSERT OR UPDATE OF resource_id ON library_pronunciations
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_resource_type('PRONUNCIATION');
 
+DROP TRIGGER IF EXISTS library_learning_collections_type_guard
+  ON library_learning_collections;
+
 CREATE TRIGGER library_learning_collections_type_guard
   BEFORE INSERT OR UPDATE OF resource_id ON library_learning_collections
   FOR EACH ROW
   EXECUTE FUNCTION library_validate_resource_type('LEARNING_COLLECTION');
+
+DROP TRIGGER IF EXISTS library_collection_members_type_guard
+  ON library_collection_members;
 
 CREATE TRIGGER library_collection_members_type_guard
   BEFORE INSERT OR UPDATE OF collection_resource_id, member_resource_id
