@@ -65,6 +65,7 @@ export interface LibrarySearchRepositoryInput {
 export interface LibrarySearchRepositoryPage {
   items: LibraryResourceRecord[];
   hasMore: boolean;
+  nextBoundary: LibrarySearchCursor | null;
 }
 
 export interface LibraryRepository {
@@ -178,10 +179,18 @@ export class InMemoryLibraryRepository implements LibraryRepository {
           timestamp === cursorTimestamp && resource.id < input.cursor.id
         );
       });
-    const page = eligible.slice(0, input.limit + 1).map(cloneResource);
+    const selectedRows = eligible.slice(0, input.limit + 1);
+    const consumedRows = selectedRows.slice(0, input.limit);
+    const hasMore = selectedRows.length > input.limit;
     return {
-      items: page.slice(0, input.limit),
-      hasMore: page.length > input.limit,
+      items: consumedRows.map(cloneResource),
+      hasMore,
+      nextBoundary: hasMore && consumedRows.at(-1)
+        ? {
+          updatedAt: new Date(consumedRows.at(-1)!.updatedAt),
+          id: consumedRows.at(-1)!.id,
+        }
+        : null,
     };
   }
 

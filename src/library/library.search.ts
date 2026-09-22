@@ -55,8 +55,6 @@ export function toPublicSearchResult(
 
 function libraryResourceSearchValues(resource: LibraryResourceRecord): string[] {
   return [
-    resource.primaryLanguageCode,
-    resource.secondaryLanguageCode ?? '',
     ...resource.topics,
     ...detailsSearchValues(resource.details),
   ];

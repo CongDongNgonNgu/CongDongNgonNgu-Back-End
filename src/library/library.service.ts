@@ -231,12 +231,11 @@ export class LibraryService {
       const publicResource = await this.projectPublicSearchResult(resource);
       if (publicResource) items.push(publicResource);
     }
-    const cursorSource = page.items.at(-1);
     return {
       items,
-      nextCursor: page.hasMore && cursorSource
+      nextCursor: page.hasMore && page.nextBoundary
         ? encodeLibrarySearchCursor(
-          { updatedAt: cursorSource.updatedAt, id: cursorSource.id },
+          page.nextBoundary,
           normalized.filters,
         )
         : null,

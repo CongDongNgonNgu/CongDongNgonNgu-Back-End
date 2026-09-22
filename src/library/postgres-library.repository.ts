@@ -213,113 +213,77 @@ export class PostgresLibraryRepository implements LibraryRepository {
     if (input.filters.cefrLevel) {
       filters.push(`resource.cefr_level = ${parameter(input.filters.cefrLevel)}::community_cefr_level`);
     }
+    let keywordMatches = '';
     if (input.filters.q) {
       const qParameter = parameter('%' + escapeLikePattern(input.filters.q) + '%');
-      filters.push(`(
-        EXISTS (
-          SELECT 1
-          FROM library_resource_topics AS topic_search
-          WHERE topic_search.resource_id = resource.id
-            AND topic_search.topic ILIKE ${qParameter} ESCAPE E'\\\\'
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM library_vocabularies AS vocabulary
-          WHERE vocabulary.resource_id = resource.id
-            AND (
-              vocabulary.term ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR vocabulary.definition ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR vocabulary.part_of_speech ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR vocabulary.example_sentence ILIKE ${qParameter} ESCAPE E'\\\\'
-            )
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM library_sentences AS sentence
-          WHERE sentence.resource_id = resource.id
-            AND (
-              sentence.text_content ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR sentence.context ILIKE ${qParameter} ESCAPE E'\\\\'
-            )
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM library_translations AS translation
-          WHERE translation.resource_id = resource.id
-            AND (
-              translation.source_text ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR translation.translated_text ILIKE ${qParameter} ESCAPE E'\\\\'
-            )
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM library_grammar_items AS grammar
-          WHERE grammar.resource_id = resource.id
-            AND (
-              grammar.title ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR grammar.explanation ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR grammar.pattern ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR grammar.example_text ILIKE ${qParameter} ESCAPE E'\\\\'
-            )
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM library_dialogues AS dialogue
-          WHERE dialogue.resource_id = resource.id
-            AND (
-              dialogue.title ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR dialogue.turns::text ILIKE ${qParameter} ESCAPE E'\\\\'
-            )
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM library_idioms AS idiom
-          WHERE idiom.resource_id = resource.id
-            AND (
-              idiom.expression ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR idiom.meaning ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR idiom.usage_note ILIKE ${qParameter} ESCAPE E'\\\\'
-            )
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM library_slang AS slang
-          WHERE slang.resource_id = resource.id
-            AND (
-              slang.expression ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR slang.meaning ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR slang.register ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR slang.usage_note ILIKE ${qParameter} ESCAPE E'\\\\'
-            )
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM library_cultural_notes AS cultural
-          WHERE cultural.resource_id = resource.id
-            AND (
-              cultural.title ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR cultural.body ILIKE ${qParameter} ESCAPE E'\\\\'
-            )
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM library_pronunciations AS pronunciation
-          WHERE pronunciation.resource_id = resource.id
-            AND (
-              pronunciation.term ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR pronunciation.phonetic ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR pronunciation.notes ILIKE ${qParameter} ESCAPE E'\\\\'
-            )
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM library_learning_collections AS collection
-          WHERE collection.resource_id = resource.id
-            AND (
-              collection.title ILIKE ${qParameter} ESCAPE E'\\\\'
-              OR collection.description ILIKE ${qParameter} ESCAPE E'\\\\'
-            )
-        )
+      const like = (column: string): string => `${column} ILIKE ${qParameter} ESCAPE E'\\\\'`;
+      keywordMatches = `WITH keyword_matches AS (
+        SELECT resource_id
+        FROM library_resource_topics
+        WHERE ${like('topic')}
+        UNION
+        SELECT resource_id
+        FROM library_vocabularies
+        WHERE ${like('term')}
+           OR ${like('definition')}
+           OR ${like('part_of_speech')}
+           OR ${like('example_sentence')}
+        UNION
+        SELECT resource_id
+        FROM library_sentences
+        WHERE ${like('text_content')}
+           OR ${like('context')}
+        UNION
+        SELECT resource_id
+        FROM library_translations
+        WHERE ${like('source_text')}
+           OR ${like('translated_text')}
+        UNION
+        SELECT resource_id
+        FROM library_grammar_items
+        WHERE ${like('title')}
+           OR ${like('explanation')}
+           OR ${like('pattern')}
+           OR ${like('example_text')}
+        UNION
+        SELECT resource_id
+        FROM library_dialogues
+        WHERE ${like('title')}
+           OR turns::text ILIKE ${qParameter} ESCAPE E'\\\\'
+        UNION
+        SELECT resource_id
+        FROM library_idioms
+        WHERE ${like('expression')}
+           OR ${like('meaning')}
+           OR ${like('usage_note')}
+        UNION
+        SELECT resource_id
+        FROM library_slang
+        WHERE ${like('expression')}
+           OR ${like('meaning')}
+           OR ${like('register')}
+           OR ${like('usage_note')}
+        UNION
+        SELECT resource_id
+        FROM library_cultural_notes
+        WHERE ${like('title')}
+           OR ${like('body')}
+        UNION
+        SELECT resource_id
+        FROM library_pronunciations
+        WHERE ${like('term')}
+           OR ${like('phonetic')}
+           OR ${like('notes')}
+        UNION
+        SELECT resource_id
+        FROM library_learning_collections
+        WHERE ${like('title')}
+           OR ${like('description')}
+      )`;
+      filters.push(`EXISTS (
+        SELECT 1
+        FROM keyword_matches
+        WHERE keyword_matches.resource_id = resource.id
       )`);
     }
     if (input.cursor) {
@@ -333,7 +297,7 @@ export class PostgresLibraryRepository implements LibraryRepository {
 
     const limitParameter = parameter(input.limit + 1);
     const result = await this.pool.query(
-      `SELECT resource.id
+      `${keywordMatches ? keywordMatches + '\n' : ''}SELECT resource.id, resource.updated_at
        FROM library_resources AS resource
        INNER JOIN languages AS primary_language ON primary_language.id = resource.primary_language_id
        LEFT JOIN languages AS secondary_language ON secondary_language.id = resource.secondary_language_id
@@ -343,12 +307,21 @@ export class PostgresLibraryRepository implements LibraryRepository {
       values,
     );
     const rows = result.rows.slice(0, input.limit + 1);
+    const consumedRows = rows.slice(0, input.limit);
     const resources = await Promise.all(
-      rows.slice(0, input.limit).map((row) => this.findResourceById(String(row.id))),
+      consumedRows.map((row) => this.findResourceById(String(row.id))),
     );
+    const hasMore = rows.length > input.limit;
+    const lastConsumedRow = consumedRows.at(-1);
     return {
       items: resources.filter((resource): resource is LibraryResourceRecord => Boolean(resource)),
-      hasMore: rows.length > input.limit,
+      hasMore,
+      nextBoundary: hasMore && lastConsumedRow
+        ? {
+          updatedAt: new Date(lastConsumedRow.updated_at),
+          id: String(lastConsumedRow.id),
+        }
+        : null,
     };
   }
 

@@ -4,6 +4,7 @@ import {
   InMemoryLibraryRepository,
   type LibraryRepository,
 } from './library.repository';
+import { decodeLibrarySearchCursor } from './library.pagination';
 import { LibraryService } from './library.service';
 import type {
   LibraryActor,
@@ -724,6 +725,137 @@ describe('LibraryService', () => {
       .rejects.toMatchObject({ code: 'LIBRARY_INVALID_CURSOR' });
   });
 
+  it('does not treat language codes as keyword content while retaining language filters', async () => {
+    const { service } = createService();
+    const reviewer = actor('search-reviewer-parity', ['MODERATOR']);
+    await service.registerLicense(reviewer, license('SEARCH-SAFE-V1'));
+
+    const languageOnly = await publishSearchResource(service, {
+      resourceType: 'VOCABULARY',
+      primaryLanguageCode: 'vi',
+      visibility: 'PUBLIC',
+      topics: ['greetings'],
+      details: { term: 'hello', definition: 'greeting' },
+      sourceId: 'search-language-only',
+    });
+    const literalContent = await publishSearchResource(service, {
+      resourceType: 'VOCABULARY',
+      primaryLanguageCode: 'en',
+      visibility: 'PUBLIC',
+      topics: ['notation'],
+      details: { term: 'vi', definition: 'a literal content token' },
+      sourceId: 'search-literal-vi',
+    });
+    const secondaryLanguage = await publishSearchResource(service, {
+      resourceType: 'TRANSLATION',
+      primaryLanguageCode: 'en',
+      secondaryLanguageCode: 'vi',
+      visibility: 'PUBLIC',
+      topics: ['greetings'],
+      details: { sourceText: 'hello', translatedText: 'xin chào' },
+      sourceId: 'search-secondary-vi',
+    });
+
+    await expect(service.searchPublicResources({ q: 'vi' })).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: literalContent.id })],
+    });
+    const keywordIds = (await service.searchPublicResources({ q: 'vi' })).items.map((item) => item.id);
+    expect(keywordIds).not.toContain(languageOnly.id);
+    expect(keywordIds).not.toContain(secondaryLanguage.id);
+
+    await expect(service.searchPublicResources({ language: 'vi' })).resolves.toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: languageOnly.id }),
+        expect.objectContaining({ id: secondaryLanguage.id }),
+      ]),
+    });
+  });
+
+  it('keeps equal-timestamp pages deterministic and duplicate-free', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-22T00:00:00.000Z'));
+    try {
+      const { service } = createService();
+      const reviewer = actor('search-reviewer-tie-breaker', ['MODERATOR']);
+      await service.registerLicense(reviewer, license('SEARCH-SAFE-V1'));
+      const resources = await Promise.all([
+        publishSearchResource(service, {
+          resourceType: 'VOCABULARY',
+          primaryLanguageCode: 'en',
+          visibility: 'PUBLIC',
+          topics: ['tie-breaker'],
+          details: { term: 'one', definition: 'one' },
+          sourceId: 'search-tie-1',
+        }),
+        publishSearchResource(service, {
+          resourceType: 'VOCABULARY',
+          primaryLanguageCode: 'en',
+          visibility: 'PUBLIC',
+          topics: ['tie-breaker'],
+          details: { term: 'two', definition: 'two' },
+          sourceId: 'search-tie-2',
+        }),
+        publishSearchResource(service, {
+          resourceType: 'VOCABULARY',
+          primaryLanguageCode: 'en',
+          visibility: 'PUBLIC',
+          topics: ['tie-breaker'],
+          details: { term: 'three', definition: 'three' },
+          sourceId: 'search-tie-3',
+        }),
+      ]);
+
+      const first = await service.searchPublicResources({ topic: 'tie-breaker', limit: 1 });
+      const second = await service.searchPublicResources({ topic: 'tie-breaker', limit: 1, cursor: first.nextCursor });
+      const third = await service.searchPublicResources({ topic: 'tie-breaker', limit: 1, cursor: second.nextCursor });
+      const pageIds = [first.items[0].id, second.items[0].id, third.items[0].id];
+
+      expect(new Set(pageIds).size).toBe(3);
+      expect(pageIds).toEqual(resources.map((resource) => resource.id).sort().reverse());
+      expect(third.nextCursor).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('encodes the original ordered-row boundary when hydration observes a newer timestamp', async () => {
+    const repository = new HydrationRaceRepository();
+    const { service } = createService(undefined, repository);
+    const reviewer = actor('search-reviewer-hydration-race', ['MODERATOR']);
+    await service.registerLicense(reviewer, license('SEARCH-SAFE-V1'));
+    await publishSearchResource(service, {
+      resourceType: 'VOCABULARY',
+      primaryLanguageCode: 'en',
+      visibility: 'PUBLIC',
+      topics: ['hydration-race'],
+      details: { term: 'first', definition: 'first' },
+      sourceId: 'search-hydration-1',
+    });
+    await publishSearchResource(service, {
+      resourceType: 'VOCABULARY',
+      primaryLanguageCode: 'en',
+      visibility: 'PUBLIC',
+      topics: ['hydration-race'],
+      details: { term: 'second', definition: 'second' },
+      sourceId: 'search-hydration-2',
+    });
+
+    const page = await service.searchPublicResources({ topic: 'hydration-race', limit: 1 });
+    const cursor = decodeLibrarySearchCursor(page.nextCursor, {
+      q: null,
+      languageCode: null,
+      resourceType: null,
+      topic: 'hydration-race',
+      cefrLevel: null,
+    });
+
+    expect(cursor).toMatchObject({
+      updatedAt: new Date('2026-09-21T00:00:00.000Z'),
+      id: page.items[0].id,
+    });
+    expect(page.items[0].updatedAt).toEqual(new Date('2026-09-22T00:00:00.000Z'));
+  });
+
   it('rejects malformed public search cursors without exposing repository state', async () => {
     const { service } = createService();
     await expect(service.searchPublicResources({ cursor: 'not-a-cursor' }))
@@ -788,6 +920,24 @@ async function createVocabulary(service: LibraryService, visibility?: 'PUBLIC' |
     visibility,
     details: { term: 'word', definition: 'meaning' },
   });
+}
+
+class HydrationRaceRepository extends InMemoryLibraryRepository {
+  override async searchPublicResources(input: Parameters<LibraryRepository['searchPublicResources']>[0]) {
+    const page = await super.searchPublicResources(input);
+    const first = page.items[0];
+    if (!first) return page;
+    return {
+      ...page,
+      items: page.items.map((resource, index) => index === 0
+        ? { ...resource, updatedAt: new Date('2026-09-22T00:00:00.000Z') }
+        : resource),
+      nextBoundary: {
+        updatedAt: new Date('2026-09-21T00:00:00.000Z'),
+        id: first.id,
+      },
+    };
+  }
 }
 
 async function publishSearchResource(

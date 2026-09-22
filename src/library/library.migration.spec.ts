@@ -107,6 +107,45 @@ describe('Phase 08A migration contract', () => {
   });
 });
 
+describe('Phase 08B1 migration contract', () => {
+  it('defines only the public-search extension and query-backed indexes', () => {
+    const sql = readFileSync(
+      resolve(migrations, '0010_library_search.sql'),
+      'utf8',
+    );
+    expect(sql).toContain('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+
+    for (const index of PHASE_08B1_INDEXES) {
+      expect(sql).toContain(`CREATE INDEX IF NOT EXISTS ${index}`);
+    }
+    expect(sql).toContain('USING gin (topic gin_trgm_ops)');
+    expect(sql).toContain('USING gin');
+    expect(sql).toContain("WHERE visibility = 'PUBLIC'::community_post_visibility");
+    expect(sql).toContain("AND moderation_state = 'ACTIVE'::community_moderation_state");
+    expect(sql).toContain("AND review_state = 'VERIFIED'::library_review_state");
+  });
+
+  it('rolls back every owned index without touching library tables or pg_trgm', () => {
+    const sql = readFileSync(
+      resolve(migrations, '0010_library_search.down.sql'),
+      'utf8',
+    );
+    for (const index of PHASE_08B1_INDEXES) {
+      expect(sql).toContain(`DROP INDEX IF EXISTS ${index}`);
+    }
+    expect(sql).not.toMatch(/DROP TABLE|DROP EXTENSION/iu);
+  });
+
+  it('keeps normalized 0010 migration checksums fixed for review', () => {
+    for (const [filename, expected] of Object.entries(PHASE_08B1_MIGRATION_SHA256)) {
+      const actual = normalizedMigrationChecksum(
+        readFileSync(resolve(migrations, filename), 'utf8'),
+      );
+      expect(actual).toBe(expected);
+    }
+  });
+});
+
 function normalizedMigrationChecksum(content: string): string {
   const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
@@ -132,4 +171,29 @@ const BASELINE_MIGRATION_SHA256: Record<string, string> = {
   '0008_language_exchange_safety.down.sql': 'dbacec18ab739cbc5542acb0cbc568dc3db61ab32c101f1bbfffd2bbda6bdb39',
   '0009_open_language_library.sql': 'bf178d001a863ac6b1e3ad1c679eef616af699ae5c00646ce26ec779823f9e32',
   '0009_open_language_library.down.sql': 'fec2e5e611effa519430290865f7980f8d52321eab8d7ae0511dfe785281e046',
+};
+
+const PHASE_08B1_INDEXES = [
+  'library_resources_public_search_updated_idx',
+  'library_resources_public_search_primary_language_idx',
+  'library_resources_public_search_secondary_language_idx',
+  'library_resources_public_search_type_idx',
+  'library_resources_public_search_cefr_idx',
+  'library_resource_topics_search_trgm_idx',
+  'library_vocabularies_search_trgm_idx',
+  'library_sentences_search_trgm_idx',
+  'library_translations_search_trgm_idx',
+  'library_grammar_items_search_trgm_idx',
+  'library_dialogues_title_search_trgm_idx',
+  'library_dialogues_turns_search_trgm_idx',
+  'library_idioms_search_trgm_idx',
+  'library_slang_search_trgm_idx',
+  'library_cultural_notes_search_trgm_idx',
+  'library_pronunciations_search_trgm_idx',
+  'library_learning_collections_search_trgm_idx',
+] as const;
+
+const PHASE_08B1_MIGRATION_SHA256: Record<string, string> = {
+  '0010_library_search.sql': '0f5fc8b6e416fbed8e68eb033c2216ede4a1247d96217b9bf1617ebfe2df83f2',
+  '0010_library_search.down.sql': 'dc230f48a075c947584f3e0bdd2aedf2f0a7be20371b4a94ee979c97e54fa0d0',
 };

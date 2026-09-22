@@ -47,18 +47,84 @@ describe('PostgresLibraryRepository', () => {
         id: '00000000-0000-4000-8000-000000000001',
       },
       limit: 10,
-    })).resolves.toEqual({ items: [], hasMore: false });
+    })).resolves.toEqual({ items: [], hasMore: false, nextBoundary: null });
 
     const [sql, values] = query.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain("resource.visibility = 'PUBLIC'");
+    expect(sql).toContain("resource.moderation_state = 'ACTIVE'");
     expect(sql).toContain("resource.review_state = 'VERIFIED'");
+    expect(sql).toContain('FROM library_resource_provenance AS provenance_exists');
+    expect(sql).toContain('NOT EXISTS');
+    expect(sql).toContain('license_gate.active IS NOT TRUE');
     expect(sql).toContain('redistribution_allowed IS NOT TRUE');
+    expect(sql).toContain('WITH keyword_matches AS');
+    expect(sql).toContain('keyword_matches.resource_id = resource.id');
     expect(sql).toContain('ILIKE');
-    expect(sql).toContain('dialogue.turns::text');
+    expect(sql).toContain('turns::text ILIKE');
+    expect(sql).toContain('primary_language.code = $1');
+    expect(sql).toContain('secondary_language.code = $1');
+    expect(sql).toContain('topic_filter.topic = $3');
+    expect(sql).toContain('resource.resource_type = $2::library_resource_type');
+    expect(sql).toContain('resource.cefr_level = $4::community_cefr_level');
+    expect(sql).toContain('resource.updated_at < $6::timestamptz');
+    expect(sql).toContain('resource.id < $7::uuid');
     expect(sql).toContain('ORDER BY resource.updated_at DESC, resource.id DESC');
+    expect(sql).toContain('LIMIT $8');
+    expect(sql).not.toContain('你好');
     expect(values).toEqual(expect.arrayContaining([
       'vi', 'VOCABULARY', 'daily-life', 'A1', '%你好%',
     ]));
+    expect(values).toContain(11);
+  });
+
+  it('escapes wildcard characters and backslashes in the parameterized keyword candidate query', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+    const repository = new PostgresLibraryRepository({ query } as unknown as Pool);
+    const userQuery = ['a%b_c', 'd'].join('\\');
+
+    await repository.searchPublicResources({
+      filters: {
+        q: userQuery,
+        languageCode: null,
+        resourceType: null,
+        topic: null,
+        cefrLevel: null,
+      },
+      limit: 10,
+    });
+
+    const [sql, values] = query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("ESCAPE E'\\\\'");
+    expect(sql).not.toContain(userQuery);
+    expect(values).toEqual(['%a\\%b\\_c\\\\d%', 11]);
+  });
+
+  it('returns the cursor boundary from the ordered search rows, not hydrated records', async () => {
+    const boundaryId = '00000000-0000-4000-8000-000000000001';
+    const query = jest.fn().mockImplementation((sql: string) => {
+      if (sql.includes('SELECT resource.id, resource.updated_at')) {
+        return Promise.resolve({
+          rows: [
+            { id: boundaryId, updated_at: new Date('2026-09-21T00:00:00.000Z') },
+            { id: '00000000-0000-4000-8000-000000000002', updated_at: new Date('2026-09-20T00:00:00.000Z') },
+          ],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    const repository = new PostgresLibraryRepository({ query } as unknown as Pool);
+
+    await expect(repository.searchPublicResources({
+      filters: { q: null, languageCode: null, resourceType: null, topic: null, cefrLevel: null },
+      limit: 1,
+    })).resolves.toMatchObject({
+      items: [],
+      hasMore: true,
+      nextBoundary: {
+        updatedAt: new Date('2026-09-21T00:00:00.000Z'),
+        id: boundaryId,
+      },
+    });
   });
 
   it('requires the expected provenance revision for review transitions', async () => {

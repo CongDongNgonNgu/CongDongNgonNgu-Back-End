@@ -21,6 +21,21 @@ CREATE INDEX IF NOT EXISTS library_resources_public_search_secondary_language_id
     AND moderation_state = 'ACTIVE'::community_moderation_state
     AND review_state = 'VERIFIED'::library_review_state;
 
+CREATE INDEX IF NOT EXISTS library_resources_public_search_type_idx
+  ON library_resources (resource_type, updated_at DESC, id DESC)
+  WHERE visibility = 'PUBLIC'::community_post_visibility
+    AND moderation_state = 'ACTIVE'::community_moderation_state
+    AND review_state = 'VERIFIED'::library_review_state;
+
+CREATE INDEX IF NOT EXISTS library_resources_public_search_cefr_idx
+  ON library_resources (cefr_level, updated_at DESC, id DESC)
+  WHERE visibility = 'PUBLIC'::community_post_visibility
+    AND moderation_state = 'ACTIVE'::community_moderation_state
+    AND review_state = 'VERIFIED'::library_review_state;
+
+CREATE INDEX IF NOT EXISTS library_resource_topics_search_trgm_idx
+  ON library_resource_topics USING gin (topic gin_trgm_ops);
+
 CREATE INDEX IF NOT EXISTS library_vocabularies_search_trgm_idx
   ON library_vocabularies USING gin (
     term gin_trgm_ops,
