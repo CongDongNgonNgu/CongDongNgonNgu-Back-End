@@ -214,77 +214,78 @@ export class PostgresLibraryRepository implements LibraryRepository {
       filters.push(`resource.cefr_level = ${parameter(input.filters.cefrLevel)}::community_cefr_level`);
     }
     let keywordMatches = '';
+    let keywordJoin = '';
     if (input.filters.q) {
       const qParameter = parameter('%' + escapeLikePattern(input.filters.q) + '%');
       const like = (column: string): string => `${column} ILIKE ${qParameter} ESCAPE E'\\\\'`;
-      keywordMatches = `WITH keyword_matches AS (
-        SELECT resource_id
-        FROM library_resource_topics
-        WHERE ${like('topic')}
-        UNION
-        SELECT resource_id
-        FROM library_vocabularies
-        WHERE ${like('term')}
-           OR ${like('definition')}
-           OR ${like('part_of_speech')}
-           OR ${like('example_sentence')}
-        UNION
-        SELECT resource_id
-        FROM library_sentences
-        WHERE ${like('text_content')}
-           OR ${like('context')}
-        UNION
-        SELECT resource_id
-        FROM library_translations
-        WHERE ${like('source_text')}
-           OR ${like('translated_text')}
-        UNION
-        SELECT resource_id
-        FROM library_grammar_items
-        WHERE ${like('title')}
-           OR ${like('explanation')}
-           OR ${like('pattern')}
-           OR ${like('example_text')}
-        UNION
-        SELECT resource_id
-        FROM library_dialogues
-        WHERE ${like('title')}
-           OR turns::text ILIKE ${qParameter} ESCAPE E'\\\\'
-        UNION
-        SELECT resource_id
-        FROM library_idioms
-        WHERE ${like('expression')}
-           OR ${like('meaning')}
-           OR ${like('usage_note')}
-        UNION
-        SELECT resource_id
-        FROM library_slang
-        WHERE ${like('expression')}
-           OR ${like('meaning')}
-           OR ${like('register')}
-           OR ${like('usage_note')}
-        UNION
-        SELECT resource_id
-        FROM library_cultural_notes
-        WHERE ${like('title')}
-           OR ${like('body')}
-        UNION
-        SELECT resource_id
-        FROM library_pronunciations
-        WHERE ${like('term')}
-           OR ${like('phonetic')}
-           OR ${like('notes')}
-        UNION
-        SELECT resource_id
-        FROM library_learning_collections
-        WHERE ${like('title')}
-           OR ${like('description')}
+      keywordMatches = `WITH keyword_matches AS MATERIALIZED (
+        SELECT DISTINCT resource_id
+        FROM (
+          SELECT resource_id
+          FROM library_resource_topics
+          WHERE ${like('topic')}
+          UNION ALL
+          SELECT resource_id
+          FROM library_vocabularies
+          WHERE ${like('term')}
+             OR ${like('definition')}
+             OR ${like('part_of_speech')}
+             OR ${like('example_sentence')}
+          UNION ALL
+          SELECT resource_id
+          FROM library_sentences
+          WHERE ${like('text_content')}
+             OR ${like('context')}
+          UNION ALL
+          SELECT resource_id
+          FROM library_translations
+          WHERE ${like('source_text')}
+             OR ${like('translated_text')}
+          UNION ALL
+          SELECT resource_id
+          FROM library_grammar_items
+          WHERE ${like('title')}
+             OR ${like('explanation')}
+             OR ${like('pattern')}
+             OR ${like('example_text')}
+          UNION ALL
+          SELECT resource_id
+          FROM library_dialogues
+          WHERE ${like('title')}
+             OR turns::text ILIKE ${qParameter} ESCAPE E'\\\\'
+          UNION ALL
+          SELECT resource_id
+          FROM library_idioms
+          WHERE ${like('expression')}
+             OR ${like('meaning')}
+             OR ${like('usage_note')}
+          UNION ALL
+          SELECT resource_id
+          FROM library_slang
+          WHERE ${like('expression')}
+             OR ${like('meaning')}
+             OR ${like('register')}
+             OR ${like('usage_note')}
+          UNION ALL
+          SELECT resource_id
+          FROM library_cultural_notes
+          WHERE ${like('title')}
+             OR ${like('body')}
+          UNION ALL
+          SELECT resource_id
+          FROM library_pronunciations
+          WHERE ${like('term')}
+             OR ${like('phonetic')}
+             OR ${like('notes')}
+          UNION ALL
+          SELECT resource_id
+          FROM library_learning_collections
+          WHERE ${like('title')}
+             OR ${like('description')}
+        ) AS keyword_candidates
       )`;
-      filters.push(`EXISTS (
-        SELECT 1
-        FROM keyword_matches
-        WHERE keyword_matches.resource_id = resource.id
-      )`);
+      keywordJoin = `INNER JOIN keyword_matches AS keyword_match
+         ON keyword_match.resource_id = resource.id`;
     }
     if (input.cursor) {
       const cursorTimestamp = parameter(input.cursor.updatedAt);
@@ -299,6 +300,7 @@ export class PostgresLibraryRepository implements LibraryRepository {
     const result = await this.pool.query(
       `${keywordMatches ? keywordMatches + '\n' : ''}SELECT resource.id, resource.updated_at
        FROM library_resources AS resource
+       ${keywordJoin ? keywordJoin + '\n       ' : ''}
        INNER JOIN languages AS primary_language ON primary_language.id = resource.primary_language_id
        LEFT JOIN languages AS secondary_language ON secondary_language.id = resource.secondary_language_id
        WHERE ${filters.join('\n         AND ')}

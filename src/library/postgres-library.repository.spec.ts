@@ -57,8 +57,12 @@ describe('PostgresLibraryRepository', () => {
     expect(sql).toContain('NOT EXISTS');
     expect(sql).toContain('license_gate.active IS NOT TRUE');
     expect(sql).toContain('redistribution_allowed IS NOT TRUE');
-    expect(sql).toContain('WITH keyword_matches AS');
-    expect(sql).toContain('keyword_matches.resource_id = resource.id');
+    expect(sql).toContain('WITH keyword_matches AS MATERIALIZED');
+    expect(sql).toContain('INNER JOIN keyword_matches AS keyword_match');
+    expect(sql).not.toMatch(/EXISTS\s*\(\s*SELECT 1\s+FROM keyword_matches\s+WHERE keyword_matches\.resource_id = resource\.id/s);
+    expect(sql).toContain('SELECT DISTINCT resource_id');
+    expect(sql).toContain(') AS keyword_candidates');
+    expect(sql.match(/\bUNION ALL\b/g)).toHaveLength(10);
     expect(sql).toContain('ILIKE');
     expect(sql).toContain('turns::text ILIKE');
     expect(sql).toContain('primary_language.code = $1');
@@ -75,6 +79,26 @@ describe('PostgresLibraryRepository', () => {
       'vi', 'VOCABULARY', 'daily-life', 'A1', '%你好%',
     ]));
     expect(values).toContain(11);
+  });
+
+  it('does not add keyword candidate SQL when q is absent', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+    const repository = new PostgresLibraryRepository({ query } as unknown as Pool);
+
+    await repository.searchPublicResources({
+      filters: {
+        q: null,
+        languageCode: null,
+        resourceType: null,
+        topic: null,
+        cefrLevel: null,
+      },
+      limit: 10,
+    });
+
+    const [sql] = query.mock.calls[0] as [string, unknown[]];
+    expect(sql).not.toContain('keyword_matches');
+    expect(sql).not.toContain('INNER JOIN keyword_match');
   });
 
   it('escapes wildcard characters and backslashes in the parameterized keyword candidate query', async () => {
