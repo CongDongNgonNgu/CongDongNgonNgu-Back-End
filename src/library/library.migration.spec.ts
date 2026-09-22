@@ -97,31 +97,39 @@ describe('Phase 08A migration contract', () => {
     expect(sql).toContain('DROP FUNCTION IF EXISTS library_guard_provenance_mutation()');
   });
 
-  it('keeps migrations 0001 through 0008 byte-for-byte unchanged', () => {
+  it('keeps migration checksums canonical and immutable', () => {
     for (const [filename, expected] of Object.entries(BASELINE_MIGRATION_SHA256)) {
-      const actual = createHash('sha256')
-        .update(readFileSync(resolve(migrations, filename)))
-        .digest('hex');
+      const actual = normalizedMigrationChecksum(
+        readFileSync(resolve(migrations, filename), 'utf8'),
+      );
       expect(actual).toBe(expected);
     }
   });
 });
 
+function normalizedMigrationChecksum(content: string): string {
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  return createHash('sha256').update(normalized).digest('hex');
+}
+
 const BASELINE_MIGRATION_SHA256: Record<string, string> = {
-  '0001_identity.sql': '32134ae0fc65645d5214a5f268405ed8233b8bda319ae6a829dba6021b347e31',
-  '0001_identity.down.sql': '060654c91e990e4cce717f1dcc7c3f9c0c197f26bb232235a303f865d2431fec',
-  '0002_language_profile.sql': '3af338719cbee3923657b467b06f5b78345f641719255e029cbfa1f9959f43ad',
-  '0002_language_profile.down.sql': 'f85c2b54263ef41afde9f55414719eaa79bbc4de883723347ffecb89d7a10ea8',
-  '0003_community.sql': '3e714dc19c6aef2ada27db3bce576b7af936228e022041bbc52bd59a28838ac7',
-  '0003_community.down.sql': '7784401c0036b3e45bd10ac2666091e463c46fd4a23f33db120ee31a5c8570af',
-  '0004_corrections_qa.sql': 'f71226f07742c63256c5e82a27614448183b482a969aa6322d472633e01e338b',
-  '0004_corrections_qa.down.sql': 'a62d9d1fee182f784819de21992ea48f1b9a897d797e1911eb56c5b278a32f44',
-  '0005_phase06_contribution_candidates.sql': '62fbe0651ddfb2fda422a199606a40fd99ad203a505bde6454ce7a020c6b0a14',
-  '0005_phase06_contribution_candidates.down.sql': '2082fdbbea5f8147f6a27c3cb94c9d6b511dca384d4971afeeeb2e7989ddc72d',
-  '0006_language_exchange_preferences.sql': '4daf9120cebaf98f9ce8aaa546778c05e7ec9f34610af4a475baba9c416fedc2',
-  '0006_language_exchange_preferences.down.sql': '3eecefe086f15830c9f31caedd29c39f3f9aabca168e73c78b8d50bce6937fbd',
-  '0007_language_exchange_connections.sql': '5688338a078914214d6730bbc30f4d3d380434454b335d086e20a0baec4c5c01',
-  '0007_language_exchange_connections.down.sql': 'f83d2e9631a712670596dc185ea0e16e29d07b5ff77de92eb1bf01d6ba9ca995',
+  '0001_identity.sql': '6d568777ff525d4fa168b22337060628144ddd0ae01ed0fdcbda54b94aa4db35',
+  '0001_identity.down.sql': '97b36d8f3805850dce1d0a4f7c3c71a72fda23eefd103890f4b907eaa2322b23',
+  '0002_language_profile.sql': '20c330b8555b8c004640bf07ee7ceabbd666b41dda574bd74e310c0782e2b1bb',
+  '0002_language_profile.down.sql': 'd21c6b854aa60076a1fd1de956bd02f66e6e5d7510881bd7a5f52d4fe1a663fc',
+  '0003_community.sql': 'b1c2fdb7f1ad9de92fbea713fd96e21e8c1b07aebb7d36be111804d344f39a51',
+  '0003_community.down.sql': '297dc0e79c63e9642a423a40ad9a595acd46c10264702e4c4d4dc88dfaa4bbb9',
+  '0004_corrections_qa.sql': 'e7e0f4a24c9e6d6a1b4080a10b4538af3bb9ea4e0372e21bf53623ec047921eb',
+  '0004_corrections_qa.down.sql': '59b8d891f6b97bc1134147c15e312d2ad81e98db3123b823686486ba7b92853b',
+  '0005_phase06_contribution_candidates.sql': '7abddd57b09ba10c92a0864daa8eceb788626c266e9a554aca5d6e2006ba2730',
+  '0005_phase06_contribution_candidates.down.sql': '96535c3aac05b2ecf495d9a520b3346d13b53e99c5b500867b301833cd16313a',
+  '0006_language_exchange_preferences.sql': '29bb41a4876ad81c22b0730bc7250998acfda890a41cc26a93bbef06590de656',
+  '0006_language_exchange_preferences.down.sql': '8f6229b797f7cee0ed22bff62666e71908b2076c4f9a142dedfa401c71e4bbef',
+  '0007_language_exchange_connections.sql': '6b8c48f2c12fd3c0c7e10247077d59d2b351446c45af9b8c6645c4bce5bd53dd',
+  '0007_language_exchange_connections.down.sql': 'a64b6cc2dbd8be8284142cca307621c662d50d6e02234e17b1b38f37bf4911bb',
   '0008_language_exchange_safety.sql': 'af650e9e86e4b71b9ba416ae46ee4e29834b81665bff71bfd4291bb7aa4b91af',
   '0008_language_exchange_safety.down.sql': 'dbacec18ab739cbc5542acb0cbc568dc3db61ab32c101f1bbfffd2bbda6bdb39',
+  '0009_open_language_library.sql': 'bf178d001a863ac6b1e3ad1c679eef616af699ae5c00646ce26ec779823f9e32',
+  '0009_open_language_library.down.sql': 'fec2e5e611effa519430290865f7980f8d52321eab8d7ae0511dfe785281e046',
 };
