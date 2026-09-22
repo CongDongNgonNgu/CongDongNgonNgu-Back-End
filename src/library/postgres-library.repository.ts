@@ -7,6 +7,8 @@ import {
   LibraryRepositoryConflictError,
   type CreateLibraryResourceRepositoryInput,
   type LibraryRepository,
+  type LibrarySearchRepositoryInput,
+  type LibrarySearchRepositoryPage,
   type LibraryReviewTransitionResult,
   type LibraryProvenanceMutationExpectation,
   type TransitionLibraryReviewRepositoryInput,
@@ -156,6 +158,198 @@ export class PostgresLibraryRepository implements LibraryRepository {
 
   async findResourceById(id: string): Promise<LibraryResourceRecord | null> {
     return this.findResourceWithExecutor(this.pool, id);
+  }
+
+  async searchPublicResources(
+    input: LibrarySearchRepositoryInput,
+  ): Promise<LibrarySearchRepositoryPage> {
+    const values: unknown[] = [];
+    const parameter = (value: unknown): string => {
+      values.push(value);
+      return '$' + values.length;
+    };
+    const filters = [
+      `resource.visibility = 'PUBLIC'::community_post_visibility`,
+      `resource.moderation_state = 'ACTIVE'::community_moderation_state`,
+      `resource.review_state = 'VERIFIED'::library_review_state`,
+      `EXISTS (
+        SELECT 1
+        FROM library_resource_provenance AS provenance_exists
+        WHERE provenance_exists.resource_id = resource.id
+      )`,
+      `NOT EXISTS (
+        SELECT 1
+        FROM library_resource_provenance AS provenance_gate
+        LEFT JOIN library_licenses AS license_gate
+          ON license_gate.license_key = provenance_gate.license_key
+        WHERE provenance_gate.resource_id = resource.id
+          AND (
+            license_gate.license_key IS NULL
+            OR license_gate.active IS NOT TRUE
+            OR license_gate.redistribution_allowed IS NOT TRUE
+          )
+      )`,
+    ];
+
+    if (input.filters.languageCode) {
+      const languageParameter = parameter(input.filters.languageCode);
+      filters.push(`(
+        primary_language.code = ${languageParameter}
+        OR secondary_language.code = ${languageParameter}
+      )`);
+    }
+    if (input.filters.resourceType) {
+      filters.push(`resource.resource_type = ${parameter(input.filters.resourceType)}::library_resource_type`);
+    }
+    if (input.filters.topic) {
+      const topicParameter = parameter(input.filters.topic);
+      filters.push(`EXISTS (
+        SELECT 1
+        FROM library_resource_topics AS topic_filter
+        WHERE topic_filter.resource_id = resource.id
+          AND topic_filter.topic = ${topicParameter}
+      )`);
+    }
+    if (input.filters.cefrLevel) {
+      filters.push(`resource.cefr_level = ${parameter(input.filters.cefrLevel)}::community_cefr_level`);
+    }
+    if (input.filters.q) {
+      const qParameter = parameter('%' + escapeLikePattern(input.filters.q) + '%');
+      filters.push(`(
+        EXISTS (
+          SELECT 1
+          FROM library_resource_topics AS topic_search
+          WHERE topic_search.resource_id = resource.id
+            AND topic_search.topic ILIKE ${qParameter} ESCAPE E'\\\\'
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM library_vocabularies AS vocabulary
+          WHERE vocabulary.resource_id = resource.id
+            AND (
+              vocabulary.term ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR vocabulary.definition ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR vocabulary.part_of_speech ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR vocabulary.example_sentence ILIKE ${qParameter} ESCAPE E'\\\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM library_sentences AS sentence
+          WHERE sentence.resource_id = resource.id
+            AND (
+              sentence.text_content ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR sentence.context ILIKE ${qParameter} ESCAPE E'\\\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM library_translations AS translation
+          WHERE translation.resource_id = resource.id
+            AND (
+              translation.source_text ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR translation.translated_text ILIKE ${qParameter} ESCAPE E'\\\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM library_grammar_items AS grammar
+          WHERE grammar.resource_id = resource.id
+            AND (
+              grammar.title ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR grammar.explanation ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR grammar.pattern ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR grammar.example_text ILIKE ${qParameter} ESCAPE E'\\\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM library_dialogues AS dialogue
+          WHERE dialogue.resource_id = resource.id
+            AND (
+              dialogue.title ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR dialogue.turns::text ILIKE ${qParameter} ESCAPE E'\\\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM library_idioms AS idiom
+          WHERE idiom.resource_id = resource.id
+            AND (
+              idiom.expression ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR idiom.meaning ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR idiom.usage_note ILIKE ${qParameter} ESCAPE E'\\\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM library_slang AS slang
+          WHERE slang.resource_id = resource.id
+            AND (
+              slang.expression ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR slang.meaning ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR slang.register ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR slang.usage_note ILIKE ${qParameter} ESCAPE E'\\\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM library_cultural_notes AS cultural
+          WHERE cultural.resource_id = resource.id
+            AND (
+              cultural.title ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR cultural.body ILIKE ${qParameter} ESCAPE E'\\\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM library_pronunciations AS pronunciation
+          WHERE pronunciation.resource_id = resource.id
+            AND (
+              pronunciation.term ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR pronunciation.phonetic ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR pronunciation.notes ILIKE ${qParameter} ESCAPE E'\\\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM library_learning_collections AS collection
+          WHERE collection.resource_id = resource.id
+            AND (
+              collection.title ILIKE ${qParameter} ESCAPE E'\\\\'
+              OR collection.description ILIKE ${qParameter} ESCAPE E'\\\\'
+            )
+        )
+      )`);
+    }
+    if (input.cursor) {
+      const cursorTimestamp = parameter(input.cursor.updatedAt);
+      const cursorId = parameter(input.cursor.id);
+      filters.push(`(
+        resource.updated_at < ${cursorTimestamp}::timestamptz
+        OR (resource.updated_at = ${cursorTimestamp}::timestamptz AND resource.id < ${cursorId}::uuid)
+      )`);
+    }
+
+    const limitParameter = parameter(input.limit + 1);
+    const result = await this.pool.query(
+      `SELECT resource.id
+       FROM library_resources AS resource
+       INNER JOIN languages AS primary_language ON primary_language.id = resource.primary_language_id
+       LEFT JOIN languages AS secondary_language ON secondary_language.id = resource.secondary_language_id
+       WHERE ${filters.join('\n         AND ')}
+       ORDER BY resource.updated_at DESC, resource.id DESC
+       LIMIT ${limitParameter}`,
+      values,
+    );
+    const rows = result.rows.slice(0, input.limit + 1);
+    const resources = await Promise.all(
+      rows.slice(0, input.limit).map((row) => this.findResourceById(String(row.id))),
+    );
+    return {
+      items: resources.filter((resource): resource is LibraryResourceRecord => Boolean(resource)),
+      hasMore: rows.length > input.limit,
+    };
   }
 
   async addProvenance(
@@ -845,4 +1039,8 @@ function mapPostgresError(error: unknown): Error {
 
 function isPostgresError(error: unknown): error is { code: string } {
   return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string';
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/gu, (character) => '\\' + character);
 }

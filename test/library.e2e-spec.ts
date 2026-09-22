@@ -282,6 +282,107 @@ describe('library API', () => {
       .send(originalProvenance(licenseKey, 'reopen-after'))
       .expect(201);
   });
+
+  it('searches the public resource index with Unicode filters, cursors, and live license gates', async () => {
+    const api = request(app.getHttpServer());
+    const owner = await createUser('search-owner');
+    const ownerSession = await sessionFor(owner);
+    const reviewerSession = await sessionFor(reviewer);
+    const licenseKey = await registerLicense('E2E-SEARCH', true);
+
+    const vietnamese = await api
+      .post('/api/v1/library/resources')
+      .set('Authorization', 'Bearer ' + ownerSession.accessToken)
+      .send({
+        resourceType: 'VOCABULARY',
+        primaryLanguageCode: 'vi',
+        visibility: 'PUBLIC',
+        topics: ['daily-life'],
+        cefrLevel: 'A1',
+        details: { term: 'từ điển', definition: 'Vietnamese dictionary' },
+      })
+      .expect(201);
+    const vietnameseId = vietnamese.body.data.id as string;
+    await api
+      .post('/api/v1/library/resources/' + vietnameseId + '/provenance')
+      .set('Authorization', 'Bearer ' + ownerSession.accessToken)
+      .send(originalProvenance(licenseKey, 'e2e-search-vietnamese'))
+      .expect(201);
+    await transition(api, vietnameseId, ownerSession, 'COMMUNITY_REVIEW');
+    await transition(api, vietnameseId, reviewerSession, 'VERIFIED');
+
+    const cjk = await api
+      .post('/api/v1/library/resources')
+      .set('Authorization', 'Bearer ' + ownerSession.accessToken)
+      .send({
+        resourceType: 'SENTENCE',
+        primaryLanguageCode: 'zh',
+        visibility: 'PUBLIC',
+        topics: ['daily-life'],
+        cefrLevel: 'B1',
+        details: { text: '你好，语言社区。', context: 'Greeting' },
+      })
+      .expect(201);
+    const cjkId = cjk.body.data.id as string;
+    await api
+      .post('/api/v1/library/resources/' + cjkId + '/provenance')
+      .set('Authorization', 'Bearer ' + ownerSession.accessToken)
+      .send(originalProvenance(licenseKey, 'e2e-search-cjk'))
+      .expect(201);
+    await transition(api, cjkId, ownerSession, 'COMMUNITY_REVIEW');
+    await transition(api, cjkId, reviewerSession, 'VERIFIED');
+
+    await api
+      .get('/api/v1/library/resources')
+      .query({ q: 'điển', language: 'vi', type: 'VOCABULARY', topic: 'daily-life', level: 'A1' })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data.items).toHaveLength(1);
+        expect(body.data.items[0]).toMatchObject({
+          id: vietnameseId,
+          reviewState: 'VERIFIED',
+          preview: { title: 'từ điển' },
+        });
+        expect(body.data.items[0].createdByUserId).toBeUndefined();
+        expect(body.data.items[0].provenance[0].license.licenseKey).toBe(licenseKey);
+      });
+
+    await api
+      .get('/api/v1/library/resources')
+      .query({ q: '你好' })
+      .expect(200)
+      .expect(({ body }) => expect(body.data.items.map((item: { id: string }) => item.id)).toContain(cjkId));
+
+    const firstPage = await api
+      .get('/api/v1/library/resources')
+      .query({ topic: 'daily-life', limit: 1 })
+      .expect(200);
+    expect(firstPage.body.data.items).toHaveLength(1);
+    expect(firstPage.body.data.nextCursor).toEqual(expect.any(String));
+    const secondPage = await api
+      .get('/api/v1/library/resources')
+      .query({ topic: 'daily-life', limit: 1, cursor: firstPage.body.data.nextCursor })
+      .expect(200);
+    expect(secondPage.body.data.items).toHaveLength(1);
+    expect(secondPage.body.data.items[0].id).not.toBe(firstPage.body.data.items[0].id);
+
+    await testLibrary.registerLicense(
+      { userId: testReviewer.id, roles: ['MODERATOR'] },
+      {
+        licenseKey,
+        displayName: licenseKey,
+        canonicalUrl: `https://licenses.example.test/${licenseKey.toLowerCase()}`,
+        attributionRequired: true,
+        redistributionAllowed: true,
+        active: false,
+      },
+    );
+    await api
+      .get('/api/v1/library/resources')
+      .query({ topic: 'daily-life' })
+      .expect(200)
+      .expect(({ body }) => expect(body.data.items).toEqual([]));
+  });
 });
 
 class RoleAwareIdentityRepository extends InMemoryIdentityRepository {

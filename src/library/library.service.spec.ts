@@ -622,6 +622,113 @@ describe('LibraryService', () => {
     await expect(service.transitionReview(reviewer, resource.id, 'VERIFIED'))
       .resolves.toMatchObject({ resource: { reviewState: 'VERIFIED' } });
   });
+
+  it('searches only public verified resources and re-checks current redistribution licenses', async () => {
+    const { service } = createService();
+    const reviewer = actor('search-reviewer-1', ['MODERATOR']);
+    await service.registerLicense(reviewer, license('SEARCH-SAFE-V1'));
+
+    const publicResource = await publishSearchResource(service, {
+      resourceType: 'VOCABULARY',
+      primaryLanguageCode: 'vi',
+      visibility: 'PUBLIC',
+      topics: ['travel'],
+      details: { term: 'từ điển', definition: 'A Vietnamese dictionary' },
+      sourceId: 'search-public-1',
+    });
+    await publishSearchResource(service, {
+      resourceType: 'VOCABULARY',
+      primaryLanguageCode: 'vi',
+      visibility: 'PRIVATE',
+      details: { term: 'private', definition: 'Not public' },
+      sourceId: 'search-private-1',
+    });
+    await service.createDraftResource(actor('search-owner-1'), {
+      resourceType: 'VOCABULARY',
+      primaryLanguageCode: 'vi',
+      visibility: 'PUBLIC',
+      details: { term: 'draft', definition: 'Not verified' },
+    });
+
+    const page = await service.searchPublicResources({ q: 'điển', limit: 10 });
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({
+      id: publicResource.id,
+      reviewState: 'VERIFIED',
+      preview: { title: 'từ điển' },
+      provenance: [{ attribution: 'Search attribution', license: { licenseKey: 'SEARCH-SAFE-V1' } }],
+    });
+    expect(page.items[0]).not.toHaveProperty('createdByUserId');
+    expect(page.items[0]).not.toHaveProperty('reviewedByUserId');
+
+    await service.registerLicense(reviewer, license('SEARCH-SAFE-V1', false, true));
+    await expect(service.searchPublicResources({ q: 'điển' })).resolves.toMatchObject({ items: [] });
+  });
+
+  it('supports Unicode Vietnamese and CJK keyword search, filters, and deterministic cursors', async () => {
+    const { service } = createService();
+    const reviewer = actor('search-reviewer-2', ['MODERATOR']);
+    await service.registerLicense(reviewer, license('SEARCH-SAFE-V1'));
+
+    const vietnamese = await publishSearchResource(service, {
+      resourceType: 'VOCABULARY',
+      primaryLanguageCode: 'vi',
+      visibility: 'PUBLIC',
+      topics: ['daily-life'],
+      cefrLevel: 'A1',
+      details: { term: 'xin chào', definition: 'A Vietnamese greeting' },
+      sourceId: 'search-vietnamese-1',
+    });
+    const cjk = await publishSearchResource(service, {
+      resourceType: 'SENTENCE',
+      primaryLanguageCode: 'zh',
+      visibility: 'PUBLIC',
+      topics: ['daily-life'],
+      cefrLevel: 'B1',
+      details: { text: '你好，欢迎来到语言社区。', context: 'A greeting' },
+      sourceId: 'search-cjk-1',
+    });
+    const translation = await publishSearchResource(service, {
+      resourceType: 'TRANSLATION',
+      primaryLanguageCode: 'en',
+      secondaryLanguageCode: 'vi',
+      visibility: 'PUBLIC',
+      topics: ['daily-life'],
+      cefrLevel: 'A2',
+      details: { sourceText: 'Good morning', translatedText: 'Chào buổi sáng' },
+      sourceId: 'search-translation-1',
+    });
+
+    await expect(service.searchPublicResources({ q: 'chào' })).resolves.toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ id: vietnamese.id })]),
+    });
+    await expect(service.searchPublicResources({ q: '你好' })).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: cjk.id })],
+    });
+    await expect(service.searchPublicResources({ language: 'vi' })).resolves.toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: vietnamese.id }),
+        expect.objectContaining({ id: translation.id }),
+      ]),
+    });
+    await expect(service.searchPublicResources({ type: 'SENTENCE', topic: 'daily-life', level: 'B1' }))
+      .resolves.toMatchObject({ items: [expect.objectContaining({ id: cjk.id })] });
+
+    const first = await service.searchPublicResources({ topic: 'daily-life', limit: 1 });
+    expect(first.items).toHaveLength(1);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = await service.searchPublicResources({ topic: 'daily-life', limit: 1, cursor: first.nextCursor });
+    expect(second.items).toHaveLength(1);
+    expect(second.items[0].id).not.toBe(first.items[0].id);
+    await expect(service.searchPublicResources({ topic: 'other', limit: 1, cursor: first.nextCursor }))
+      .rejects.toMatchObject({ code: 'LIBRARY_INVALID_CURSOR' });
+  });
+
+  it('rejects malformed public search cursors without exposing repository state', async () => {
+    const { service } = createService();
+    await expect(service.searchPublicResources({ cursor: 'not-a-cursor' }))
+      .rejects.toMatchObject({ code: 'LIBRARY_INVALID_CURSOR' });
+  });
 });
 
 function createService(
@@ -681,6 +788,31 @@ async function createVocabulary(service: LibraryService, visibility?: 'PUBLIC' |
     visibility,
     details: { term: 'word', definition: 'meaning' },
   });
+}
+
+async function publishSearchResource(
+  service: LibraryService,
+  input: {
+    resourceType: LibraryResourceType;
+    primaryLanguageCode: string;
+    secondaryLanguageCode?: string;
+    cefrLevel?: string;
+    topics?: string[];
+    visibility?: 'PUBLIC' | 'PRIVATE';
+    details: Record<string, unknown>;
+    sourceId: string;
+  },
+) {
+  const resource = await service.createDraftResource(actor('search-owner-1'), input);
+  await service.attachProvenance(actor('search-owner-1'), resource.id, {
+    sourceType: 'ORIGINAL_AUTHOR',
+    sourceId: input.sourceId,
+    licenseKey: 'SEARCH-SAFE-V1',
+    attribution: 'Search attribution',
+  });
+  await service.transitionReview(actor('search-owner-1'), resource.id, 'COMMUNITY_REVIEW');
+  await service.transitionReview(actor('search-reviewer-1', ['MODERATOR']), resource.id, 'VERIFIED');
+  return resource;
 }
 
 function actor(userId: string, roles: LibraryActor['roles'] = ['MEMBER']): LibraryActor {

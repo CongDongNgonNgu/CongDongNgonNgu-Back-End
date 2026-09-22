@@ -20,6 +20,39 @@ export const LIBRARY_RESOURCE_TYPES = [
 
 export type LibraryResourceType = typeof LIBRARY_RESOURCE_TYPES[number];
 
+export const LIBRARY_SEARCH_DEFAULT_LIMIT = 20;
+export const LIBRARY_SEARCH_MAX_LIMIT = 50;
+export const LIBRARY_SEARCH_MAX_QUERY_LENGTH = 120;
+
+export interface LibrarySearchInput {
+  q?: unknown;
+  language?: unknown;
+  type?: unknown;
+  topic?: unknown;
+  level?: unknown;
+  cursor?: unknown;
+  limit?: unknown;
+}
+
+export interface NormalizedLibrarySearchFilters {
+  q: string | null;
+  languageCode: string | null;
+  resourceType: LibraryResourceType | null;
+  topic: string | null;
+  cefrLevel: CommunityCefrLevel | null;
+}
+
+export interface NormalizedLibrarySearchInput {
+  filters: NormalizedLibrarySearchFilters;
+  cursor: string | undefined;
+  limit: number;
+}
+
+export interface LibrarySearchCursor {
+  updatedAt: Date;
+  id: string;
+}
+
 export const LIBRARY_REVIEW_STATES = [
   'DRAFT',
   'COMMUNITY_REVIEW',
@@ -292,6 +325,35 @@ export interface LibraryPublicResource {
   provenance: LibraryPublicProvenance[];
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface LibraryPublicSearchPreview {
+  title: string;
+  excerpt: string;
+}
+
+export interface LibraryPublicSearchProvenance {
+  attribution: string;
+  license: LibraryPublicLicense;
+}
+
+export interface LibraryPublicSearchResult {
+  id: string;
+  resourceType: LibraryResourceType;
+  primaryLanguageCode: string;
+  secondaryLanguageCode: string | null;
+  cefrLevel: CommunityCefrLevel | null;
+  topics: string[];
+  reviewState: 'VERIFIED';
+  preview: LibraryPublicSearchPreview;
+  provenance: LibraryPublicSearchProvenance[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface LibraryPublicSearchPage {
+  items: LibraryPublicSearchResult[];
+  nextCursor: string | null;
 }
 
 export interface LibraryCollectionMemberRecord {

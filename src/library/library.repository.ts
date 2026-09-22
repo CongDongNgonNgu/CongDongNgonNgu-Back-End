@@ -13,7 +13,10 @@ import type {
   NormalizedLibraryLicenseInput,
   NormalizedLibraryProvenanceInput,
   NormalizedLibraryResourceInput,
+  LibrarySearchCursor,
+  NormalizedLibrarySearchFilters,
 } from './library.types';
+import { libraryResourceMatchesQuery } from './library.search';
 
 export const LIBRARY_REPOSITORY = 'LIBRARY_REPOSITORY';
 
@@ -53,6 +56,17 @@ export interface LibraryReviewTransitionResult {
   audit: LibraryReviewAuditRecord;
 }
 
+export interface LibrarySearchRepositoryInput {
+  filters: NormalizedLibrarySearchFilters;
+  cursor?: LibrarySearchCursor;
+  limit: number;
+}
+
+export interface LibrarySearchRepositoryPage {
+  items: LibraryResourceRecord[];
+  hasMore: boolean;
+}
+
 export interface LibraryRepository {
   upsertLicense(
     input: NormalizedLibraryLicenseInput,
@@ -61,6 +75,7 @@ export interface LibraryRepository {
   findLicense(licenseKey: string): Promise<LibraryLicenseRecord | null>;
   createResource(input: CreateLibraryResourceRepositoryInput): Promise<LibraryResourceRecord>;
   findResourceById(id: string): Promise<LibraryResourceRecord | null>;
+  searchPublicResources(input: LibrarySearchRepositoryInput): Promise<LibrarySearchRepositoryPage>;
   addProvenance(
     resourceId: string,
     input: NormalizedLibraryProvenanceInput,
@@ -130,6 +145,44 @@ export class InMemoryLibraryRepository implements LibraryRepository {
   async findResourceById(id: string): Promise<LibraryResourceRecord | null> {
     const record = this.resources.get(id);
     return record ? cloneResource(record) : null;
+  }
+
+  async searchPublicResources(
+    input: LibrarySearchRepositoryInput,
+  ): Promise<LibrarySearchRepositoryPage> {
+    const eligible = [...this.resources.values()]
+      .filter((resource) => (
+        resource.visibility === 'PUBLIC' &&
+        resource.moderationState === 'ACTIVE' &&
+        resource.reviewState === 'VERIFIED' &&
+        resource.provenance.length > 0 &&
+        resource.provenance.every((entry) => {
+          const license = this.licenses.get(entry.licenseKey);
+          return Boolean(license?.active && license.redistributionAllowed === true);
+        })
+      ))
+      .filter((resource) => !input.filters.languageCode || (
+        resource.primaryLanguageCode === input.filters.languageCode ||
+        resource.secondaryLanguageCode === input.filters.languageCode
+      ))
+      .filter((resource) => !input.filters.resourceType || resource.resourceType === input.filters.resourceType)
+      .filter((resource) => !input.filters.topic || resource.topics.includes(input.filters.topic))
+      .filter((resource) => !input.filters.cefrLevel || resource.cefrLevel === input.filters.cefrLevel)
+      .filter((resource) => libraryResourceMatchesQuery(resource, input.filters.q))
+      .sort(compareSearchResources)
+      .filter((resource) => {
+        if (!input.cursor) return true;
+        const timestamp = resource.updatedAt.getTime();
+        const cursorTimestamp = input.cursor.updatedAt.getTime();
+        return timestamp < cursorTimestamp || (
+          timestamp === cursorTimestamp && resource.id < input.cursor.id
+        );
+      });
+    const page = eligible.slice(0, input.limit + 1).map(cloneResource);
+    return {
+      items: page.slice(0, input.limit),
+      hasMore: page.length > input.limit,
+    };
   }
 
   async addProvenance(
@@ -281,6 +334,12 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       );
     }
   }
+}
+
+function compareSearchResources(a: LibraryResourceRecord, b: LibraryResourceRecord): number {
+  const timestampDifference = b.updatedAt.getTime() - a.updatedAt.getTime();
+  if (timestampDifference !== 0) return timestampDifference;
+  return b.id > a.id ? 1 : b.id < a.id ? -1 : 0;
 }
 
 function createProvenance(

@@ -1,5 +1,8 @@
 import {
   LIBRARY_RESOURCE_TYPES,
+  LIBRARY_SEARCH_DEFAULT_LIMIT,
+  LIBRARY_SEARCH_MAX_LIMIT,
+  LIBRARY_SEARCH_MAX_QUERY_LENGTH,
   LIBRARY_REVIEW_ACTIONS,
   LIBRARY_REVIEW_STATES,
   LIBRARY_SOURCE_TYPES,
@@ -24,6 +27,8 @@ import {
   type PronunciationDetails,
   type LearningCollectionDetails,
   type LibraryLicenseInput,
+  type LibrarySearchInput,
+  type NormalizedLibrarySearchInput,
 } from './library.types';
 
 const LANGUAGE_CODE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
@@ -91,6 +96,25 @@ export function normalizeLibraryResourceInput(
     topics: normalizeTopics(record.topics),
     visibility: normalizeVisibility(record.visibility),
     details: normalizeResourceDetails(resourceType, record.details),
+  };
+}
+
+export function normalizeLibrarySearchInput(
+  input: LibrarySearchInput,
+): NormalizedLibrarySearchInput {
+  const record = asRecord(input, 'LIBRARY_SEARCH_INVALID');
+  const q = normalizeSearchQuery(record.q);
+  const languageCode = normalizeOptionalLanguageCode(record.language);
+  const resourceType = normalizeOptionalResourceType(record.type);
+  const topic = normalizeSearchTopic(record.topic);
+  const cefrLevel = normalizeCefrLevel(record.level);
+  const cursor = optionalText(record.cursor, 512, 'LIBRARY_INVALID_CURSOR') ?? undefined;
+  const limit = normalizeSearchLimit(record.limit);
+
+  return {
+    filters: { q, languageCode, resourceType, topic, cefrLevel },
+    cursor,
+    limit,
   };
 }
 
@@ -190,6 +214,11 @@ function normalizeResourceType(input: unknown): LibraryResourceType {
   return value as LibraryResourceType;
 }
 
+function normalizeOptionalResourceType(input: unknown): LibraryResourceType | null {
+  if (input === undefined || input === null || input === '') return null;
+  return normalizeResourceType(input);
+}
+
 function normalizeSourceType(input: unknown): NormalizedLibraryProvenanceInput['sourceType'] {
   const value = normalizeEnumString(input, 'LIBRARY_SOURCE_TYPE_INVALID');
   if (!LIBRARY_SOURCE_TYPES.includes(value as NormalizedLibraryProvenanceInput['sourceType'])) {
@@ -219,6 +248,48 @@ function normalizeCefrLevel(input: unknown): NormalizedLibraryResourceInput['cef
     throw invalid('LIBRARY_CEFR_INVALID');
   }
   return value as NormalizedLibraryResourceInput['cefrLevel'];
+}
+
+function normalizeSearchQuery(input: unknown): string | null {
+  if (input === undefined || input === null || input === '') return null;
+  if (typeof input !== 'string') throw invalid('LIBRARY_SEARCH_QUERY_INVALID');
+  const value = normalizeText(input);
+  if (!value) return null;
+  if (Array.from(value).length > LIBRARY_SEARCH_MAX_QUERY_LENGTH) {
+    throw invalid('LIBRARY_SEARCH_QUERY_INVALID');
+  }
+  return value;
+}
+
+function normalizeSearchTopic(input: unknown): string | null {
+  if (input === undefined || input === null || input === '') return null;
+  if (typeof input !== 'string') throw invalid('LIBRARY_SEARCH_TOPIC_INVALID');
+  const topic = input
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/gu, '-');
+  if (
+    !topic ||
+    Array.from(topic).length > 80 ||
+    !/^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*$/u.test(topic)
+  ) {
+    throw invalid('LIBRARY_SEARCH_TOPIC_INVALID');
+  }
+  return topic;
+}
+
+function normalizeSearchLimit(input: unknown): number {
+  if (input === undefined || input === null || input === '') return LIBRARY_SEARCH_DEFAULT_LIMIT;
+  if (
+    typeof input !== 'number' ||
+    !Number.isInteger(input) ||
+    input < 1 ||
+    input > LIBRARY_SEARCH_MAX_LIMIT
+  ) {
+    throw invalid('LIBRARY_SEARCH_LIMIT_INVALID');
+  }
+  return input;
 }
 
 function normalizeTopics(input: unknown): string[] {

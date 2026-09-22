@@ -1,15 +1,64 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsIn,
+  IsInt,
   IsObject,
   IsOptional,
   IsString,
   IsUrl,
   IsUUID,
   Length,
+  Matches,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
+import {
+  LIBRARY_RESOURCE_TYPES,
+  LIBRARY_SEARCH_MAX_LIMIT,
+  LIBRARY_SEARCH_MAX_QUERY_LENGTH,
+} from './library.types';
+import { COMMUNITY_CEFR_LEVELS } from '../community/community.types';
+
+export class SearchLibraryResourcesDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(LIBRARY_SEARCH_MAX_QUERY_LENGTH)
+  q?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i)
+  @MaxLength(35)
+  language?: string;
+
+  @IsOptional()
+  @IsIn(LIBRARY_RESOURCE_TYPES)
+  type?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  topic?: string;
+
+  @IsOptional()
+  @IsIn(COMMUNITY_CEFR_LEVELS)
+  level?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  cursor?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(LIBRARY_SEARCH_MAX_LIMIT)
+  limit?: number;
+}
 
 export class CreateLibraryResourceDto {
   @IsString()

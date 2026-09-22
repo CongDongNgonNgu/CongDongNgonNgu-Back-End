@@ -5,6 +5,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -16,6 +17,7 @@ import { LibraryService } from './library.service';
 import {
   AttachLibraryProvenanceDto,
   CreateLibraryResourceDto,
+  SearchLibraryResourcesDto,
   TransitionLibraryReviewDto,
 } from './library.dto';
 import type { LibraryActor } from './library.types';
@@ -70,6 +72,14 @@ export class LibraryController {
         input.note,
       ),
       'Library review state changed',
+    );
+  }
+
+  @Get('resources')
+  async searchPublicResources(@Query() input: SearchLibraryResourcesDto) {
+    return success(
+      await this.library.searchPublicResources(input),
+      'Library resources',
     );
   }
 

@@ -7,11 +7,14 @@ import {
   assertLibraryReviewTransition,
   LibraryValidationError,
   normalizeLibraryLicenseInput,
+  normalizeLibrarySearchInput,
   normalizeLibraryProvenanceInput,
   normalizeLibraryResourceInput,
   normalizeReviewState,
 } from './library.normalization';
 import { LibraryFailure, libraryFailure } from './library.errors';
+import { decodeLibrarySearchCursor, encodeLibrarySearchCursor } from './library.pagination';
+import { toPublicSearchResult } from './library.search';
 import {
   LIBRARY_REPOSITORY,
   LibraryRepositoryConflictError,
@@ -23,10 +26,12 @@ import type {
   LibraryLicenseInput,
   LibraryLicenseRecord,
   LibraryPublicResource,
+  LibraryPublicSearchPage,
   LibraryPublicProvenance,
   LibraryProvenanceInput,
   LibraryProvenanceRecord,
   LibraryResourceRecord,
+  LibrarySearchInput,
   LibraryReviewAuditRecord,
   NormalizedLibraryLicenseInput,
   NormalizedLibraryProvenanceInput,
@@ -198,6 +203,49 @@ export class LibraryService {
 
   async getPublicResource(resourceId: string): Promise<LibraryPublicResource | null> {
     const resource = await this.repository.findResourceById(resourceId);
+    return this.projectPublicResource(resource);
+  }
+
+  async searchPublicResources(input: LibrarySearchInput): Promise<LibraryPublicSearchPage> {
+    const normalized = this.normalize(() => normalizeLibrarySearchInput(input));
+    let cursor;
+    try {
+      cursor = decodeLibrarySearchCursor(normalized.cursor, normalized.filters);
+    } catch (error) {
+      if (error instanceof LibraryValidationError) {
+        libraryFailure(error.code, 'The library pagination cursor is invalid');
+      }
+      throw error;
+    }
+    if (normalized.filters.languageCode) {
+      await this.requireActiveLanguages([normalized.filters.languageCode]);
+    }
+
+    const page = await this.repository.searchPublicResources({
+      filters: normalized.filters,
+      cursor,
+      limit: normalized.limit,
+    });
+    const items = [];
+    for (const resource of page.items) {
+      const publicResource = await this.projectPublicSearchResult(resource);
+      if (publicResource) items.push(publicResource);
+    }
+    const cursorSource = page.items.at(-1);
+    return {
+      items,
+      nextCursor: page.hasMore && cursorSource
+        ? encodeLibrarySearchCursor(
+          { updatedAt: cursorSource.updatedAt, id: cursorSource.id },
+          normalized.filters,
+        )
+        : null,
+    };
+  }
+
+  private async projectPublicResource(
+    resource: LibraryResourceRecord | null,
+  ): Promise<LibraryPublicResource | null> {
     if (
       !resource ||
       resource.reviewState !== 'VERIFIED' ||
@@ -228,6 +276,23 @@ export class LibraryService {
       createdAt: new Date(resource.createdAt),
       updatedAt: new Date(resource.updatedAt),
     };
+  }
+
+  private async projectPublicSearchResult(resource: LibraryResourceRecord) {
+    if (
+      resource.reviewState !== 'VERIFIED' ||
+      resource.visibility !== 'PUBLIC' ||
+      resource.moderationState !== 'ACTIVE' ||
+      resource.provenance.length === 0
+    ) return null;
+    const provenance = await this.refreshProvenanceLicenses(resource.provenance);
+    if (
+      !provenance ||
+      provenance.some((entry) => (
+        !entry.license.active || entry.license.redistributionAllowed !== true
+      ))
+    ) return null;
+    return toPublicSearchResult(resource, provenance);
   }
 
   private async requireActiveLanguages(codes: readonly string[]): Promise<void> {

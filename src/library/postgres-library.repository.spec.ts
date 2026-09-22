@@ -30,6 +30,37 @@ describe('PostgresLibraryRepository', () => {
     );
   });
 
+  it('builds a parameterized multilingual public search with publication and license gates', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+    const repository = new PostgresLibraryRepository({ query } as unknown as Pool);
+
+    await expect(repository.searchPublicResources({
+      filters: {
+        q: '你好',
+        languageCode: 'vi',
+        resourceType: 'VOCABULARY',
+        topic: 'daily-life',
+        cefrLevel: 'A1',
+      },
+      cursor: {
+        updatedAt: new Date('2026-09-21T00:00:00.000Z'),
+        id: '00000000-0000-4000-8000-000000000001',
+      },
+      limit: 10,
+    })).resolves.toEqual({ items: [], hasMore: false });
+
+    const [sql, values] = query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("resource.visibility = 'PUBLIC'");
+    expect(sql).toContain("resource.review_state = 'VERIFIED'");
+    expect(sql).toContain('redistribution_allowed IS NOT TRUE');
+    expect(sql).toContain('ILIKE');
+    expect(sql).toContain('dialogue.turns::text');
+    expect(sql).toContain('ORDER BY resource.updated_at DESC, resource.id DESC');
+    expect(values).toEqual(expect.arrayContaining([
+      'vi', 'VOCABULARY', 'daily-life', 'A1', '%你好%',
+    ]));
+  });
+
   it('requires the expected provenance revision for review transitions', async () => {
     const clientQuery = jest.fn().mockResolvedValue({ rows: [] });
     const client = {
