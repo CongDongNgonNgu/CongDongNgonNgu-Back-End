@@ -2,6 +2,7 @@ import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsObject,
@@ -161,4 +162,16 @@ export class TransitionLibraryReviewDto {
   @IsString()
   @MaxLength(2_000)
   note?: string | null;
+}
+
+export class SubmitLibraryContributionDto {
+  @IsString()
+  @MaxLength(80)
+  termsVersion!: string;
+
+  @IsBoolean()
+  rightsConfirmed!: boolean;
+
+  @IsBoolean()
+  reuseConsent!: boolean;
 }

@@ -146,6 +146,54 @@ describe('Phase 08B1 migration contract', () => {
   });
 });
 
+describe('Phase 08B2A migration contract', () => {
+  it('defines a bounded Library-owned durable contribution event table', () => {
+    const sql = readFileSync(
+      resolve(migrations, '0011_library_contribution_events.sql'),
+      'utf8',
+    );
+
+    expect(sql).toContain('CREATE TYPE library_contribution_event_type AS ENUM');
+    expect(sql).toContain("'LIBRARY_CONTRIBUTION_SUBMITTED'");
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS library_contribution_events');
+    expect(sql).toContain('event_version integer NOT NULL');
+    expect(sql).toContain('resource_id uuid NOT NULL REFERENCES library_resources(id) ON DELETE RESTRICT');
+    expect(sql).toContain('contributor_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT');
+    expect(sql).toContain('review_audit_id uuid NOT NULL REFERENCES library_resource_review_audits(id) ON DELETE RESTRICT');
+    expect(sql).toContain('resource_type library_resource_type NOT NULL');
+    expect(sql).toContain('CHECK (event_version > 0)');
+    expect(sql).toContain('CHECK (rights_confirmed IS TRUE)');
+    expect(sql).toContain('CHECK (reuse_consent IS TRUE)');
+    expect(sql).toContain('UNIQUE (review_audit_id)');
+    expect(sql).not.toMatch(/points|award|processing|outbox_status/iu);
+  });
+
+  it('rolls back only 0011-owned objects', () => {
+    const sql = readFileSync(
+      resolve(migrations, '0011_library_contribution_events.down.sql'),
+      'utf8',
+    );
+
+    expect(sql).toContain('DROP TABLE IF EXISTS library_contribution_events');
+    expect(sql).toContain('DROP TYPE IF EXISTS library_contribution_event_type');
+    expect(sql).not.toMatch(/DROP TABLE IF EXISTS (library_resources|library_resource_review_audits|users)/iu);
+    expect(sql).not.toMatch(/DROP TYPE IF EXISTS (library_review_state|library_resource_type|library_review_action)/iu);
+  });
+
+  it('freezes the normalized 0011 migration checksums and preserves 0001-0010 checksums', () => {
+    for (const [filename, expected] of Object.entries({
+      ...BASELINE_MIGRATION_SHA256,
+      ...PHASE_08B1_MIGRATION_SHA256,
+      ...PHASE_08B2A_MIGRATION_SHA256,
+    })) {
+      const actual = normalizedMigrationChecksum(
+        readFileSync(resolve(migrations, filename), 'utf8'),
+      );
+      expect(actual).toBe(expected);
+    }
+  });
+});
+
 function normalizedMigrationChecksum(content: string): string {
   const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
@@ -196,4 +244,9 @@ const PHASE_08B1_INDEXES = [
 const PHASE_08B1_MIGRATION_SHA256: Record<string, string> = {
   '0010_library_search.sql': '0f5fc8b6e416fbed8e68eb033c2216ede4a1247d96217b9bf1617ebfe2df83f2',
   '0010_library_search.down.sql': 'dc230f48a075c947584f3e0bdd2aedf2f0a7be20371b4a94ee979c97e54fa0d0',
+};
+
+const PHASE_08B2A_MIGRATION_SHA256: Record<string, string> = {
+  '0011_library_contribution_events.sql': '556c9222004f909cc94738db592a7134a2b6bbd9fe6807d62adbc876b4e52a5a',
+  '0011_library_contribution_events.down.sql': '436108a9e78fb5e3a5cf3f1a753b10a5cb756f7641f1c9d85f6ac1e80da13697',
 };

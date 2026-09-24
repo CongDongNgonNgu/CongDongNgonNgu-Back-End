@@ -11,6 +11,7 @@ import {
   type LibrarySearchRepositoryPage,
   type LibraryReviewTransitionResult,
   type LibraryProvenanceMutationExpectation,
+  type SubmitLibraryContributionRepositoryInput,
   type TransitionLibraryReviewRepositoryInput,
 } from './library.repository';
 import type {
@@ -19,6 +20,8 @@ import type {
   GrammarItemDetails,
   IdiomDetails,
   LearningCollectionDetails,
+  LibraryContributionEventRecord,
+  LibraryContributionSubmissionResult,
   LibraryLicenseRecord,
   LibraryProvenanceRecord,
   LibraryResourceDetails,
@@ -86,6 +89,13 @@ export class PostgresLibraryRepository implements LibraryRepository {
       [licenseKey],
     );
     return result.rows[0] ? mapLicense(result.rows[0]) : null;
+  }
+
+  async listLicenses(): Promise<LibraryLicenseRecord[]> {
+    const result = await this.pool.query(
+      'SELECT * FROM library_licenses ORDER BY license_key ASC',
+    );
+    return result.rows.map(mapLicense);
   }
 
   async createResource(input: CreateLibraryResourceRepositoryInput): Promise<LibraryResourceRecord> {
@@ -527,6 +537,150 @@ export class PostgresLibraryRepository implements LibraryRepository {
     }
   }
 
+  async submitContribution(
+    input: SubmitLibraryContributionRepositoryInput,
+  ): Promise<LibraryContributionSubmissionResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const updated = await client.query(
+        `UPDATE library_resources
+         SET review_state = 'COMMUNITY_REVIEW'::library_review_state,
+             reviewed_by_user_id = NULL,
+             reviewed_at = NULL,
+             updated_at = $2::timestamptz
+         WHERE id = $1::uuid
+           AND created_by_user_id = $3::uuid
+           AND resource_type = $4::library_resource_type
+           AND visibility = 'PUBLIC'::community_post_visibility
+           AND review_state = 'DRAFT'::library_review_state
+           AND provenance_revision = $5::bigint
+         RETURNING *`,
+        [
+          input.resourceId,
+          input.occurredAt,
+          input.contributorUserId,
+          input.resourceType,
+          input.expectedProvenanceRevision,
+        ],
+      );
+      if (!updated.rows[0]) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_CONTRIBUTION_CONFLICT',
+          'The library contribution is no longer an editable draft',
+        );
+      }
+
+      const licenseCheck = await client.query(
+        `SELECT
+           COUNT(*)::int AS provenance_count,
+           COUNT(*) FILTER (WHERE license.license_key IS NULL)::int AS missing_count,
+           COUNT(*) FILTER (WHERE license.active IS NOT TRUE)::int AS inactive_count,
+           COUNT(*) FILTER (WHERE license.redistribution_allowed IS NOT TRUE)::int AS redistribution_count
+         FROM library_resource_provenance AS provenance
+         LEFT JOIN library_licenses AS license ON license.license_key = provenance.license_key
+         WHERE provenance.resource_id = $1::uuid`,
+        [input.resourceId],
+      );
+      const licenseCounts = licenseCheck.rows[0] as Record<string, unknown> | undefined;
+      if (Number(licenseCounts?.provenance_count ?? 0) === 0) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_PROVENANCE_REQUIRED',
+          'A contribution requires provenance before submission',
+        );
+      }
+      if (Number(licenseCounts?.missing_count ?? 0) > 0) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_LICENSE_UNKNOWN',
+          'A contribution references an unknown license',
+        );
+      }
+      if (Number(licenseCounts?.inactive_count ?? 0) > 0) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_LICENSE_DISABLED',
+          'A contribution references a disabled license',
+        );
+      }
+      if (Number(licenseCounts?.redistribution_count ?? 0) > 0) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_LICENSE_REDISTRIBUTION_REQUIRED',
+          'A contribution requires explicit redistribution permission for every license',
+        );
+      }
+
+      const auditResult = await client.query(
+        `INSERT INTO library_resource_review_audits (
+           resource_id,
+           actor_user_id,
+           previous_state,
+           new_state,
+           action,
+           note,
+           created_at
+         )
+         VALUES ($1::uuid, $2::uuid, 'DRAFT'::library_review_state, 'COMMUNITY_REVIEW'::library_review_state, 'SUBMIT'::library_review_action, NULL, $3::timestamptz)
+         RETURNING *`,
+        [input.resourceId, input.contributorUserId, input.occurredAt],
+      );
+      const audit = mapAudit(auditResult.rows[0]);
+      const eventResult = await client.query(
+        `INSERT INTO library_contribution_events (
+           event_type,
+           event_version,
+           resource_id,
+           contributor_user_id,
+           review_audit_id,
+           resource_type,
+           terms_version,
+           rights_confirmed,
+           reuse_consent,
+           occurred_at
+         )
+         VALUES (
+           'LIBRARY_CONTRIBUTION_SUBMITTED'::library_contribution_event_type,
+           1,
+           $1::uuid,
+           $2::uuid,
+           $3::uuid,
+           $4::library_resource_type,
+           $5,
+           $6::boolean,
+           $7::boolean,
+           $8::timestamptz
+         )
+         RETURNING *`,
+        [
+          input.resourceId,
+          input.contributorUserId,
+          audit.id,
+          input.resourceType,
+          input.termsVersion,
+          input.rightsConfirmed,
+          input.reuseConsent,
+          input.occurredAt,
+        ],
+      );
+      await client.query('COMMIT');
+      const resource = await this.findResourceById(input.resourceId);
+      if (!resource) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_RESOURCE_NOT_FOUND',
+          'Library resource was not found after contribution submission',
+        );
+      }
+      return {
+        resource,
+        audit,
+        event: mapContributionEvent(eventResult.rows[0]),
+      };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw mapPostgresError(error);
+    } finally {
+      client.release();
+    }
+  }
+
   async listReviewAudit(resourceId: string): Promise<LibraryReviewAuditRecord[]> {
     const result = await this.pool.query(
       `SELECT *
@@ -536,6 +690,17 @@ export class PostgresLibraryRepository implements LibraryRepository {
       [resourceId],
     );
     return result.rows.map(mapAudit);
+  }
+
+  async listContributionEvents(resourceId?: string): Promise<LibraryContributionEventRecord[]> {
+    const result = await this.pool.query(
+      `SELECT *
+       FROM library_contribution_events
+       ${resourceId ? 'WHERE resource_id = $1::uuid' : ''}
+       ORDER BY occurred_at ASC, id ASC`,
+      resourceId ? [resourceId] : [],
+    );
+    return result.rows.map(mapContributionEvent);
   }
 
   private async findResourceWithExecutor(
@@ -975,6 +1140,23 @@ function mapAudit(row: Record<string, unknown>): LibraryReviewAuditRecord {
   };
 }
 
+function mapContributionEvent(row: Record<string, unknown>): LibraryContributionEventRecord {
+  return {
+    id: String(row.id),
+    eventType: 'LIBRARY_CONTRIBUTION_SUBMITTED',
+    eventVersion: Number(row.event_version) as 1,
+    resourceId: String(row.resource_id),
+    contributorUserId: String(row.contributor_user_id),
+    reviewAuditId: String(row.review_audit_id),
+    resourceType: String(row.resource_type) as LibraryContributionEventRecord['resourceType'],
+    termsVersion: String(row.terms_version) as 'library-contribution-v1',
+    rightsConfirmed: row.rights_confirmed === true ? true : (row.rights_confirmed as never),
+    reuseConsent: row.reuse_consent === true ? true : (row.reuse_consent as never),
+    occurredAt: new Date(String(row.occurred_at)),
+    createdAt: new Date(String(row.created_at)),
+  };
+}
+
 function mapPostgresError(error: unknown): Error {
   if (error instanceof LibraryRepositoryConflictError) return error;
   const code = isPostgresError(error) ? error.code : null;
@@ -989,6 +1171,15 @@ function mapPostgresError(error: unknown): Error {
     return new LibraryRepositoryConflictError(
       'LIBRARY_PROVENANCE_RESOURCE_MOVE',
       'Provenance cannot move between resources',
+    );
+  }
+  const constraint = isPostgresError(error) && 'constraint' in error
+    ? String((error as { constraint?: unknown }).constraint ?? '')
+    : '';
+  if (code === '23505' && constraint === 'library_contribution_event_review_audit_unique') {
+    return new LibraryRepositoryConflictError(
+      'LIBRARY_CONTRIBUTION_DUPLICATE',
+      'A contribution event already exists for this review submission',
     );
   }
   if (code === '23505') {

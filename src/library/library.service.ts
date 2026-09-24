@@ -16,6 +16,10 @@ import { LibraryFailure, libraryFailure } from './library.errors';
 import { decodeLibrarySearchCursor, encodeLibrarySearchCursor } from './library.pagination';
 import { toPublicSearchResult } from './library.search';
 import {
+  LIBRARY_CONTRIBUTION_RESOURCE_TYPES,
+  LIBRARY_CONTRIBUTION_TERMS_VERSION,
+} from './library.types';
+import {
   LIBRARY_REPOSITORY,
   LibraryRepositoryConflictError,
   type LibraryRepository,
@@ -23,6 +27,8 @@ import {
 import type {
   CreateLibraryResourceInput,
   LibraryActor,
+  LibraryContributionPolicy,
+  LibraryContributionResourceType,
   LibraryLicenseInput,
   LibraryLicenseRecord,
   LibraryPublicResource,
@@ -33,6 +39,8 @@ import type {
   LibraryResourceRecord,
   LibrarySearchInput,
   LibraryReviewAuditRecord,
+  LibraryContributionSubmissionResult,
+  SubmitLibraryContributionInput,
   NormalizedLibraryLicenseInput,
   NormalizedLibraryProvenanceInput,
 } from './library.types';
@@ -64,6 +72,24 @@ export class LibraryService {
       libraryFailure('LIBRARY_LICENSE_INVALID', 'The library license key is invalid');
     }
     return this.repository.findLicense(normalized);
+  }
+
+  async getContributionPolicy(): Promise<LibraryContributionPolicy> {
+    const licenses = await this.repository.listLicenses();
+    return {
+      termsVersion: LIBRARY_CONTRIBUTION_TERMS_VERSION,
+      approvedResourceTypes: [...LIBRARY_CONTRIBUTION_RESOURCE_TYPES],
+      licenses: licenses
+        .filter((license) => license.active && license.redistributionAllowed === true)
+        .map((license) => ({
+          licenseKey: license.licenseKey,
+          displayName: license.displayName,
+          canonicalUrl: license.canonicalUrl,
+          attributionRequired: license.attributionRequired,
+          redistributionAllowed: true as const,
+          derivativeConstraints: license.derivativeConstraints,
+        })),
+    };
   }
 
   async createDraftResource(
@@ -185,6 +211,69 @@ export class LibraryService {
         action,
         actorUserId: actor.userId,
         note: normalizedNote,
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      throw this.mapRepositoryError(error);
+    }
+  }
+
+  async submitContribution(
+    actor: LibraryActor,
+    resourceId: string,
+    input: SubmitLibraryContributionInput,
+  ): Promise<LibraryContributionSubmissionResult> {
+    this.requireActor(actor);
+    const submission = input && typeof input === 'object' ? input : {};
+    const resource = await this.requireResource(resourceId);
+    if (resource.createdByUserId !== actor.userId) {
+      libraryFailure('LIBRARY_SUBMIT_FORBIDDEN', 'Only the resource creator can submit a contribution', 403);
+    }
+    if (resource.reviewState !== 'DRAFT') {
+      libraryFailure(
+        'LIBRARY_CONTRIBUTION_CONFLICT',
+        'The library contribution is no longer an editable draft',
+        409,
+      );
+    }
+    if (!LIBRARY_CONTRIBUTION_RESOURCE_TYPES.includes(resource.resourceType as LibraryContributionResourceType)) {
+      libraryFailure(
+        'LIBRARY_CONTRIBUTION_TYPE_FORBIDDEN',
+        'This resource type is not approved for community contribution',
+      );
+    }
+    if (resource.visibility !== 'PUBLIC') {
+      libraryFailure(
+        'LIBRARY_CONTRIBUTION_PUBLIC_REQUIRED',
+        'Community contributions must be public before submission',
+      );
+    }
+    if (resource.provenance.length === 0) {
+      libraryFailure('LIBRARY_PROVENANCE_REQUIRED', 'A contribution requires provenance before submission');
+    }
+    if (resource.provenance.some((entry) => (
+      entry.sourceType !== 'ORIGINAL_AUTHOR' ||
+      entry.originalContributorUserId !== actor.userId
+    ))) {
+      libraryFailure(
+        'LIBRARY_CONTRIBUTION_PROVENANCE_FORBIDDEN',
+        'Every contribution provenance entry must be bound to the authenticated original contributor',
+      );
+    }
+    await this.requireCurrentProvenanceLicenses(resource, true);
+    this.requireContributionTerms(submission.termsVersion);
+    this.requireContributionConsent(submission.rightsConfirmed, 'rights');
+    this.requireContributionConsent(submission.reuseConsent, 'reuse');
+
+    try {
+      return await this.repository.submitContribution({
+        resourceId,
+        expectedProvenanceRevision: resource.provenanceRevision,
+        contributorUserId: actor.userId,
+        resourceType: resource.resourceType as LibraryContributionResourceType,
+        termsVersion: LIBRARY_CONTRIBUTION_TERMS_VERSION,
+        rightsConfirmed: true,
+        reuseConsent: true,
         occurredAt: new Date(),
       });
     } catch (error) {
@@ -353,6 +442,33 @@ export class LibraryService {
     if (!actor || typeof actor.userId !== 'string' || actor.userId.trim().length === 0) {
       libraryFailure('LIBRARY_ACTOR_INVALID', 'An authenticated library actor is required', 401);
     }
+  }
+
+  private requireContributionTerms(input: unknown): void {
+    if (input === undefined || input === null || input === '') {
+      libraryFailure('LIBRARY_CONTRIBUTION_TERMS_REQUIRED', 'The current contribution terms version is required');
+    }
+    if (input !== LIBRARY_CONTRIBUTION_TERMS_VERSION) {
+      libraryFailure(
+        'LIBRARY_CONTRIBUTION_TERMS_STALE',
+        'The contribution terms version is no longer current',
+        409,
+      );
+    }
+  }
+
+  private requireContributionConsent(input: unknown, kind: 'rights' | 'reuse'): void {
+    if (input === true) return;
+    if (kind === 'rights') {
+      libraryFailure(
+        'LIBRARY_CONTRIBUTION_RIGHTS_CONFIRMATION_REQUIRED',
+        'Explicit rights confirmation is required',
+      );
+    }
+    libraryFailure(
+      'LIBRARY_CONTRIBUTION_REUSE_CONSENT_REQUIRED',
+      'Explicit reuse consent is required',
+    );
   }
 
   private requireReviewer(actor: LibraryActor): void {

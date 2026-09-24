@@ -18,6 +18,7 @@ import {
   AttachLibraryProvenanceDto,
   CreateLibraryResourceDto,
   SearchLibraryResourcesDto,
+  SubmitLibraryContributionDto,
   TransitionLibraryReviewDto,
 } from './library.dto';
 import type { LibraryActor } from './library.types';
@@ -28,6 +29,14 @@ export class LibraryController {
     private readonly library: LibraryService,
     private readonly sessions: SessionService,
   ) {}
+
+  @Get('contribution-policy')
+  async getContributionPolicy() {
+    return success(
+      await this.library.getContributionPolicy(),
+      'Library contribution policy',
+    );
+  }
 
   @Post('resources')
   @UseGuards(AccessTokenGuard)
@@ -72,6 +81,20 @@ export class LibraryController {
         input.note,
       ),
       'Library review state changed',
+    );
+  }
+
+  @Post('resources/:resourceId/submit-contribution')
+  @UseGuards(AccessTokenGuard)
+  async submitContribution(
+    @Param('resourceId', new ParseUUIDPipe({ version: '4' })) resourceId: string,
+    @Body() input: SubmitLibraryContributionDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.library.submitContribution(this.actor(request), resourceId, input),
+      'Library contribution submitted for review',
     );
   }
 

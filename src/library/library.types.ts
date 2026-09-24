@@ -20,6 +20,17 @@ export const LIBRARY_RESOURCE_TYPES = [
 
 export type LibraryResourceType = typeof LIBRARY_RESOURCE_TYPES[number];
 
+export const LIBRARY_CONTRIBUTION_RESOURCE_TYPES = [
+  'VOCABULARY',
+  'SENTENCE',
+  'TRANSLATION',
+] as const satisfies readonly LibraryResourceType[];
+
+export type LibraryContributionResourceType = typeof LIBRARY_CONTRIBUTION_RESOURCE_TYPES[number];
+export const LIBRARY_CONTRIBUTION_TERMS_VERSION = 'library-contribution-v1' as const;
+export const LIBRARY_CONTRIBUTION_EVENT_TYPE = 'LIBRARY_CONTRIBUTION_SUBMITTED' as const;
+export const LIBRARY_CONTRIBUTION_EVENT_VERSION = 1 as const;
+
 export const LIBRARY_SEARCH_DEFAULT_LIMIT = 20;
 export const LIBRARY_SEARCH_MAX_LIMIT = 50;
 export const LIBRARY_SEARCH_MAX_QUERY_LENGTH = 120;
@@ -114,6 +125,21 @@ export interface NormalizedLibraryLicenseInput {
 export interface LibraryLicenseRecord extends NormalizedLibraryLicenseInput {
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface LibraryContributionPolicyLicense {
+  licenseKey: string;
+  displayName: string;
+  canonicalUrl: string;
+  attributionRequired: boolean;
+  redistributionAllowed: true;
+  derivativeConstraints: string | null;
+}
+
+export interface LibraryContributionPolicy {
+  termsVersion: typeof LIBRARY_CONTRIBUTION_TERMS_VERSION;
+  approvedResourceTypes: readonly LibraryContributionResourceType[];
+  licenses: LibraryContributionPolicyLicense[];
 }
 
 export interface LibraryTransformationInput {
@@ -311,6 +337,33 @@ export interface LibraryReviewAuditRecord {
   action: LibraryReviewAction;
   note: string | null;
   createdAt: Date;
+}
+
+export interface SubmitLibraryContributionInput {
+  termsVersion?: unknown;
+  rightsConfirmed?: unknown;
+  reuseConsent?: unknown;
+}
+
+export interface LibraryContributionEventRecord {
+  id: string;
+  eventType: typeof LIBRARY_CONTRIBUTION_EVENT_TYPE;
+  eventVersion: typeof LIBRARY_CONTRIBUTION_EVENT_VERSION;
+  resourceId: string;
+  contributorUserId: string;
+  reviewAuditId: string;
+  resourceType: LibraryContributionResourceType;
+  termsVersion: typeof LIBRARY_CONTRIBUTION_TERMS_VERSION;
+  rightsConfirmed: true;
+  reuseConsent: true;
+  occurredAt: Date;
+  createdAt: Date;
+}
+
+export interface LibraryContributionSubmissionResult {
+  resource: LibraryResourceRecord;
+  audit: LibraryReviewAuditRecord;
+  event: LibraryContributionEventRecord;
 }
 
 export interface LibraryPublicResource {
