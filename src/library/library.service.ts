@@ -7,6 +7,7 @@ import {
   assertLibraryReviewTransition,
   LibraryValidationError,
   normalizeLibraryLicenseInput,
+  normalizeLibraryReviewQueueInput,
   normalizeLibrarySearchInput,
   normalizeLibraryProvenanceInput,
   normalizeLibraryResourceInput,
@@ -14,7 +15,7 @@ import {
 } from './library.normalization';
 import { LibraryFailure, libraryFailure } from './library.errors';
 import { decodeLibrarySearchCursor, encodeLibrarySearchCursor } from './library.pagination';
-import { toPublicSearchResult } from './library.search';
+import { toLibrarySearchPreview, toPublicSearchResult } from './library.search';
 import {
   LIBRARY_CONTRIBUTION_RESOURCE_TYPES,
   LIBRARY_CONTRIBUTION_TERMS_VERSION,
@@ -27,6 +28,7 @@ import {
 import type {
   CreateLibraryResourceInput,
   LibraryActor,
+  LibraryContributionEventRecord,
   LibraryContributionPolicy,
   LibraryContributionResourceType,
   LibraryLicenseInput,
@@ -37,6 +39,15 @@ import type {
   LibraryProvenanceInput,
   LibraryProvenanceRecord,
   LibraryResourceRecord,
+  LibraryReviewContributionEventSummary,
+  LibraryReviewDetail,
+  LibraryReviewEligibility,
+  LibraryReviewEligibilityIssue,
+  LibraryReviewLicenseSummary,
+  LibraryReviewProvenanceSummary,
+  LibraryReviewQueueItem,
+  LibraryReviewQueuePage,
+  LibraryReviewQueueInput,
   LibrarySearchInput,
   LibraryReviewAuditRecord,
   LibraryContributionSubmissionResult,
@@ -179,6 +190,16 @@ export class LibraryService {
     this.requireActor(actor);
     const resource = await this.requireResource(resourceId);
     const nextState = this.normalize(() => normalizeReviewState(nextStateInput));
+    if (
+      resource.reviewState === 'REJECTED' &&
+      nextState === 'VERIFIED'
+    ) {
+      libraryFailure(
+        'LIBRARY_REVIEW_CONFLICT',
+        'The resource has already left the reviewer queue',
+        409,
+      );
+    }
     const action = this.normalize(() => assertLibraryReviewTransition(resource.reviewState, nextState));
 
     if (action === 'SUBMIT') {
@@ -198,6 +219,13 @@ export class LibraryService {
         libraryFailure('LIBRARY_SELF_VERIFICATION_DENIED', 'A submitter cannot verify their own resource', 403);
       }
       if (action === 'VERIFY') {
+        if (resource.moderationState !== 'ACTIVE') {
+          libraryFailure(
+            'LIBRARY_REVIEW_MODERATION_INACTIVE',
+            'Only actively moderated resources can be verified',
+            409,
+          );
+        }
         if (resource.provenance.length === 0) {
           libraryFailure('LIBRARY_PROVENANCE_REQUIRED', 'A resource needs provenance before verification');
         }
@@ -293,6 +321,83 @@ export class LibraryService {
     } catch (error) {
       throw this.mapRepositoryError(error);
     }
+  }
+
+  async listReviewQueue(
+    actor: LibraryActor,
+    input: LibraryReviewQueueInput,
+  ): Promise<LibraryReviewQueuePage> {
+    this.requireReviewer(actor);
+    const normalized = this.normalize(() => normalizeLibraryReviewQueueInput(input));
+    const searchFilters = {
+      q: normalized.filters.q,
+      languageCode: normalized.filters.languageCode,
+      resourceType: normalized.filters.resourceType,
+      topic: null,
+      cefrLevel: null,
+    } as const;
+    let cursor;
+    try {
+      cursor = decodeLibrarySearchCursor(normalized.cursor, searchFilters);
+    } catch (error) {
+      if (error instanceof LibraryValidationError) {
+        libraryFailure(error.code, 'The library review pagination cursor is invalid');
+      }
+      throw error;
+    }
+    if (normalized.filters.languageCode) {
+      await this.requireActiveLanguages([normalized.filters.languageCode]);
+    }
+
+    const page = await this.repository.listReviewQueue({
+      filters: normalized.filters,
+      cursor,
+      limit: normalized.limit,
+    });
+    const items = await Promise.all(page.items.map((resource) => this.projectReviewQueueItem(resource)));
+    return {
+      items,
+      nextCursor: page.hasMore && page.nextBoundary
+        ? encodeLibrarySearchCursor(page.nextBoundary, searchFilters)
+        : null,
+    };
+  }
+
+  async getReviewDetail(
+    actor: LibraryActor,
+    resourceId: string,
+  ): Promise<LibraryReviewDetail> {
+    this.requireReviewer(actor);
+    const resource = await this.requireResource(resourceId);
+    const [auditHistory, contributionEvents, provenance] = await Promise.all([
+      this.repository.listReviewAudit(resourceId),
+      this.repository.listContributionEvents(resourceId),
+      this.projectReviewProvenance(resource.provenance),
+    ]);
+    return {
+      resource: {
+        id: resource.id,
+        resourceType: resource.resourceType,
+        primaryLanguageCode: resource.primaryLanguageCode,
+        secondaryLanguageCode: resource.secondaryLanguageCode,
+        cefrLevel: resource.cefrLevel,
+        topics: [...resource.topics],
+        visibility: resource.visibility,
+        moderationState: resource.moderationState,
+        reviewState: resource.reviewState,
+        createdAt: new Date(resource.createdAt),
+        updatedAt: new Date(resource.updatedAt),
+        provenanceRevision: resource.provenanceRevision,
+        details: cloneDetails(resource.details),
+      },
+      provenance,
+      reviewAuditHistory: auditHistory.map((audit) => ({
+        ...audit,
+        createdAt: new Date(audit.createdAt),
+      })),
+      contributionEvents: contributionEvents.map(toReviewContributionEvent),
+      verificationEligibility: this.calculateReviewEligibility(resource, provenance),
+    };
   }
 
   async listReviewAudit(
@@ -395,6 +500,70 @@ export class LibraryService {
       ))
     ) return null;
     return toPublicSearchResult(resource, provenance);
+  }
+
+  private async projectReviewQueueItem(
+    resource: LibraryResourceRecord,
+  ): Promise<LibraryReviewQueueItem> {
+    const provenance = await this.projectReviewProvenance(resource.provenance);
+    return {
+      resourceId: resource.id,
+      resourceType: resource.resourceType,
+      primaryLanguageCode: resource.primaryLanguageCode,
+      secondaryLanguageCode: resource.secondaryLanguageCode,
+      cefrLevel: resource.cefrLevel,
+      topics: [...resource.topics],
+      reviewState: 'COMMUNITY_REVIEW',
+      preview: toLibrarySearchPreview(resource.details),
+      updatedAt: new Date(resource.updatedAt),
+      provenanceRevision: resource.provenanceRevision,
+      provenance,
+      verificationEligibility: this.calculateReviewEligibility(resource, provenance),
+    };
+  }
+
+  private async projectReviewProvenance(
+    provenance: readonly LibraryProvenanceRecord[],
+  ): Promise<LibraryReviewProvenanceSummary[]> {
+    return Promise.all(provenance.map(async (entry) => {
+      const license = await this.repository.findLicense(entry.licenseKey);
+      return {
+        id: entry.id,
+        sourceType: entry.sourceType,
+        sourceId: entry.sourceId,
+        sourceUrl: entry.sourceUrl,
+        attribution: entry.attribution,
+        originalAuthorReference: entry.originalAuthorReference,
+        license: toReviewLicenseSummary(license, entry.licenseKey),
+      };
+    }));
+  }
+
+  private calculateReviewEligibility(
+    resource: LibraryResourceRecord,
+    provenance: readonly LibraryReviewProvenanceSummary[],
+  ): LibraryReviewEligibility {
+    const issues: LibraryReviewEligibilityIssue[] = [];
+    if (provenance.length === 0) issues.push('PROVENANCE_REQUIRED');
+    for (const entry of provenance) {
+      if (!entry.license.exists) {
+        issues.push('LICENSE_UNKNOWN');
+      } else if (!entry.license.active) {
+        issues.push('LICENSE_INACTIVE');
+      }
+      if (
+        resource.visibility === 'PUBLIC' &&
+        entry.license.redistributionAllowed !== true
+      ) {
+        issues.push('LICENSE_REDISTRIBUTION_UNSAFE');
+      }
+    }
+    if (resource.moderationState !== 'ACTIVE') issues.push('MODERATION_INACTIVE');
+    const uniqueIssues = [...new Set(issues)];
+    return {
+      eligible: uniqueIssues.length === 0,
+      issues: uniqueIssues,
+    };
   }
 
   private async requireActiveLanguages(codes: readonly string[]): Promise<void> {
@@ -646,6 +815,54 @@ function toPublicProvenance(record: LibraryProvenanceRecord): LibraryPublicProve
     },
     attribution: record.attribution,
     originalAuthorReference: record.originalAuthorReference,
+  };
+}
+
+function toReviewLicenseSummary(
+  license: LibraryLicenseRecord | null,
+  licenseKey = '',
+): LibraryReviewLicenseSummary {
+  if (!license) {
+    return {
+      licenseKey,
+      exists: false,
+      displayName: null,
+      canonicalUrl: null,
+      attributionRequired: null,
+      redistributionAllowed: null,
+      derivativeConstraints: null,
+      active: false,
+      eligibleForPublicVerification: false,
+    };
+  }
+  return {
+    licenseKey: license.licenseKey,
+    exists: true,
+    displayName: license.displayName,
+    canonicalUrl: license.canonicalUrl,
+    attributionRequired: license.attributionRequired,
+    redistributionAllowed: license.redistributionAllowed,
+    derivativeConstraints: license.derivativeConstraints,
+    active: license.active,
+    eligibleForPublicVerification: license.active && license.redistributionAllowed === true,
+  };
+}
+
+function toReviewContributionEvent(
+  event: LibraryContributionEventRecord,
+): LibraryReviewContributionEventSummary {
+  return {
+    id: event.id,
+    eventType: event.eventType,
+    eventVersion: event.eventVersion,
+    resourceId: event.resourceId,
+    reviewAuditId: event.reviewAuditId,
+    resourceType: event.resourceType,
+    termsVersion: event.termsVersion,
+    rightsConfirmed: true,
+    reuseConsent: true,
+    occurredAt: new Date(event.occurredAt),
+    createdAt: new Date(event.createdAt),
   };
 }
 

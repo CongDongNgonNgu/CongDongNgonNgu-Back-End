@@ -10,6 +10,8 @@ import {
   type LibrarySearchRepositoryInput,
   type LibrarySearchRepositoryPage,
   type LibraryReviewTransitionResult,
+  type LibraryReviewQueueRepositoryInput,
+  type LibraryReviewQueueRepositoryPage,
   type LibraryProvenanceMutationExpectation,
   type SubmitLibraryContributionRepositoryInput,
   type TransitionLibraryReviewRepositoryInput,
@@ -337,6 +339,116 @@ export class PostgresLibraryRepository implements LibraryRepository {
     };
   }
 
+  async listReviewQueue(
+    input: LibraryReviewQueueRepositoryInput,
+  ): Promise<LibraryReviewQueueRepositoryPage> {
+    const values: unknown[] = [];
+    const parameter = (value: unknown): string => {
+      values.push(value);
+      return '$' + values.length;
+    };
+    const filters = [
+      `resource.review_state = 'COMMUNITY_REVIEW'::library_review_state`,
+    ];
+
+    if (input.filters.languageCode) {
+      const languageParameter = parameter(input.filters.languageCode);
+      filters.push(`(
+        primary_language.code = ${languageParameter}
+        OR secondary_language.code = ${languageParameter}
+      )`);
+    }
+    if (input.filters.resourceType) {
+      filters.push(`resource.resource_type = ${parameter(input.filters.resourceType)}::library_resource_type`);
+    }
+
+    let keywordMatches = '';
+    let keywordJoin = '';
+    if (input.filters.q) {
+      const qParameter = parameter('%' + escapeLikePattern(input.filters.q) + '%');
+      const like = (column: string): string => `${column} ILIKE ${qParameter} ESCAPE E'\\\\'`;
+      keywordMatches = `WITH keyword_matches AS MATERIALIZED (
+        SELECT DISTINCT resource_id
+        FROM (
+          SELECT resource_id FROM library_resource_topics WHERE ${like('topic')}
+          UNION ALL
+          SELECT resource_id FROM library_vocabularies
+           WHERE ${like('term')} OR ${like('definition')} OR ${like('part_of_speech')} OR ${like('example_sentence')}
+          UNION ALL
+          SELECT resource_id FROM library_sentences
+           WHERE ${like('text_content')} OR ${like('context')}
+          UNION ALL
+          SELECT resource_id FROM library_translations
+           WHERE ${like('source_text')} OR ${like('translated_text')}
+          UNION ALL
+          SELECT resource_id FROM library_grammar_items
+           WHERE ${like('title')} OR ${like('explanation')} OR ${like('pattern')} OR ${like('example_text')}
+          UNION ALL
+          SELECT resource_id FROM library_dialogues
+           WHERE ${like('title')} OR turns::text ILIKE ${qParameter} ESCAPE E'\\\\'
+          UNION ALL
+          SELECT resource_id FROM library_idioms
+           WHERE ${like('expression')} OR ${like('meaning')} OR ${like('usage_note')}
+          UNION ALL
+          SELECT resource_id FROM library_slang
+           WHERE ${like('expression')} OR ${like('meaning')} OR ${like('register')} OR ${like('usage_note')}
+          UNION ALL
+          SELECT resource_id FROM library_cultural_notes
+           WHERE ${like('title')} OR ${like('body')}
+          UNION ALL
+          SELECT resource_id FROM library_pronunciations
+           WHERE ${like('term')} OR ${like('phonetic')} OR ${like('notes')}
+          UNION ALL
+          SELECT resource_id FROM library_learning_collections
+           WHERE ${like('title')} OR ${like('description')}
+        ) AS keyword_candidates
+      )`;
+      keywordJoin = `INNER JOIN keyword_matches AS keyword_match
+         ON keyword_match.resource_id = resource.id`;
+    }
+    if (input.cursor) {
+      const cursorTimestamp = parameter(input.cursor.updatedAt);
+      const cursorId = parameter(input.cursor.id);
+      filters.push(`(
+        resource.updated_at > ${cursorTimestamp}::timestamptz
+        OR (resource.updated_at = ${cursorTimestamp}::timestamptz AND resource.id > ${cursorId}::uuid)
+      )`);
+    }
+
+    const limitParameter = parameter(input.limit + 1);
+    const result = await this.pool.query(
+      `${keywordMatches ? keywordMatches + '\n' : ''}SELECT resource.id, resource.updated_at
+       FROM library_resources AS resource
+       ${keywordJoin ? keywordJoin + '\n       ' : ''}
+       INNER JOIN languages AS primary_language ON primary_language.id = resource.primary_language_id
+       LEFT JOIN languages AS secondary_language ON secondary_language.id = resource.secondary_language_id
+       WHERE ${filters.join('\n         AND ')}
+       ORDER BY resource.updated_at ASC, resource.id ASC
+       LIMIT ${limitParameter}`,
+      values,
+    );
+    const rows = result.rows.slice(0, input.limit + 1);
+    const consumedRows = rows.slice(0, input.limit);
+    const resources = await Promise.all(
+      consumedRows.map((row) => this.findResourceById(String(row.id))),
+    );
+    const items = resources.filter((resource): resource is LibraryResourceRecord => (
+      resource !== null && resource.reviewState === 'COMMUNITY_REVIEW'
+    ));
+    const hasMore = rows.length > input.limit;
+    const lastConsumedRow = consumedRows.at(-1);
+    return {
+      items,
+      hasMore,
+      nextBoundary: hasMore && lastConsumedRow
+        ? {
+          updatedAt: new Date(lastConsumedRow.updated_at),
+          id: String(lastConsumedRow.id),
+        }
+        : null,
+    };
+  }
+
   async addProvenance(
     resourceId: string,
     input: NormalizedLibraryProvenanceInput,
@@ -467,6 +579,32 @@ export class PostgresLibraryRepository implements LibraryRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      const lockedResult = await client.query(
+        `SELECT *
+         FROM library_resources
+         WHERE id = $1::uuid
+         FOR UPDATE`,
+        [input.resourceId],
+      );
+      const lockedRow = lockedResult.rows[0] as Record<string, unknown> | undefined;
+      if (!lockedRow) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_RESOURCE_NOT_FOUND',
+          'The library resource was not found',
+        );
+      }
+      if (
+        String(lockedRow.review_state) !== input.expectedPreviousState ||
+        Number(lockedRow.provenance_revision) !== input.expectedProvenanceRevision
+      ) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_REVIEW_CONFLICT',
+          'The resource review state or provenance changed before this transition',
+        );
+      }
+      if (input.action === 'VERIFY' || input.nextState === 'VERIFIED') {
+        await this.validateVerificationEligibility(client, lockedRow);
+      }
       const updated = await client.query(
         `UPDATE library_resources
          SET review_state = $3::library_review_state,
@@ -522,18 +660,83 @@ export class PostgresLibraryRepository implements LibraryRepository {
           input.occurredAt,
         ],
       );
-      await client.query('COMMIT');
-      const resource = await this.findResourceById(input.resourceId);
+      const resource = await this.findResourceWithExecutor(client, input.resourceId);
       if (!resource) throw new LibraryRepositoryConflictError('LIBRARY_RESOURCE_NOT_FOUND', 'Library resource was not found');
+      const audit = mapAudit(auditResult.rows[0]);
+      await client.query('COMMIT');
       return {
         resource,
-        audit: mapAudit(auditResult.rows[0]),
+        audit,
       };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw mapPostgresError(error);
     } finally {
       client.release();
+    }
+  }
+
+  private async validateVerificationEligibility(
+    client: PoolClient,
+    resourceRow: Record<string, unknown>,
+  ): Promise<void> {
+    if (String(resourceRow.moderation_state) !== 'ACTIVE') {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_REVIEW_MODERATION_INACTIVE',
+        'Only actively moderated resources can be verified',
+      );
+    }
+    const provenanceResult = await client.query(
+      `SELECT source_type, license_key
+       FROM library_resource_provenance
+       WHERE resource_id = $1::uuid
+       ORDER BY id ASC
+       FOR SHARE`,
+      [String(resourceRow.id)],
+    );
+    const provenanceRows = provenanceResult.rows as Record<string, unknown>[];
+    if (provenanceRows.length === 0) {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_PROVENANCE_REQUIRED',
+        'A resource needs provenance before verification',
+      );
+    }
+
+    const licenseKeys = [...new Set(provenanceRows.map((row) => String(row.license_key)))].sort();
+    const licenseResult = await client.query(
+      `SELECT license_key, active, redistribution_allowed
+       FROM library_licenses
+       WHERE license_key = ANY($1::varchar[])
+       ORDER BY license_key ASC
+       FOR SHARE`,
+      [licenseKeys],
+    );
+    const licenses = new Map(
+      licenseResult.rows.map((row) => [String(row.license_key), row as Record<string, unknown>]),
+    );
+    for (const provenance of provenanceRows) {
+      const license = licenses.get(String(provenance.license_key));
+      if (!license) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_LICENSE_UNKNOWN',
+          'A resource references an unknown license',
+        );
+      }
+      if (license.active !== true) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_LICENSE_DISABLED',
+          'A resource references a disabled license',
+        );
+      }
+      if (
+        String(resourceRow.visibility) === 'PUBLIC' &&
+        license.redistribution_allowed !== true
+      ) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_LICENSE_REDISTRIBUTION_REQUIRED',
+          'A public resource requires explicit redistribution permission for every license',
+        );
+      }
     }
   }
 

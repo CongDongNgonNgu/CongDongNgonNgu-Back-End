@@ -152,7 +152,10 @@ describe('PostgresLibraryRepository', () => {
   });
 
   it('requires the expected provenance revision for review transitions', async () => {
-    const clientQuery = jest.fn().mockResolvedValue({ rows: [] });
+    const clientQuery = jest.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 'resource-1', review_state: 'COMMUNITY_REVIEW', provenance_revision: '3' }] })
+      .mockResolvedValueOnce({ rows: [] });
     const client = {
       query: clientQuery,
       release: jest.fn(),
@@ -174,17 +177,7 @@ describe('PostgresLibraryRepository', () => {
       occurredAt: new Date('2026-09-21T00:00:00.000Z'),
     })).rejects.toMatchObject({ code: 'LIBRARY_REVIEW_CONFLICT' });
 
-    expect(clientQuery).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining('provenance_revision = $6'),
-      expect.arrayContaining([4]),
-    );
-    const updateSql = clientQuery.mock.calls[1][0] as string;
-    expect(updateSql).toContain('THEN $4::uuid');
-    expect(updateSql).toContain('THEN $5::timestamptz');
-    expect(updateSql).toContain('updated_at = $5::timestamptz');
-    expect(updateSql).toContain('WHERE id = $1::uuid');
-    expect(updateSql).toContain('provenance_revision = $6::bigint');
+    expect(clientQuery.mock.calls[1][0]).toContain('FOR UPDATE');
     expect(clientQuery).toHaveBeenNthCalledWith(3, 'ROLLBACK');
   });
 
@@ -237,6 +230,12 @@ describe('PostgresLibraryRepository', () => {
         primary_language_code: 'vi',
         secondary_language_code: null,
       };
+      const lockedRow = {
+        ...updatedRow,
+        review_state: previousState,
+        reviewed_by_user_id: null,
+        reviewed_at: null,
+      };
       const auditRow = {
         id: '00000000-0000-4000-8000-000000000005',
         resource_id: resourceId,
@@ -249,8 +248,19 @@ describe('PostgresLibraryRepository', () => {
       };
       const clientQuery = jest.fn()
         .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [lockedRow] });
+      if (action === 'VERIFY') {
+        clientQuery
+          .mockResolvedValueOnce({ rows: [{ source_type: 'ORIGINAL_AUTHOR', license_key: 'SAFE-V1' }] })
+          .mockResolvedValueOnce({ rows: [{ license_key: 'SAFE-V1', active: true, redistribution_allowed: true }] });
+      }
+      clientQuery
         .mockResolvedValueOnce({ rows: [updatedRow] })
         .mockResolvedValueOnce({ rows: [auditRow] })
+        .mockResolvedValueOnce({ rows: [updatedRow] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ term: 'xin chÃ o', definition: 'greeting', part_of_speech: null, example_sentence: null }] })
         .mockResolvedValueOnce({ rows: [] });
       const client = {
         query: clientQuery,
@@ -287,22 +297,33 @@ describe('PostgresLibraryRepository', () => {
       expect(result.audit.action).toBe(action);
       expect(result.audit.note).toBe(note);
 
-      const updateSql = clientQuery.mock.calls[1][0] as string;
+      const updateIndex = action === 'VERIFY' ? 4 : 2;
+      const updateSql = clientQuery.mock.calls[updateIndex][0] as string;
       expect(updateSql).toContain('THEN $4::uuid');
       expect(updateSql).toContain('THEN $5::timestamptz');
       expect(updateSql).toContain('updated_at = $5::timestamptz');
       expect(updateSql).toContain('WHERE id = $1::uuid');
       expect(updateSql).toContain('provenance_revision = $6::bigint');
 
-      const auditSql = clientQuery.mock.calls[2][0] as string;
+      const auditSql = clientQuery.mock.calls[updateIndex + 1][0] as string;
       expect(auditSql).toContain('VALUES ($1::uuid, $2::uuid, $3::library_review_state, $4::library_review_state, $5::library_review_action, $6, $7::timestamptz)');
-      expect(clientQuery).toHaveBeenNthCalledWith(4, 'COMMIT');
+      expect(clientQuery).toHaveBeenNthCalledWith(updateIndex + 7, 'COMMIT');
+      expect(poolQuery).not.toHaveBeenCalled();
     },
   );
 
   it('rolls back the transition transaction when audit insertion fails', async () => {
     const clientQuery = jest.fn()
       .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        id: 'resource-1',
+        review_state: 'COMMUNITY_REVIEW',
+        provenance_revision: '4',
+        moderation_state: 'ACTIVE',
+        visibility: 'PUBLIC',
+      }] })
+      .mockResolvedValueOnce({ rows: [{ source_type: 'ORIGINAL_AUTHOR', license_key: 'SAFE-V1' }] })
+      .mockResolvedValueOnce({ rows: [{ license_key: 'SAFE-V1', active: true, redistribution_allowed: true }] })
       .mockResolvedValueOnce({ rows: [{ id: 'resource-1' }] })
       .mockRejectedValueOnce(new Error('audit insert failed'))
       .mockResolvedValueOnce({ rows: [] });
@@ -327,6 +348,6 @@ describe('PostgresLibraryRepository', () => {
       occurredAt: new Date('2026-09-21T00:00:00.000Z'),
     })).rejects.toThrow('audit insert failed');
 
-    expect(clientQuery).toHaveBeenNthCalledWith(4, 'ROLLBACK');
+    expect(clientQuery).toHaveBeenNthCalledWith(7, 'ROLLBACK');
   });
 });

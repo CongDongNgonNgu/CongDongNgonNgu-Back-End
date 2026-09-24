@@ -53,6 +53,12 @@ export function toPublicSearchResult(
   };
 }
 
+export function toLibrarySearchPreview(
+  details: LibraryResourceDetails,
+): LibraryPublicSearchResult['preview'] {
+  return createSearchPreview(details);
+}
+
 function libraryResourceSearchValues(resource: LibraryResourceRecord): string[] {
   return [
     ...resource.topics,

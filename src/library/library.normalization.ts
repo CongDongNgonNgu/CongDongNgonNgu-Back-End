@@ -27,7 +27,9 @@ import {
   type PronunciationDetails,
   type LearningCollectionDetails,
   type LibraryLicenseInput,
+  type LibraryReviewQueueInput,
   type LibrarySearchInput,
+  type NormalizedLibraryReviewQueueInput,
   type NormalizedLibrarySearchInput,
 } from './library.types';
 
@@ -115,6 +117,21 @@ export function normalizeLibrarySearchInput(
     filters: { q, languageCode, resourceType, topic, cefrLevel },
     cursor,
     limit,
+  };
+}
+
+export function normalizeLibraryReviewQueueInput(
+  input: LibraryReviewQueueInput,
+): NormalizedLibraryReviewQueueInput {
+  const normalized = normalizeLibrarySearchInput(input);
+  return {
+    filters: {
+      q: normalized.filters.q,
+      languageCode: normalized.filters.languageCode,
+      resourceType: normalized.filters.resourceType,
+    },
+    cursor: normalized.cursor,
+    limit: normalized.limit,
   };
 }
 

@@ -17,6 +17,7 @@ import { LibraryService } from './library.service';
 import {
   AttachLibraryProvenanceDto,
   CreateLibraryResourceDto,
+  ListLibraryReviewsDto,
   SearchLibraryResourcesDto,
   SubmitLibraryContributionDto,
   TransitionLibraryReviewDto,
@@ -35,6 +36,30 @@ export class LibraryController {
     return success(
       await this.library.getContributionPolicy(),
       'Library contribution policy',
+    );
+  }
+
+  @Get('reviews')
+  @UseGuards(AccessTokenGuard)
+  async listReviewQueue(
+    @Query() input: ListLibraryReviewsDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.library.listReviewQueue(this.actor(request), input),
+      'Library review queue',
+    );
+  }
+
+  @Get('reviews/:resourceId')
+  @UseGuards(AccessTokenGuard)
+  async getReviewDetail(
+    @Param('resourceId', new ParseUUIDPipe({ version: '4' })) resourceId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.library.getReviewDetail(this.actor(request), resourceId),
+      'Library review detail',
     );
   }
 

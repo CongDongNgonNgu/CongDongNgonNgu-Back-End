@@ -61,6 +61,35 @@ export class SearchLibraryResourcesDto {
   limit?: number;
 }
 
+export class ListLibraryReviewsDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(LIBRARY_SEARCH_MAX_QUERY_LENGTH)
+  q?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i)
+  @MaxLength(35)
+  language?: string;
+
+  @IsOptional()
+  @IsIn(LIBRARY_RESOURCE_TYPES)
+  type?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  cursor?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(LIBRARY_SEARCH_MAX_LIMIT)
+  limit?: number;
+}
+
 export class CreateLibraryResourceDto {
   @IsString()
   @MaxLength(32)

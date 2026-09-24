@@ -17,6 +17,7 @@ import type {
   NormalizedLibraryProvenanceInput,
   NormalizedLibraryResourceInput,
   LibrarySearchCursor,
+  NormalizedLibraryReviewQueueFilters,
   NormalizedLibrarySearchFilters,
 } from './library.types';
 import { libraryResourceMatchesQuery } from './library.search';
@@ -82,6 +83,18 @@ export interface LibrarySearchRepositoryPage {
   nextBoundary: LibrarySearchCursor | null;
 }
 
+export interface LibraryReviewQueueRepositoryInput {
+  filters: NormalizedLibraryReviewQueueFilters;
+  cursor?: LibrarySearchCursor;
+  limit: number;
+}
+
+export interface LibraryReviewQueueRepositoryPage {
+  items: LibraryResourceRecord[];
+  hasMore: boolean;
+  nextBoundary: LibrarySearchCursor | null;
+}
+
 export interface LibraryRepository {
   upsertLicense(
     input: NormalizedLibraryLicenseInput,
@@ -92,6 +105,7 @@ export interface LibraryRepository {
   createResource(input: CreateLibraryResourceRepositoryInput): Promise<LibraryResourceRecord>;
   findResourceById(id: string): Promise<LibraryResourceRecord | null>;
   searchPublicResources(input: LibrarySearchRepositoryInput): Promise<LibrarySearchRepositoryPage>;
+  listReviewQueue(input: LibraryReviewQueueRepositoryInput): Promise<LibraryReviewQueueRepositoryPage>;
   addProvenance(
     resourceId: string,
     input: NormalizedLibraryProvenanceInput,
@@ -203,6 +217,41 @@ export class InMemoryLibraryRepository implements LibraryRepository {
         const cursorTimestamp = input.cursor.updatedAt.getTime();
         return timestamp < cursorTimestamp || (
           timestamp === cursorTimestamp && resource.id < input.cursor.id
+        );
+      });
+    const selectedRows = eligible.slice(0, input.limit + 1);
+    const consumedRows = selectedRows.slice(0, input.limit);
+    const hasMore = selectedRows.length > input.limit;
+    return {
+      items: consumedRows.map(cloneResource),
+      hasMore,
+      nextBoundary: hasMore && consumedRows.at(-1)
+        ? {
+          updatedAt: new Date(consumedRows.at(-1)!.updatedAt),
+          id: consumedRows.at(-1)!.id,
+        }
+        : null,
+    };
+  }
+
+  async listReviewQueue(
+    input: LibraryReviewQueueRepositoryInput,
+  ): Promise<LibraryReviewQueueRepositoryPage> {
+    const eligible = [...this.resources.values()]
+      .filter((resource) => resource.reviewState === 'COMMUNITY_REVIEW')
+      .filter((resource) => !input.filters.languageCode || (
+        resource.primaryLanguageCode === input.filters.languageCode ||
+        resource.secondaryLanguageCode === input.filters.languageCode
+      ))
+      .filter((resource) => !input.filters.resourceType || resource.resourceType === input.filters.resourceType)
+      .filter((resource) => libraryResourceMatchesQuery(resource, input.filters.q))
+      .sort(compareReviewQueueResources)
+      .filter((resource) => {
+        if (!input.cursor) return true;
+        const timestamp = resource.updatedAt.getTime();
+        const cursorTimestamp = input.cursor.updatedAt.getTime();
+        return timestamp > cursorTimestamp || (
+          timestamp === cursorTimestamp && resource.id > input.cursor.id
         );
       });
     const selectedRows = eligible.slice(0, input.limit + 1);
@@ -464,6 +513,12 @@ function compareSearchResources(a: LibraryResourceRecord, b: LibraryResourceReco
   const timestampDifference = b.updatedAt.getTime() - a.updatedAt.getTime();
   if (timestampDifference !== 0) return timestampDifference;
   return b.id > a.id ? 1 : b.id < a.id ? -1 : 0;
+}
+
+function compareReviewQueueResources(a: LibraryResourceRecord, b: LibraryResourceRecord): number {
+  const timestampDifference = a.updatedAt.getTime() - b.updatedAt.getTime();
+  if (timestampDifference !== 0) return timestampDifference;
+  return a.id > b.id ? 1 : a.id < b.id ? -1 : 0;
 }
 
 function createProvenance(

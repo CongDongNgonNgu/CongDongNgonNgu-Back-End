@@ -45,6 +45,14 @@ export interface LibrarySearchInput {
   limit?: unknown;
 }
 
+export interface LibraryReviewQueueInput {
+  q?: unknown;
+  language?: unknown;
+  type?: unknown;
+  cursor?: unknown;
+  limit?: unknown;
+}
+
 export interface NormalizedLibrarySearchFilters {
   q: string | null;
   languageCode: string | null;
@@ -55,6 +63,18 @@ export interface NormalizedLibrarySearchFilters {
 
 export interface NormalizedLibrarySearchInput {
   filters: NormalizedLibrarySearchFilters;
+  cursor: string | undefined;
+  limit: number;
+}
+
+export interface NormalizedLibraryReviewQueueFilters {
+  q: string | null;
+  languageCode: string | null;
+  resourceType: LibraryResourceType | null;
+}
+
+export interface NormalizedLibraryReviewQueueInput {
+  filters: NormalizedLibraryReviewQueueFilters;
   cursor: string | undefined;
   limit: number;
 }
@@ -407,6 +427,98 @@ export interface LibraryPublicSearchResult {
 export interface LibraryPublicSearchPage {
   items: LibraryPublicSearchResult[];
   nextCursor: string | null;
+}
+
+export interface LibraryReviewLicenseSummary {
+  licenseKey: string;
+  exists: boolean;
+  displayName: string | null;
+  canonicalUrl: string | null;
+  attributionRequired: boolean | null;
+  redistributionAllowed: LibraryRedistributionAllowed;
+  derivativeConstraints: string | null;
+  active: boolean;
+  eligibleForPublicVerification: boolean;
+}
+
+export interface LibraryReviewProvenanceSummary {
+  id: string;
+  sourceType: LibrarySourceType;
+  sourceId: string;
+  sourceUrl: string | null;
+  attribution: string;
+  originalAuthorReference: string | null;
+  license: LibraryReviewLicenseSummary;
+}
+
+export type LibraryReviewEligibilityIssue =
+  | 'PROVENANCE_REQUIRED'
+  | 'LICENSE_UNKNOWN'
+  | 'LICENSE_INACTIVE'
+  | 'LICENSE_REDISTRIBUTION_UNSAFE'
+  | 'MODERATION_INACTIVE';
+
+export interface LibraryReviewEligibility {
+  eligible: boolean;
+  issues: LibraryReviewEligibilityIssue[];
+}
+
+export interface LibraryReviewQueueItem {
+  resourceId: string;
+  resourceType: LibraryResourceType;
+  primaryLanguageCode: string;
+  secondaryLanguageCode: string | null;
+  cefrLevel: CommunityCefrLevel | null;
+  topics: string[];
+  reviewState: 'COMMUNITY_REVIEW';
+  preview: LibraryPublicSearchPreview;
+  updatedAt: Date;
+  provenanceRevision: number;
+  provenance: LibraryReviewProvenanceSummary[];
+  verificationEligibility: LibraryReviewEligibility;
+}
+
+export interface LibraryReviewQueuePage {
+  items: LibraryReviewQueueItem[];
+  nextCursor: string | null;
+}
+
+export interface LibraryReviewResourceDetail {
+  id: string;
+  resourceType: LibraryResourceType;
+  primaryLanguageCode: string;
+  secondaryLanguageCode: string | null;
+  cefrLevel: CommunityCefrLevel | null;
+  topics: string[];
+  visibility: CommunityVisibility;
+  moderationState: CommunityModerationState;
+  reviewState: LibraryReviewState;
+  createdAt: Date;
+  updatedAt: Date;
+  provenanceRevision: number;
+  details: LibraryResourceDetails;
+}
+
+export interface LibraryReviewContributionEventSummary {
+  id: string;
+  eventType: typeof LIBRARY_CONTRIBUTION_EVENT_TYPE;
+  eventVersion: typeof LIBRARY_CONTRIBUTION_EVENT_VERSION;
+  resourceId: string;
+  reviewAuditId: string;
+  resourceType: LibraryContributionResourceType;
+  termsVersion: typeof LIBRARY_CONTRIBUTION_TERMS_VERSION;
+  rightsConfirmed: true;
+  reuseConsent: true;
+  occurredAt: Date;
+  createdAt: Date;
+}
+
+export interface LibraryReviewDetail {
+  resource: LibraryReviewResourceDetail;
+  provenance: LibraryReviewProvenanceSummary[];
+  reviewAuditHistory: LibraryReviewAuditRecord[];
+  contributionEvents: LibraryReviewContributionEventSummary[];
+  verificationEligibility: LibraryReviewEligibility;
 }
 
 export interface LibraryCollectionMemberRecord {
