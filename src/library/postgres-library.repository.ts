@@ -553,6 +553,7 @@ export class PostgresLibraryRepository implements LibraryRepository {
            AND created_by_user_id = $3::uuid
            AND resource_type = $4::library_resource_type
            AND visibility = 'PUBLIC'::community_post_visibility
+           AND moderation_state = 'ACTIVE'::community_moderation_state
            AND review_state = 'DRAFT'::library_review_state
            AND provenance_revision = $5::bigint
          RETURNING *`,
@@ -571,41 +572,63 @@ export class PostgresLibraryRepository implements LibraryRepository {
         );
       }
 
-      const licenseCheck = await client.query(
-        `SELECT
-           COUNT(*)::int AS provenance_count,
-           COUNT(*) FILTER (WHERE license.license_key IS NULL)::int AS missing_count,
-           COUNT(*) FILTER (WHERE license.active IS NOT TRUE)::int AS inactive_count,
-           COUNT(*) FILTER (WHERE license.redistribution_allowed IS NOT TRUE)::int AS redistribution_count
-         FROM library_resource_provenance AS provenance
-         LEFT JOIN library_licenses AS license ON license.license_key = provenance.license_key
-         WHERE provenance.resource_id = $1::uuid`,
+      const provenanceResult = await client.query(
+        `SELECT source_type, original_contributor_user_id, license_key
+         FROM library_resource_provenance
+         WHERE resource_id = $1::uuid
+         ORDER BY id ASC
+         FOR SHARE`,
         [input.resourceId],
       );
-      const licenseCounts = licenseCheck.rows[0] as Record<string, unknown> | undefined;
-      if (Number(licenseCounts?.provenance_count ?? 0) === 0) {
+      const provenanceRows = provenanceResult.rows as Record<string, unknown>[];
+      if (provenanceRows.length === 0) {
         throw new LibraryRepositoryConflictError(
           'LIBRARY_PROVENANCE_REQUIRED',
           'A contribution requires provenance before submission',
         );
       }
-      if (Number(licenseCounts?.missing_count ?? 0) > 0) {
-        throw new LibraryRepositoryConflictError(
-          'LIBRARY_LICENSE_UNKNOWN',
-          'A contribution references an unknown license',
-        );
-      }
-      if (Number(licenseCounts?.inactive_count ?? 0) > 0) {
-        throw new LibraryRepositoryConflictError(
-          'LIBRARY_LICENSE_DISABLED',
-          'A contribution references a disabled license',
-        );
-      }
-      if (Number(licenseCounts?.redistribution_count ?? 0) > 0) {
-        throw new LibraryRepositoryConflictError(
-          'LIBRARY_LICENSE_REDISTRIBUTION_REQUIRED',
-          'A contribution requires explicit redistribution permission for every license',
-        );
+
+      const licenseKeys = [...new Set(provenanceRows.map((row) => String(row.license_key)))].sort();
+      const licenseResult = await client.query(
+        `SELECT license_key, active, redistribution_allowed
+         FROM library_licenses
+         WHERE license_key = ANY($1::varchar[])
+         ORDER BY license_key ASC
+         FOR SHARE`,
+        [licenseKeys],
+      );
+      const licenses = new Map(
+        licenseResult.rows.map((row) => [String(row.license_key), row as Record<string, unknown>]),
+      );
+      for (const provenance of provenanceRows) {
+        if (
+          String(provenance.source_type) !== 'ORIGINAL_AUTHOR' ||
+          String(provenance.original_contributor_user_id ?? '') !== input.contributorUserId
+        ) {
+          throw new LibraryRepositoryConflictError(
+            'LIBRARY_CONTRIBUTION_PROVENANCE_FORBIDDEN',
+            'Every contribution provenance entry must be bound to the authenticated original contributor',
+          );
+        }
+        const license = licenses.get(String(provenance.license_key));
+        if (!license) {
+          throw new LibraryRepositoryConflictError(
+            'LIBRARY_LICENSE_UNKNOWN',
+            'A contribution references an unknown license',
+          );
+        }
+        if (license.active !== true) {
+          throw new LibraryRepositoryConflictError(
+            'LIBRARY_LICENSE_DISABLED',
+            'A contribution references a disabled license',
+          );
+        }
+        if (license.redistribution_allowed !== true) {
+          throw new LibraryRepositoryConflictError(
+            'LIBRARY_LICENSE_REDISTRIBUTION_REQUIRED',
+            'A contribution requires explicit redistribution permission for every license',
+          );
+        }
       }
 
       const auditResult = await client.query(
@@ -660,18 +683,20 @@ export class PostgresLibraryRepository implements LibraryRepository {
           input.occurredAt,
         ],
       );
-      await client.query('COMMIT');
-      const resource = await this.findResourceById(input.resourceId);
+      const event = mapContributionEvent(eventResult.rows[0]);
+      const resource = await this.findResourceWithExecutor(client, input.resourceId);
       if (!resource) {
         throw new LibraryRepositoryConflictError(
           'LIBRARY_RESOURCE_NOT_FOUND',
           'Library resource was not found after contribution submission',
         );
       }
+
+      await client.query('COMMIT');
       return {
         resource,
         audit,
-        event: mapContributionEvent(eventResult.rows[0]),
+        event,
       };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);

@@ -10,8 +10,10 @@ import type {
   LibraryActor,
   LibraryLicenseInput,
   NormalizedLibraryProvenanceInput,
+  LibraryContributionResourceType,
   LibraryResourceType,
 } from './library.types';
+import { LIBRARY_CONTRIBUTION_RESOURCE_TYPES } from './library.types';
 
 describe('LibraryService', () => {
   it.each(resourceFixtures())('creates a draft for %s without flattening type-specific data', async (resourceType, details) => {
@@ -224,7 +226,7 @@ describe('LibraryService', () => {
   it('requires owner submission and denies submitter self-verification', async () => {
     const { service } = createService();
     await service.registerLicense(actor('moderator-1', ['MODERATOR']), license('COMMUNITY-V1'));
-    const resource = await createVocabulary(service);
+    const resource = await createVocabulary(service, 'PUBLIC');
     await service.attachProvenance(actor('owner-1'), resource.id, {
       sourceType: 'ORIGINAL_AUTHOR',
       sourceId: 'manual-1',
@@ -236,6 +238,8 @@ describe('LibraryService', () => {
     await expect(service.transitionReview(actor('other-1'), resource.id, 'COMMUNITY_REVIEW'))
       .rejects.toMatchObject({ code: 'LIBRARY_SUBMIT_FORBIDDEN' });
     await expect(service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW'))
+      .rejects.toMatchObject({ code: 'LIBRARY_CONTRIBUTION_SUBMIT_REQUIRED' });
+    await expect(submitCommunityContribution(service, resource.id))
       .resolves.toMatchObject({ resource: { reviewState: 'COMMUNITY_REVIEW' }, audit: { action: 'SUBMIT' } });
     await expect(service.transitionReview(actor('owner-1', ['MODERATOR']), resource.id, 'VERIFIED'))
       .rejects.toMatchObject({ code: 'LIBRARY_SELF_VERIFICATION_DENIED' });
@@ -251,7 +255,7 @@ describe('LibraryService', () => {
       licenseKey: 'COMMUNITY-V1',
       attribution: 'Owner attribution',
     });
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
 
     const verified = await service.transitionReview(
       actor('moderator-1', ['MODERATOR']),
@@ -296,7 +300,7 @@ describe('LibraryService', () => {
       licenseKey: 'COMMUNITY-V1',
       attribution: 'Owner attribution',
     });
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
     await expect(service.transitionReview(
       actor('moderator-1', ['MODERATOR']),
       resource.id,
@@ -316,10 +320,7 @@ describe('LibraryService', () => {
     { label: 'unknown', redistributionAllowed: null },
   ])('fails closed for a public license whose redistribution permission is $label', async ({ redistributionAllowed }) => {
     const { service } = createService();
-    await service.registerLicense(
-      actor('moderator-1', ['MODERATOR']),
-      license('UNSAFE-V1', true, redistributionAllowed),
-    );
+    await service.registerLicense(actor('moderator-1', ['MODERATOR']), license('UNSAFE-V1', true, true));
     const resource = await createVocabulary(service, 'PUBLIC');
     await service.attachProvenance(actor('owner-1'), resource.id, {
       sourceType: 'ORIGINAL_AUTHOR',
@@ -327,7 +328,11 @@ describe('LibraryService', () => {
       licenseKey: 'UNSAFE-V1',
       attribution: 'Original author',
     });
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
+    await service.registerLicense(
+      actor('moderator-1', ['MODERATOR']),
+      license('UNSAFE-V1', true, redistributionAllowed),
+    );
 
     await expect(service.transitionReview(
       actor('moderator-1', ['MODERATOR']),
@@ -347,7 +352,7 @@ describe('LibraryService', () => {
       licenseKey: 'SAFE-V1',
       attribution: 'Original author',
     });
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
     await expect(service.transitionReview(
       actor('moderator-1', ['MODERATOR']),
       resource.id,
@@ -374,7 +379,7 @@ describe('LibraryService', () => {
       licenseKey: 'LATER-V1',
       attribution: 'Original author',
     });
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
     await service.transitionReview(reviewer, resource.id, 'VERIFIED');
     await expect(service.getPublicResource(resource.id)).resolves.not.toBeNull();
 
@@ -394,7 +399,7 @@ describe('LibraryService', () => {
       attribution: 'Original author',
     };
     await service.attachProvenance(actor('owner-1'), resource.id, original);
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
 
     await expect(service.attachProvenance(actor('owner-1'), resource.id, {
       ...original,
@@ -425,7 +430,7 @@ describe('LibraryService', () => {
       sourceId: 'author-after-reopen',
     });
     await expect(service.getPublicResource(resource.id)).resolves.toBeNull();
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
     await expect(service.getPublicResource(resource.id)).resolves.toBeNull();
     await service.transitionReview(reviewer, resource.id, 'VERIFIED');
     await expect(service.getPublicResource(resource.id)).resolves.not.toBeNull();
@@ -435,14 +440,14 @@ describe('LibraryService', () => {
     const { service } = createService();
     const reviewer = actor('moderator-1', ['MODERATOR']);
     await service.registerLicense(reviewer, license('CORRECTION-V1'));
-    const resource = await createVocabulary(service);
+    const resource = await createVocabulary(service, 'PUBLIC');
     await service.attachProvenance(actor('owner-1'), resource.id, {
       sourceType: 'ORIGINAL_AUTHOR',
       sourceId: 'author-community',
       licenseKey: 'CORRECTION-V1',
       attribution: 'Original author',
     });
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
 
     await expect(service.attachProvenance(reviewer, resource.id, {
       sourceType: 'ORIGINAL_AUTHOR',
@@ -483,7 +488,7 @@ describe('LibraryService', () => {
     expect(await service.getResource(resource.id)).toMatchObject({
       provenance: [{ originalContributorUserId: member.userId }],
     });
-    await service.transitionReview(member, resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id, member);
     await service.transitionReview(reviewer, resource.id, 'VERIFIED');
     const publicResource = await service.getPublicResource(resource.id);
     expect(publicResource?.provenance[0]).not.toHaveProperty('originalContributorUserId');
@@ -495,9 +500,10 @@ describe('LibraryService', () => {
     const { service } = createService();
     await service.registerLicense(otherReviewer, license('CREATOR-MOD-V1'));
     const resource = await service.createDraftResource(creator, {
-      resourceType: 'VOCABULARY',
+      resourceType: 'GRAMMAR_ITEM',
       primaryLanguageCode: 'en',
-      details: { term: 'word', definition: 'meaning' },
+      visibility: 'PUBLIC',
+      details: { title: 'Grammar', explanation: 'Explanation' },
     });
     await service.attachProvenance(creator, resource.id, {
       sourceType: 'ORIGINAL_AUTHOR',
@@ -533,7 +539,7 @@ describe('LibraryService', () => {
       licenseKey: 'RACE-V1',
       attribution: 'Original attribution',
     });
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
     const loaded = await service.getResource(resource.id);
     expect(loaded?.provenanceRevision).toBe(1);
 
@@ -563,7 +569,7 @@ describe('LibraryService', () => {
       attribution: 'Original attribution',
     });
     const staleDraft = await service.getResource(resource.id);
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
     await expect(repository.addProvenance(
       resource.id,
       normalizedProvenance('stale-draft-mutation', 'STATE-GUARD-V1'),
@@ -594,14 +600,14 @@ describe('LibraryService', () => {
     const { service, repository } = createService();
     const reviewer = actor('moderator-race-3', ['MODERATOR']);
     await service.registerLicense(reviewer, license('CORRECTION-RACE-V1', true, true));
-    const resource = await createVocabulary(service, 'PRIVATE');
+    const resource = await createVocabulary(service, 'PUBLIC');
     await service.attachProvenance(actor('owner-1'), resource.id, {
       sourceType: 'ORIGINAL_AUTHOR',
       sourceId: 'correction-race-original',
       licenseKey: 'CORRECTION-RACE-V1',
       attribution: 'Original attribution',
     });
-    await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+    await submitCommunityContribution(service, resource.id);
     const staleVerifierSnapshot = await service.getResource(resource.id);
     await service.attachProvenance(reviewer, resource.id, {
       sourceType: 'ORIGINAL_AUTHOR',
@@ -922,6 +928,18 @@ async function createVocabulary(service: LibraryService, visibility?: 'PUBLIC' |
   });
 }
 
+async function submitCommunityContribution(
+  service: LibraryService,
+  resourceId: string,
+  contributor: LibraryActor = actor('owner-1'),
+) {
+  return service.submitContribution(contributor, resourceId, {
+    termsVersion: 'library-contribution-v1',
+    rightsConfirmed: true,
+    reuseConsent: true,
+  });
+}
+
 class HydrationRaceRepository extends InMemoryLibraryRepository {
   override async searchPublicResources(input: Parameters<LibraryRepository['searchPublicResources']>[0]) {
     const page = await super.searchPublicResources(input);
@@ -960,7 +978,17 @@ async function publishSearchResource(
     licenseKey: 'SEARCH-SAFE-V1',
     attribution: 'Search attribution',
   });
-  await service.transitionReview(actor('search-owner-1'), resource.id, 'COMMUNITY_REVIEW');
+  if (input.visibility === 'PUBLIC' && LIBRARY_CONTRIBUTION_RESOURCE_TYPES.includes(resource.resourceType as LibraryContributionResourceType)) {
+    await service.submitContribution(actor('search-owner-1'), resource.id, {
+      termsVersion: 'library-contribution-v1',
+      rightsConfirmed: true,
+      reuseConsent: true,
+    });
+  } else if (input.visibility === 'PUBLIC') {
+    await service.transitionReview(actor('search-owner-1'), resource.id, 'COMMUNITY_REVIEW');
+  } else {
+    return resource;
+  }
   await service.transitionReview(actor('search-reviewer-1', ['MODERATOR']), resource.id, 'VERIFIED');
   return resource;
 }

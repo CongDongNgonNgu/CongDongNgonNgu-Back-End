@@ -2,7 +2,7 @@ import type { Pool } from 'pg';
 import { PostgresLibraryRepository } from './postgres-library.repository';
 
 describe('PostgresLibraryRepository community contribution transaction', () => {
-  it('updates the resource, audit, and durable event on one transaction', async () => {
+  it('locks current licenses and hydrates the result before committing one transaction', async () => {
     const resourceId = '00000000-0000-4000-8000-000000000001';
     const contributorUserId = '00000000-0000-4000-8000-000000000002';
     const auditId = '00000000-0000-4000-8000-000000000003';
@@ -33,23 +33,21 @@ describe('PostgresLibraryRepository community contribution transaction', () => {
       occurred_at: occurredAt,
       created_at: occurredAt,
     };
+    const hydratedProvenanceRow = transactionProvenanceRow(resourceId, contributorUserId, occurredAt);
     const clientQuery = jest.fn()
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [updatedRow] })
-      .mockResolvedValueOnce({ rows: [{ provenance_count: 1, missing_count: 0, inactive_count: 0, redistribution_count: 0 }] })
+      .mockResolvedValueOnce({ rows: [transactionProvenanceRow(resourceId, contributorUserId, occurredAt)] })
+      .mockResolvedValueOnce({ rows: [licenseRow()] })
       .mockResolvedValueOnce({ rows: [auditRow] })
       .mockResolvedValueOnce({ rows: [eventRow] })
+      .mockResolvedValueOnce({ rows: [updatedRow] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [hydratedProvenanceRow] })
+      .mockResolvedValueOnce({ rows: [{ term: 'word', definition: 'meaning', part_of_speech: null, example_sentence: null }] })
       .mockResolvedValueOnce({ rows: [] });
     const client = { query: clientQuery, release: jest.fn() };
-    const poolQuery = jest.fn().mockImplementation((sql: string) => {
-      if (sql.includes('SELECT\n         resource.*')) return Promise.resolve({ rows: [updatedRow] });
-      if (sql.includes('library_resource_topics')) return Promise.resolve({ rows: [] });
-      if (sql.includes('library_resource_provenance')) return Promise.resolve({ rows: [] });
-      if (sql.includes('library_vocabularies')) {
-        return Promise.resolve({ rows: [{ term: 'word', definition: 'meaning', part_of_speech: null, example_sentence: null }] });
-      }
-      throw new Error(`Unexpected pool query: ${sql}`);
-    });
+    const poolQuery = jest.fn();
     const repository = new PostgresLibraryRepository({
       query: poolQuery,
       connect: jest.fn().mockResolvedValue(client),
@@ -78,19 +76,27 @@ describe('PostgresLibraryRepository community contribution transaction', () => {
       },
     });
     expect(clientQuery).toHaveBeenNthCalledWith(1, 'BEGIN');
-    expect(clientQuery).toHaveBeenNthCalledWith(6, 'COMMIT');
+    expect(clientQuery).toHaveBeenNthCalledWith(11, 'COMMIT');
     expect(clientQuery.mock.calls[1][0]).toContain("review_state = 'COMMUNITY_REVIEW'::library_review_state");
     expect(clientQuery.mock.calls[1][0]).toContain('created_by_user_id = $3::uuid');
     expect(clientQuery.mock.calls[1][0]).toContain("visibility = 'PUBLIC'::community_post_visibility");
-    expect(clientQuery.mock.calls[4][0]).toContain('library_contribution_events');
-    expect(clientQuery.mock.calls[4][0]).not.toContain('details');
+    expect(clientQuery.mock.calls[1][0]).toContain("moderation_state = 'ACTIVE'::community_moderation_state");
+    expect(clientQuery.mock.calls[2][0]).toContain('library_resource_provenance');
+    expect(clientQuery.mock.calls[3][0]).toContain('FOR SHARE');
+    expect(clientQuery.mock.calls[3][1]).toEqual([['SAFE-V1']]);
+    expect(clientQuery.mock.calls[5][0]).toContain('library_contribution_events');
+    expect(clientQuery.mock.calls[5][0]).not.toContain('details');
+    expect(clientQuery.mock.calls[6][0]).toContain('resource.*');
+    expect(clientQuery.mock.calls.slice(11)).toHaveLength(0);
+    expect(poolQuery).not.toHaveBeenCalled();
   });
 
   it('rolls back the review transition and audit when the event insert fails', async () => {
     const clientQuery = jest.fn()
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: 'resource-1' }] })
-      .mockResolvedValueOnce({ rows: [{ provenance_count: 1, missing_count: 0, inactive_count: 0, redistribution_count: 0 }] })
+      .mockResolvedValueOnce({ rows: [transactionProvenanceRow('resource-1', '00000000-0000-4000-8000-000000000002')] })
+      .mockResolvedValueOnce({ rows: [licenseRow()] })
       .mockResolvedValueOnce({ rows: [{ id: 'audit-1' }] })
       .mockRejectedValueOnce(new Error('event insert failed'))
       .mockResolvedValueOnce({ rows: [] });
@@ -101,8 +107,8 @@ describe('PostgresLibraryRepository community contribution transaction', () => {
     } as unknown as Pool);
 
     await expect(repository.submitContribution(validRepositoryInput())).rejects.toThrow('event insert failed');
-    expect(clientQuery).toHaveBeenNthCalledWith(6, 'ROLLBACK');
-    expect(clientQuery.mock.calls[4][0]).toContain('library_contribution_events');
+    expect(clientQuery).toHaveBeenNthCalledWith(7, 'ROLLBACK');
+    expect(clientQuery.mock.calls[5][0]).toContain('library_contribution_events');
     expect(clientQuery).not.toHaveBeenCalledWith('COMMIT');
   });
 
@@ -110,7 +116,8 @@ describe('PostgresLibraryRepository community contribution transaction', () => {
     const clientQuery = jest.fn()
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: 'resource-1' }] })
-      .mockResolvedValueOnce({ rows: [{ provenance_count: 1, missing_count: 0, inactive_count: 0, redistribution_count: 0 }] })
+      .mockResolvedValueOnce({ rows: [transactionProvenanceRow('resource-1', '00000000-0000-4000-8000-000000000002')] })
+      .mockResolvedValueOnce({ rows: [licenseRow()] })
       .mockRejectedValueOnce(new Error('audit insert failed'))
       .mockResolvedValueOnce({ rows: [] });
     const client = { query: clientQuery, release: jest.fn() };
@@ -120,9 +127,56 @@ describe('PostgresLibraryRepository community contribution transaction', () => {
     } as unknown as Pool);
 
     await expect(repository.submitContribution(validRepositoryInput())).rejects.toThrow('audit insert failed');
-    expect(clientQuery).toHaveBeenNthCalledWith(5, 'ROLLBACK');
+    expect(clientQuery).toHaveBeenNthCalledWith(6, 'ROLLBACK');
     expect(clientQuery).not.toHaveBeenCalledWith('COMMIT');
     expect(clientQuery.mock.calls.some(([sql]) => typeof sql === 'string' && sql.includes('library_contribution_events'))).toBe(false);
+  });
+
+  it('rolls back when transactionally validated provenance is not actor-bound original authorship', async () => {
+    const clientQuery = jest.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 'resource-1' }] })
+      .mockResolvedValueOnce({ rows: [transactionProvenanceRow(
+        'resource-1',
+        '00000000-0000-4000-8000-000000000002',
+        undefined,
+        'COMMUNITY_POST',
+      )] })
+      .mockResolvedValueOnce({ rows: [licenseRow()] })
+      .mockResolvedValueOnce({ rows: [] });
+    const client = { query: clientQuery, release: jest.fn() };
+    const repository = new PostgresLibraryRepository({
+      query: jest.fn(),
+      connect: jest.fn().mockResolvedValue(client),
+    } as unknown as Pool);
+
+    await expect(repository.submitContribution(validRepositoryInput()))
+      .rejects.toMatchObject({ code: 'LIBRARY_CONTRIBUTION_PROVENANCE_FORBIDDEN' });
+    expect(clientQuery).toHaveBeenNthCalledWith(5, 'ROLLBACK');
+    expect(clientQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(clientQuery.mock.calls.some(([sql]) => typeof sql === 'string' && sql.includes('library_resource_review_audits'))).toBe(false);
+  });
+
+  it('rolls back when final in-transaction resource hydration fails', async () => {
+    const clientQuery = jest.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 'resource-1' }] })
+      .mockResolvedValueOnce({ rows: [transactionProvenanceRow('resource-1', '00000000-0000-4000-8000-000000000002')] })
+      .mockResolvedValueOnce({ rows: [licenseRow()] })
+      .mockResolvedValueOnce({ rows: [{ id: 'audit-1' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'event-1' }] })
+      .mockRejectedValueOnce(new Error('hydration failed'))
+      .mockResolvedValueOnce({ rows: [] });
+    const client = { query: clientQuery, release: jest.fn() };
+    const repository = new PostgresLibraryRepository({
+      query: jest.fn(),
+      connect: jest.fn().mockResolvedValue(client),
+    } as unknown as Pool);
+
+    await expect(repository.submitContribution(validRepositoryInput())).rejects.toThrow('hydration failed');
+    expect(clientQuery).toHaveBeenNthCalledWith(8, 'ROLLBACK');
+    expect(clientQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(clientQuery.mock.calls[5][0]).toContain('library_contribution_events');
   });
 });
 
@@ -157,5 +211,54 @@ function resourceRow(resourceId: string, contributorUserId: string, occurredAt: 
     provenance_revision: '1',
     primary_language_code: 'en',
     secondary_language_code: null,
+  };
+}
+
+function transactionProvenanceRow(
+  resourceId: string,
+  contributorUserId: string,
+  occurredAt = new Date('2026-09-24T00:00:00.000Z'),
+  sourceType = 'ORIGINAL_AUTHOR',
+) {
+  return {
+    id: '00000000-0000-4000-8000-000000000006',
+    resource_id: resourceId,
+    source_type: sourceType,
+    source_id: 'author-source',
+    source_url: null,
+    license_key: 'SAFE-V1',
+    attribution: 'Original author',
+    original_author_reference: null,
+    original_contributor_user_id: contributorUserId,
+    import_batch: null,
+    transformation_history: [],
+    source_post_id: null,
+    source_response_id: null,
+    source_candidate_id: null,
+    source_acceptance_id: null,
+    created_at: occurredAt,
+    updated_at: occurredAt,
+    license_display_name: 'SAFE-V1',
+    license_canonical_url: 'https://licenses.example.test/safe-v1',
+    license_attribution_required: true,
+    license_redistribution_allowed: true,
+    license_derivative_constraints: null,
+    license_active: true,
+    license_source_note: null,
+    license_created_at: occurredAt,
+    license_updated_at: occurredAt,
+  };
+}
+
+function licenseRow() {
+  return {
+    license_key: 'SAFE-V1',
+    display_name: 'SAFE-V1',
+    canonical_url: 'https://licenses.example.test/safe-v1',
+    attribution_required: true,
+    redistribution_allowed: true,
+    derivative_constraints: null,
+    active: true,
+    source_note: null,
   };
 }

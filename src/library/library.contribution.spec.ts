@@ -84,6 +84,54 @@ describe('LibraryService community contribution contract', () => {
     await expect(repository.listContributionEvents(resource.id)).resolves.toHaveLength(1);
   });
 
+  it.each(['VOCABULARY', 'SENTENCE', 'TRANSLATION'] as const)(
+    'requires the dedicated contribution flow for generic %s submission',
+    async (resourceType) => {
+      const { service, repository } = createService();
+      const reviewer = actor('submission-reviewer', ['MODERATOR']);
+      await service.registerLicense(reviewer, license('SAFE-V1', true, true));
+      const resource = await createEligibleResource(service, 'PUBLIC', resourceType);
+
+      await expect(service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW'))
+        .rejects.toMatchObject({
+          code: 'LIBRARY_CONTRIBUTION_SUBMIT_REQUIRED',
+        });
+      await expect(service.getResource(resource.id)).resolves.toMatchObject({ reviewState: 'DRAFT' });
+      await expect(service.listReviewAudit(actor('owner-1'), resource.id)).resolves.toHaveLength(0);
+      await expect(repository.listContributionEvents(resource.id)).resolves.toHaveLength(0);
+
+      const submitted = await service.submitContribution(actor('owner-1'), resource.id, validSubmission());
+      expect(submitted.resource.reviewState).toBe('COMMUNITY_REVIEW');
+      await expect(repository.listContributionEvents(resource.id)).resolves.toHaveLength(1);
+    },
+  );
+
+  it('retains generic review submission for a non-contribution resource type', async () => {
+    const { service, repository } = createService();
+    const reviewer = actor('submission-reviewer', ['MODERATOR']);
+    await service.registerLicense(reviewer, license('SAFE-V1', true, true));
+    const resource = await createEligibleResource(service, 'PRIVATE', 'GRAMMAR_ITEM');
+
+    await expect(service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW'))
+      .resolves.toMatchObject({
+        resource: { reviewState: 'COMMUNITY_REVIEW' },
+        audit: { action: 'SUBMIT' },
+      });
+    await expect(repository.listContributionEvents(resource.id)).resolves.toHaveLength(0);
+  });
+
+  it('fails closed when moderation is not active at contribution submission', async () => {
+    const repository = new NonActiveModerationRepository();
+    const { service } = createService(repository);
+    await service.registerLicense(actor('submission-reviewer', ['MODERATOR']), license('SAFE-V1', true, true));
+    const resource = await createEligibleResource(service, 'PUBLIC');
+    repository.markHidden(resource.id);
+
+    await expect(service.submitContribution(actor('owner-1'), resource.id, validSubmission()))
+      .rejects.toMatchObject({ code: 'LIBRARY_CONTRIBUTION_MODERATION_REQUIRED' });
+    await expect(repository.listContributionEvents(resource.id)).resolves.toHaveLength(0);
+  });
+
   it('rolls back the in-memory review state and audit when event insertion fails', async () => {
     const repository = new EventFailureRepository();
     const { service } = createService(repository);
@@ -270,7 +318,16 @@ describe('LibraryService community contribution contract', () => {
       const reviewer = actor('submission-reviewer', ['MODERATOR']);
       await service.registerLicense(reviewer, license('SAFE-V1', true, true));
       const resource = await createEligibleResource(service, 'PUBLIC');
-      await service.transitionReview(actor('owner-1'), resource.id, 'COMMUNITY_REVIEW');
+      await repository.transitionReview({
+        resourceId: resource.id,
+        expectedPreviousState: 'DRAFT',
+        expectedProvenanceRevision: resource.provenanceRevision,
+        nextState: 'COMMUNITY_REVIEW',
+        action: 'SUBMIT',
+        actorUserId: 'owner-1',
+        note: null,
+        occurredAt: new Date(),
+      });
       if (state === 'VERIFIED') await service.transitionReview(reviewer, resource.id, 'VERIFIED');
       if (state === 'REJECTED') await service.transitionReview(reviewer, resource.id, 'REJECTED', 'Needs correction');
 
@@ -314,10 +371,15 @@ async function createEligibleResource(
   const resource = await service.createDraftResource(actor('owner-1'), {
     resourceType,
     primaryLanguageCode: 'en',
+    ...(resourceType === 'TRANSLATION' ? { secondaryLanguageCode: 'vi' } : {}),
     visibility,
     details: resourceType === 'GRAMMAR_ITEM'
       ? { title: 'Grammar', explanation: 'Explanation' }
-      : { term: 'word', definition: 'meaning' },
+      : resourceType === 'SENTENCE'
+        ? { text: 'A sentence', context: 'Context' }
+        : resourceType === 'TRANSLATION'
+          ? { sourceText: 'hello', translatedText: 'xin chào' }
+          : { term: 'word', definition: 'meaning' },
   });
   await service.attachProvenance(actor('owner-1'), resource.id, {
     sourceType: 'ORIGINAL_AUTHOR',
@@ -410,6 +472,20 @@ class MutableLicenseRepository extends InMemoryLibraryRepository {
 class EventFailureRepository extends InMemoryLibraryRepository {
   protected override insertContributionEvent(): never {
     throw new Error('event insert failed');
+  }
+}
+
+class NonActiveModerationRepository extends InMemoryLibraryRepository {
+  private readonly hiddenResourceIds = new Set<string>();
+
+  markHidden(resourceId: string): void {
+    this.hiddenResourceIds.add(resourceId);
+  }
+
+  override async findResourceById(id: string) {
+    const resource = await super.findResourceById(id);
+    if (!resource || !this.hiddenResourceIds.has(id)) return resource;
+    return { ...resource, moderationState: 'HIDDEN' as const };
   }
 }
 

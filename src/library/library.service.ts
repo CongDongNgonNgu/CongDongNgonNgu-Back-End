@@ -185,6 +185,13 @@ export class LibraryService {
       if (resource.createdByUserId !== actor.userId) {
         libraryFailure('LIBRARY_SUBMIT_FORBIDDEN', 'Only the resource creator can submit a draft for review', 403);
       }
+      if (LIBRARY_CONTRIBUTION_RESOURCE_TYPES.includes(resource.resourceType as LibraryContributionResourceType)) {
+        libraryFailure(
+          'LIBRARY_CONTRIBUTION_SUBMIT_REQUIRED',
+          'This resource type must be submitted through the community contribution flow',
+          409,
+        );
+      }
     } else {
       this.requireReviewer(actor);
       if (action === 'VERIFY' && resource.createdByUserId === actor.userId) {
@@ -246,6 +253,13 @@ export class LibraryService {
       libraryFailure(
         'LIBRARY_CONTRIBUTION_PUBLIC_REQUIRED',
         'Community contributions must be public before submission',
+      );
+    }
+    if (resource.moderationState !== 'ACTIVE') {
+      libraryFailure(
+        'LIBRARY_CONTRIBUTION_MODERATION_REQUIRED',
+        'The resource must be active before community submission',
+        409,
       );
     }
     if (resource.provenance.length === 0) {

@@ -164,11 +164,7 @@ describe('library API', () => {
       .expect(201);
     await api.get('/api/v1/library/resources/' + resourceId).expect(404);
 
-    await api
-      .post('/api/v1/library/resources/' + resourceId + '/review')
-      .set('Authorization', 'Bearer ' + ownerSession.accessToken)
-      .send({ nextState: 'COMMUNITY_REVIEW' })
-      .expect(201);
+    await submitContribution(api, resourceId, ownerSession);
     await api.get('/api/v1/library/resources/' + resourceId).expect(404);
 
     identity.setRoles(owner.id, ['MODERATOR']);
@@ -201,23 +197,20 @@ describe('library API', () => {
     expect(publicResource.body.data.reviewedByUserId).toBeUndefined();
     expect(publicResource.body.data.reviewNotes).toBeUndefined();
 
-    const unsafeLicense = await registerLicense('E2E-UNSAFE', false);
+    const unsafeLicense = await registerLicense('E2E-UNSAFE', true);
     const unsafe = await api
       .post('/api/v1/library/resources')
-      .set('Authorization', 'Bearer ' + ownerReviewerSession.accessToken)
+      .set('Authorization', 'Bearer ' + memberSession.accessToken)
       .send(resourceBody('PUBLIC'))
       .expect(201);
     const unsafeId = unsafe.body.data.id as string;
     await api
       .post('/api/v1/library/resources/' + unsafeId + '/provenance')
-      .set('Authorization', 'Bearer ' + ownerReviewerSession.accessToken)
+      .set('Authorization', 'Bearer ' + memberSession.accessToken)
       .send(originalProvenance(unsafeLicense, 'unsafe-original'))
       .expect(201);
-    await api
-      .post('/api/v1/library/resources/' + unsafeId + '/review')
-      .set('Authorization', 'Bearer ' + ownerReviewerSession.accessToken)
-      .send({ nextState: 'COMMUNITY_REVIEW' })
-      .expect(201);
+    await submitContribution(api, unsafeId, memberSession);
+    await upsertLicense(unsafeLicense, true, false);
     await api
       .post('/api/v1/library/resources/' + unsafeId + '/review')
       .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
@@ -228,20 +221,16 @@ describe('library API', () => {
 
     const rejected = await api
       .post('/api/v1/library/resources')
-      .set('Authorization', 'Bearer ' + ownerReviewerSession.accessToken)
+      .set('Authorization', 'Bearer ' + memberSession.accessToken)
       .send(resourceBody('PUBLIC'))
       .expect(201);
     const rejectedId = rejected.body.data.id as string;
     await api
       .post('/api/v1/library/resources/' + rejectedId + '/provenance')
-      .set('Authorization', 'Bearer ' + ownerReviewerSession.accessToken)
+      .set('Authorization', 'Bearer ' + memberSession.accessToken)
       .send(originalProvenance(safeLicense, 'rejected-original'))
       .expect(201);
-    await api
-      .post('/api/v1/library/resources/' + rejectedId + '/review')
-      .set('Authorization', 'Bearer ' + ownerReviewerSession.accessToken)
-      .send({ nextState: 'COMMUNITY_REVIEW' })
-      .expect(201);
+    await submitContribution(api, rejectedId, memberSession);
     await api
       .post('/api/v1/library/resources/' + rejectedId + '/review')
       .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
@@ -452,6 +441,15 @@ async function registerLicense(
   redistributionAllowed: boolean | null,
 ): Promise<string> {
   const licenseKey = `${key}-${testSequence++}`;
+  await upsertLicense(licenseKey, true, redistributionAllowed);
+  return licenseKey;
+}
+
+async function upsertLicense(
+  licenseKey: string,
+  active: boolean,
+  redistributionAllowed: boolean | null,
+): Promise<void> {
   await testLibrary.registerLicense(
     { userId: testReviewer.id, roles: ['MODERATOR'] },
     {
@@ -460,10 +458,9 @@ async function registerLicense(
       canonicalUrl: `https://licenses.example.test/${licenseKey.toLowerCase()}`,
       attributionRequired: true,
       redistributionAllowed,
-      active: true,
+      active,
     },
   );
-  return licenseKey;
 }
 
 function resourceBody(visibility: 'PUBLIC' | 'PRIVATE') {
@@ -491,9 +488,29 @@ async function transition(
   nextState: string,
   note?: string,
 ): Promise<void> {
+  if (nextState === 'COMMUNITY_REVIEW') {
+    await submitContribution(api, resourceId, session);
+    return;
+  }
   await api
     .post('/api/v1/library/resources/' + resourceId + '/review')
     .set('Authorization', 'Bearer ' + session.accessToken)
     .send({ nextState, ...(note ? { note } : {}) })
+    .expect(201);
+}
+
+async function submitContribution(
+  api: { post(url: string): request.Test },
+  resourceId: string,
+  session: TestSession,
+): Promise<void> {
+  await api
+    .post('/api/v1/library/resources/' + resourceId + '/submit-contribution')
+    .set('Authorization', 'Bearer ' + session.accessToken)
+    .send({
+      termsVersion: 'library-contribution-v1',
+      rightsConfirmed: true,
+      reuseConsent: true,
+    })
     .expect(201);
 }

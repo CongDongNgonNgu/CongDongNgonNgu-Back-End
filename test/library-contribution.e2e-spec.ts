@@ -177,6 +177,42 @@ describe('library contribution HTTP API', () => {
       .expect(({ body }) => expect(body.error.code).toBe('HTTP_400'));
   });
 
+  it('closes the generic submit bypass for every approved type and preserves grammar review', async () => {
+    const api = request(app.getHttpServer());
+    const owner = await createUser('http-generic-bypass-owner');
+    const session = await sessionFor(owner);
+    const licenseKey = await registerLicense('HTTP-GENERIC-BYPASS', true, true);
+
+    for (const resourceType of ['VOCABULARY', 'SENTENCE', 'TRANSLATION'] as const) {
+      const resourceId = await createResource(api, session, licenseKey, 'PUBLIC', resourceType);
+
+      await api
+        .post('/api/v1/library/resources/' + resourceId + '/review')
+        .set('Authorization', 'Bearer ' + session.accessToken)
+        .send({ nextState: 'COMMUNITY_REVIEW' })
+        .expect(409)
+        .expect(({ body }) => expect(body.error.code).toBe('LIBRARY_CONTRIBUTION_SUBMIT_REQUIRED'));
+
+      await api.get('/api/v1/library/resources/' + resourceId).expect(404);
+      const submitted = await api
+        .post('/api/v1/library/resources/' + resourceId + '/submit-contribution')
+        .set('Authorization', 'Bearer ' + session.accessToken)
+        .send(validSubmission())
+        .expect(201);
+      expect(submitted.body.data.resource.reviewState).toBe('COMMUNITY_REVIEW');
+      expect(submitted.body.data.audit.action).toBe('SUBMIT');
+      expect(submitted.body.data.event.eventType).toBe('LIBRARY_CONTRIBUTION_SUBMITTED');
+    }
+
+    const grammarResourceId = await createResource(api, session, licenseKey, 'PUBLIC', 'GRAMMAR_ITEM');
+    await api
+      .post('/api/v1/library/resources/' + grammarResourceId + '/review')
+      .set('Authorization', 'Bearer ' + session.accessToken)
+      .send({ nextState: 'COMMUNITY_REVIEW' })
+      .expect(201)
+      .expect(({ body }) => expect(body.data.resource.reviewState).toBe('COMMUNITY_REVIEW'));
+  });
+
   async function createResource(
     api: { post(url: string): request.Test },
     session: TestSession,
