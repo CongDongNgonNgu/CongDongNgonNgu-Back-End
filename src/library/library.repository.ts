@@ -21,6 +21,10 @@ import type {
   NormalizedLibrarySearchFilters,
 } from './library.types';
 import { libraryResourceMatchesQuery } from './library.search';
+import {
+  libraryCursorMicrosFromDate,
+  librarySearchCursorFromDate,
+} from './library.pagination';
 
 export const LIBRARY_REPOSITORY = 'LIBRARY_REPOSITORY';
 
@@ -93,6 +97,8 @@ export interface LibraryReviewQueueRepositoryPage {
   items: LibraryResourceRecord[];
   hasMore: boolean;
   nextBoundary: LibrarySearchCursor | null;
+  /** Exact ordered-row boundaries aligned with items when a scan needs them. */
+  itemBoundaries?: LibrarySearchCursor[];
 }
 
 export interface LibraryInvalidSourceQueueRepositoryInput {
@@ -235,8 +241,8 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       .sort(compareSearchResources)
       .filter((resource) => {
         if (!input.cursor) return true;
-        const timestamp = resource.updatedAt.getTime();
-        const cursorTimestamp = input.cursor.updatedAt.getTime();
+        const timestamp = BigInt(libraryCursorMicrosFromDate(resource.updatedAt));
+        const cursorTimestamp = BigInt(input.cursor.updatedAtMicros);
         return timestamp < cursorTimestamp || (
           timestamp === cursorTimestamp && resource.id < input.cursor.id
         );
@@ -248,10 +254,10 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       items: consumedRows.map(cloneResource),
       hasMore,
       nextBoundary: hasMore && consumedRows.at(-1)
-        ? {
-          updatedAt: new Date(consumedRows.at(-1)!.updatedAt),
-          id: consumedRows.at(-1)!.id,
-        }
+        ? librarySearchCursorFromDate(
+          consumedRows.at(-1)!.updatedAt,
+          consumedRows.at(-1)!.id,
+        )
         : null,
     };
   }
@@ -274,8 +280,9 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       items,
       hasMore,
       nextBoundary: hasMore && last
-        ? { updatedAt: new Date(last.updatedAt), id: last.id }
+        ? librarySearchCursorFromDate(last.updatedAt, last.id)
         : null,
+      itemBoundaries: items.map((resource) => librarySearchCursorFromDate(resource.updatedAt, resource.id)),
     };
   }
 
@@ -293,8 +300,8 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       .sort(compareReviewQueueResources)
       .filter((resource) => {
         if (!input.cursor) return true;
-        const timestamp = resource.updatedAt.getTime();
-        const cursorTimestamp = input.cursor.updatedAt.getTime();
+        const timestamp = BigInt(libraryCursorMicrosFromDate(resource.updatedAt));
+        const cursorTimestamp = BigInt(input.cursor.updatedAtMicros);
         return timestamp > cursorTimestamp || (
           timestamp === cursorTimestamp && resource.id > input.cursor.id
         );
@@ -306,10 +313,10 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       items: consumedRows.map(cloneResource),
       hasMore,
       nextBoundary: hasMore && consumedRows.at(-1)
-        ? {
-          updatedAt: new Date(consumedRows.at(-1)!.updatedAt),
-          id: consumedRows.at(-1)!.id,
-        }
+        ? librarySearchCursorFromDate(
+          consumedRows.at(-1)!.updatedAt,
+          consumedRows.at(-1)!.id,
+        )
         : null,
     };
   }
@@ -604,9 +611,11 @@ function isAfterReviewCursor(
   cursor: LibrarySearchCursor | undefined,
 ): boolean {
   if (!cursor) return true;
+  const resourceTimestamp = BigInt(libraryCursorMicrosFromDate(resource.updatedAt));
+  const cursorTimestamp = BigInt(cursor.updatedAtMicros);
   return (
-    resource.updatedAt.getTime() > cursor.updatedAt.getTime() ||
-    (resource.updatedAt.getTime() === cursor.updatedAt.getTime() && resource.id > cursor.id)
+    resourceTimestamp > cursorTimestamp ||
+    (resourceTimestamp === cursorTimestamp && resource.id > cursor.id)
   );
 }
 

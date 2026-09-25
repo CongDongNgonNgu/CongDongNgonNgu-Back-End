@@ -43,7 +43,7 @@ describe('PostgresLibraryRepository', () => {
         cefrLevel: 'A1',
       },
       cursor: {
-        updatedAt: new Date('2026-09-21T00:00:00.000Z'),
+        updatedAtMicros: '1789948800000123',
         id: '00000000-0000-4000-8000-000000000001',
       },
       limit: 10,
@@ -70,14 +70,16 @@ describe('PostgresLibraryRepository', () => {
     expect(sql).toContain('topic_filter.topic = $3');
     expect(sql).toContain('resource.resource_type = $2::library_resource_type');
     expect(sql).toContain('resource.cefr_level = $4::community_cefr_level');
-    expect(sql).toContain('resource.updated_at < $6::timestamptz');
+    expect(sql).toContain("resource.updated_at < (TIMESTAMPTZ 'epoch' + ($6::numeric * INTERVAL '1 microsecond'))");
     expect(sql).toContain('resource.id < $7::uuid');
+    expect(sql).toContain('cursor_updated_at_micros');
     expect(sql).toContain('ORDER BY resource.updated_at DESC, resource.id DESC');
     expect(sql).toContain('LIMIT $8');
     expect(sql).not.toContain('你好');
     expect(values).toEqual(expect.arrayContaining([
       'vi', 'VOCABULARY', 'daily-life', 'A1', '%你好%',
     ]));
+    expect(values).toContain('1789948800000123');
     expect(values).toContain(11);
   });
 
@@ -129,8 +131,16 @@ describe('PostgresLibraryRepository', () => {
       if (sql.includes('SELECT resource.id, resource.updated_at')) {
         return Promise.resolve({
           rows: [
-            { id: boundaryId, updated_at: new Date('2026-09-21T00:00:00.000Z') },
-            { id: '00000000-0000-4000-8000-000000000002', updated_at: new Date('2026-09-20T00:00:00.000Z') },
+            {
+              id: boundaryId,
+              updated_at: new Date('2026-09-21T00:00:00.000Z'),
+              cursor_updated_at_micros: '1789948800000123',
+            },
+            {
+              id: '00000000-0000-4000-8000-000000000002',
+              updated_at: new Date('2026-09-20T00:00:00.000Z'),
+              cursor_updated_at_micros: '1789862400000456',
+            },
           ],
         });
       }
@@ -145,10 +155,50 @@ describe('PostgresLibraryRepository', () => {
       items: [],
       hasMore: true,
       nextBoundary: {
-        updatedAt: new Date('2026-09-21T00:00:00.000Z'),
+        updatedAtMicros: '1789948800000123',
         id: boundaryId,
       },
     });
+  });
+
+  it('keeps exact microsecond boundaries for invalid-source scan rows', async () => {
+    const query = jest.fn().mockImplementation((sql: string) => {
+      if (sql.includes('ORDER BY resource.updated_at ASC, resource.id ASC')) {
+        return Promise.resolve({
+          rows: [
+            {
+              id: '00000000-0000-4000-8000-000000000003',
+              updated_at: new Date('2026-09-21T00:00:00.123Z'),
+              cursor_updated_at_micros: '1789948800000123',
+            },
+            {
+              id: '00000000-0000-4000-8000-000000000004',
+              updated_at: new Date('2026-09-21T00:00:00.456Z'),
+              cursor_updated_at_micros: '1789948800000456',
+            },
+            {
+              id: '00000000-0000-4000-8000-000000000005',
+              updated_at: new Date('2026-09-21T00:00:00.789Z'),
+              cursor_updated_at_micros: '1789948800000789',
+            },
+          ],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    const repository = new PostgresLibraryRepository({ query } as unknown as Pool);
+
+    await expect(repository.listInvalidSourceQueue({ limit: 2 })).resolves.toMatchObject({
+      hasMore: true,
+      nextBoundary: {
+        id: '00000000-0000-4000-8000-000000000004',
+        updatedAtMicros: '1789948800000456',
+      },
+    });
+    const [sql, values] = query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain('cursor_updated_at_micros');
+    expect(sql).toContain('ORDER BY resource.updated_at ASC, resource.id ASC');
+    expect(values).toEqual([3]);
   });
 
   it('requires the expected provenance revision for review transitions', async () => {

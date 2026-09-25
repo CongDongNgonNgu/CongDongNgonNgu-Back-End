@@ -10,8 +10,16 @@ describe('PostgresLibraryRepository reviewer transactions', () => {
       if (sql.includes('ORDER BY resource.updated_at ASC, resource.id ASC')) {
         return Promise.resolve({
           rows: [
-            { id: resourceId, updated_at: updatedAt },
-            { id: uuid(61), updated_at: new Date('2026-09-24T00:01:00.000Z') },
+            {
+              id: resourceId,
+              updated_at: updatedAt,
+              cursor_updated_at_micros: '1790208000000123',
+            },
+            {
+              id: uuid(61),
+              updated_at: new Date('2026-09-24T00:01:00.000Z'),
+              cursor_updated_at_micros: '1790208060000456',
+            },
           ],
         });
       }
@@ -25,17 +33,26 @@ describe('PostgresLibraryRepository reviewer transactions', () => {
 
     const page = await repository.listReviewQueue({
       filters: { q: 'word', languageCode: 'en', resourceType: 'VOCABULARY' },
+      cursor: {
+        updatedAtMicros: '1790207999999999',
+        id: uuid(59),
+      },
       limit: 1,
     });
 
     expect(page.items).toHaveLength(1);
     expect(page.items[0].id).toBe(resourceId);
     expect(page.hasMore).toBe(true);
-    expect(page.nextBoundary).toMatchObject({ id: resourceId, updatedAt });
+    expect(page.nextBoundary).toMatchObject({
+      id: resourceId,
+      updatedAtMicros: '1790208000000123',
+    });
     expect(poolQuery.mock.calls[0][0]).toContain("review_state = 'COMMUNITY_REVIEW'::library_review_state");
     expect(poolQuery.mock.calls[0][0]).toContain('ORDER BY resource.updated_at ASC, resource.id ASC');
     expect(poolQuery.mock.calls[0][0]).toContain('primary_language.code');
     expect(poolQuery.mock.calls[0][0]).toContain('library_vocabularies');
+    expect(poolQuery.mock.calls[0][0]).toContain("INTERVAL '1 microsecond'");
+    expect(poolQuery.mock.calls[0][1]).toContain('1790207999999999');
   });
 
   it('locks verification eligibility and hydrates before commit', async () => {

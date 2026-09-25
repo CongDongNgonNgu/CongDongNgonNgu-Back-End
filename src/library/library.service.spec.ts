@@ -856,7 +856,7 @@ describe('LibraryService', () => {
     });
 
     expect(cursor).toMatchObject({
-      updatedAt: new Date('2026-09-21T00:00:00.000Z'),
+      updatedAtMicros: '1789948800000000',
       id: page.items[0].id,
     });
     expect(page.items[0].updatedAt).toEqual(new Date('2026-09-22T00:00:00.000Z'));
@@ -951,7 +951,7 @@ class HydrationRaceRepository extends InMemoryLibraryRepository {
         ? { ...resource, updatedAt: new Date('2026-09-22T00:00:00.000Z') }
         : resource),
       nextBoundary: {
-        updatedAt: new Date('2026-09-21T00:00:00.000Z'),
+        updatedAtMicros: '1789948800000000',
         id: first.id,
       },
     };

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { LibraryValidationError } from './library.normalization';
 import type { LibrarySearchCursor, NormalizedLibrarySearchFilters } from './library.types';
 
-const CURSOR_VERSION = 1;
+const CURSOR_VERSION = 2;
 const MAX_CURSOR_LENGTH = 512;
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
@@ -12,10 +12,22 @@ export function encodeLibrarySearchCursor(
 ): string {
   return Buffer.from(JSON.stringify({
     v: CURSOR_VERSION,
-    updatedAt: cursor.updatedAt.toISOString(),
+    updatedAtMicros: normalizeCursorMicros(cursor.updatedAtMicros),
     id: cursor.id,
     filters: librarySearchFilterFingerprint(filters),
   })).toString('base64url');
+}
+
+export function libraryCursorMicrosFromDate(date: Date): string {
+  if (!Number.isFinite(date.getTime())) throw invalidCursor();
+  return (BigInt(date.getTime()) * 1_000n).toString();
+}
+
+export function librarySearchCursorFromDate(date: Date, id: string): LibrarySearchCursor {
+  return {
+    updatedAtMicros: libraryCursorMicrosFromDate(date),
+    id,
+  };
 }
 
 export function decodeLibrarySearchCursor(
@@ -34,7 +46,7 @@ export function decodeLibrarySearchCursor(
       typeof decoded !== 'object' ||
       Array.isArray(decoded) ||
       (decoded as { v?: unknown }).v !== CURSOR_VERSION ||
-      typeof (decoded as { updatedAt?: unknown }).updatedAt !== 'string' ||
+      typeof (decoded as { updatedAtMicros?: unknown }).updatedAtMicros !== 'string' ||
       typeof (decoded as { id?: unknown }).id !== 'string' ||
       typeof (decoded as { filters?: unknown }).filters !== 'string' ||
       (decoded as { filters: string }).filters !== librarySearchFilterFingerprint(filters)
@@ -42,12 +54,26 @@ export function decodeLibrarySearchCursor(
       throw invalidCursor();
     }
 
-    const updatedAt = new Date((decoded as { updatedAt: string }).updatedAt);
+    const updatedAtMicros = normalizeCursorMicros(
+      (decoded as { updatedAtMicros: string }).updatedAtMicros,
+    );
     const id = (decoded as { id: string }).id;
-    if (!Number.isFinite(updatedAt.getTime()) || !UUID_V4_PATTERN.test(id)) {
+    if (!UUID_V4_PATTERN.test(id)) {
       throw invalidCursor();
     }
-    return { updatedAt, id };
+    return { updatedAtMicros, id };
+  } catch (error) {
+    if (error instanceof LibraryValidationError) throw error;
+    throw invalidCursor();
+  }
+}
+
+function normalizeCursorMicros(value: unknown): string {
+  if (typeof value !== 'string' || !/^-?\d+$/u.test(value)) throw invalidCursor();
+  try {
+    const normalized = BigInt(value).toString();
+    if (normalized !== value) throw invalidCursor();
+    return normalized;
   } catch (error) {
     if (error instanceof LibraryValidationError) throw error;
     throw invalidCursor();

@@ -95,6 +95,7 @@ describe('LibraryService reviewer read model and actions', () => {
         reuseConsent: true,
       }),
     ]);
+    expect(forbiddenProjectionKeys(detail)).toEqual([]);
     expect(JSON.stringify(detail)).not.toContain('sourceNote');
     expect(JSON.stringify(detail)).not.toContain('contributorUserId');
     expect(JSON.stringify(detail)).not.toContain('email');
@@ -217,6 +218,29 @@ function provenance(sourceId: string, licenseKey = 'REVIEW-SAFE') {
     licenseKey,
     attribution: 'Public contributor',
   };
+}
+
+function forbiddenProjectionKeys(value: unknown, path = ''): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) => forbiddenProjectionKeys(entry, `${path}[${index}]`));
+  }
+  if (!value || typeof value !== 'object') return [];
+  const forbidden = new Set([
+    'email',
+    'password',
+    'passwordHash',
+    'accessToken',
+    'refreshToken',
+    'session',
+    'sessionId',
+    'sourceNote',
+    'contributorUserId',
+    'originalContributorUserId',
+  ]);
+  return Object.entries(value).flatMap(([key, entry]) => [
+    ...(forbidden.has(key) ? [`${path}.${key}`] : []),
+    ...forbiddenProjectionKeys(entry, `${path}.${key}`),
+  ]);
 }
 
 class HiddenReviewRepository extends InMemoryLibraryRepository {

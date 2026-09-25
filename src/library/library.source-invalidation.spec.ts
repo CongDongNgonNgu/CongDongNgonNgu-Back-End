@@ -5,7 +5,10 @@ import {
   type LibraryRepository,
 } from './library.repository';
 import { LibraryService } from './library.service';
-import type { LibraryActor } from './library.types';
+import type {
+  LibraryActor,
+  LibrarySearchCursor,
+} from './library.types';
 
 describe('LibraryService Phase 06 source health and reconciliation', () => {
   it('fails public detail/search closed and reconciles a verified invalid source', async () => {
@@ -196,12 +199,86 @@ describe('LibraryService Phase 06 source health and reconciliation', () => {
       nextCursor: null,
     });
   });
+
+  it('retains exact microsecond boundaries across interleaved invalid-source pages', async () => {
+    const invalidCandidateIds = new Set<string>();
+    const repository = new ExactInvalidSourceRepository();
+    const { service } = createService((candidateId) => (
+      invalidCandidateIds.has(candidateId)
+        ? { valid: false, reason: 'RESPONSE_INACTIVE_OR_MISSING' }
+        : { valid: true, reason: 'VALID' }
+    ), repository);
+    const owner = actor('microsecond-owner');
+    const reviewer = actor('microsecond-reviewer', ['MODERATOR']);
+    await service.registerLicense(reviewer, license('MICROSECOND-SAFE'));
+    const resources: Array<{ resourceId: string; candidateId: string }> = [];
+
+    for (let index = 1; index <= 5; index += 1) {
+      const candidateId = uuid(200 + index);
+      const resource = await createPhase06Resource(
+        service,
+        owner,
+        reviewer,
+        `microsecond source ${index}`,
+        'MICROSECOND-SAFE',
+        candidateId,
+      );
+      await repository.transitionReview({
+        resourceId: resource.id,
+        expectedPreviousState: 'DRAFT',
+        expectedProvenanceRevision: 1,
+        nextState: 'COMMUNITY_REVIEW',
+        action: 'SUBMIT',
+        actorUserId: owner.userId,
+        note: null,
+        occurredAt: new Date(`2026-09-25T00:00:0${index}.000Z`),
+      });
+      await repository.transitionReview({
+        resourceId: resource.id,
+        expectedPreviousState: 'COMMUNITY_REVIEW',
+        expectedProvenanceRevision: 1,
+        nextState: 'VERIFIED',
+        action: 'VERIFY',
+        actorUserId: reviewer.userId,
+        note: null,
+        occurredAt: new Date(`2026-09-25T00:00:0${index}.000Z`),
+      });
+      resources.push({ resourceId: resource.id, candidateId });
+    }
+
+    repository.setOrderedRows(resources.map((resource, index) => ({
+      resourceId: resource.resourceId,
+      updatedAtMicros: [
+        '1789948800123123',
+        '1789948800234567',
+        '1789948800345678',
+        '1789948800456789',
+        '1789948800789999',
+      ][index],
+    })));
+    for (const index of [1, 3, 4]) invalidCandidateIds.add(resources[index].candidateId);
+
+    const first = await service.listInvalidSourceQueue(reviewer, { limit: 2 });
+    expect(first.items.map((item) => item.resourceId)).toEqual([
+      resources[1].resourceId,
+      resources[3].resourceId,
+    ]);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await service.listInvalidSourceQueue(reviewer, {
+      limit: 2,
+      cursor: first.nextCursor!,
+    });
+    expect(second.items.map((item) => item.resourceId)).toEqual([resources[4].resourceId]);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.items, ...second.items].map((item) => item.resourceId)).size).toBe(3);
+  });
 });
 
 function createService(
   sourceHealthFor: (candidateId: string) => Phase06SourceHealth,
+  repository: LibraryRepository = new InMemoryLibraryRepository(),
 ): { service: LibraryService; repository: LibraryRepository } {
-  const repository = new InMemoryLibraryRepository();
   const corrections = {
     findLibraryCandidateById: async () => null,
     inspectLibraryCandidateSource: async (reference: { sourceCandidateId: string }) => (
@@ -260,6 +337,43 @@ function license(licenseKey: string) {
     active: true,
     sourceNote: 'internal test note',
   };
+}
+
+class ExactInvalidSourceRepository extends InMemoryLibraryRepository {
+  private orderedRows: Array<{ resourceId: string; boundary: LibrarySearchCursor }> = [];
+
+  setOrderedRows(rows: Array<{ resourceId: string; updatedAtMicros: string }>): void {
+    this.orderedRows = rows.map((row) => ({
+      resourceId: row.resourceId,
+      boundary: { updatedAtMicros: row.updatedAtMicros, id: row.resourceId },
+    }));
+  }
+
+  override async listInvalidSourceQueue(
+    input: Parameters<LibraryRepository['listInvalidSourceQueue']>[0],
+  ) {
+    const rows = this.orderedRows.filter(({ boundary }) => {
+      if (!input.cursor) return true;
+      const timestamp = BigInt(boundary.updatedAtMicros);
+      const cursorTimestamp = BigInt(input.cursor.updatedAtMicros);
+      return timestamp > cursorTimestamp || (
+        timestamp === cursorTimestamp && boundary.id > input.cursor.id
+      );
+    });
+    const selected = rows.slice(0, input.limit + 1);
+    const consumed = selected.slice(0, input.limit);
+    const items = await Promise.all(
+      consumed.map(({ resourceId }) => this.findResourceById(resourceId)),
+    );
+    const resolvedItems = items.filter((resource): resource is NonNullable<typeof resource> => Boolean(resource));
+    const hasMore = selected.length > input.limit;
+    return {
+      items: resolvedItems,
+      hasMore,
+      nextBoundary: hasMore && consumed.at(-1) ? consumed.at(-1)!.boundary : null,
+      itemBoundaries: consumed.map(({ boundary }) => boundary),
+    };
+  }
 }
 
 function uuid(number: number): string {

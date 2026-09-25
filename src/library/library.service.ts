@@ -15,7 +15,11 @@ import {
   normalizeReviewState,
 } from './library.normalization';
 import { LibraryFailure, libraryFailure } from './library.errors';
-import { decodeLibrarySearchCursor, encodeLibrarySearchCursor } from './library.pagination';
+import {
+  decodeLibrarySearchCursor,
+  encodeLibrarySearchCursor,
+  librarySearchCursorFromDate,
+} from './library.pagination';
 import { toLibrarySearchPreview, toPublicSearchResult } from './library.search';
 import {
   LIBRARY_CONTRIBUTION_RESOURCE_TYPES,
@@ -407,6 +411,7 @@ export class LibraryService {
       throw error;
     }
     const items: LibraryInvalidSourceQueuePage['items'] = [];
+    const visibleBoundaries: LibrarySearchCursor[] = [];
     let scanCursor: LibrarySearchCursor | undefined = cursor;
     const visitedBoundaries = new Set<string>();
     // Repository pages are a deterministic Phase 06-backed superset. Scan
@@ -417,8 +422,10 @@ export class LibraryService {
         cursor: scanCursor,
         limit: normalized.limit,
       });
-      for (const resource of page.items) {
+      for (const [index, resource] of page.items.entries()) {
         if (resource.reviewState !== 'VERIFIED') continue;
+        const itemBoundary = page.itemBoundaries?.[index]
+          ?? librarySearchCursorFromDate(resource.updatedAt, resource.id);
         const provenance = await this.projectReviewProvenance(resource.provenance);
         const sourceHealth = provenance
           .filter((entry) => entry.sourceHealth.applicable)
@@ -436,6 +443,7 @@ export class LibraryService {
           sourceHealth,
           publicExposure: false,
         });
+        visibleBoundaries.push(itemBoundary);
         if (items.length > normalized.limit) break;
       }
       if (items.length > normalized.limit || !page.hasMore) break;
@@ -447,9 +455,9 @@ export class LibraryService {
           409,
         );
       }
-      const boundaryKey = `${nextBoundary.updatedAt.toISOString()}::${nextBoundary.id}`;
+      const boundaryKey = `${nextBoundary.updatedAtMicros}::${nextBoundary.id}`;
       if (boundaryKey === (
-        scanCursor ? `${scanCursor.updatedAt.toISOString()}::${scanCursor.id}` : null
+        scanCursor ? `${scanCursor.updatedAtMicros}::${scanCursor.id}` : null
       ) || visitedBoundaries.has(boundaryKey)) {
         libraryFailure(
           'LIBRARY_INVALID_SOURCE_QUEUE_PAGINATION',
@@ -462,14 +470,11 @@ export class LibraryService {
     }
     const hasMore = items.length > normalized.limit;
     const visibleItems = items.slice(0, normalized.limit);
-    const lastVisibleItem = visibleItems.at(-1);
+    const lastVisibleBoundary = visibleBoundaries.at(normalized.limit - 1);
     return {
       items: visibleItems,
-      nextCursor: hasMore && lastVisibleItem
-        ? encodeLibrarySearchCursor({
-          updatedAt: lastVisibleItem.updatedAt,
-          id: lastVisibleItem.resourceId,
-        }, cursorFilters)
+      nextCursor: hasMore && lastVisibleBoundary
+        ? encodeLibrarySearchCursor(lastVisibleBoundary, cursorFilters)
         : null,
     };
   }

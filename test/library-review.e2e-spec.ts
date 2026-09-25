@@ -45,6 +45,10 @@ describe('library reviewer HTTP API', () => {
     await api.get('/api/v1/library/reviews').expect(401);
     await api.get('/api/v1/library/reviews/' + uuid(1)).expect(401);
     await api.get('/api/v1/library/reviews/source-invalid').expect(401);
+    await api
+      .post('/api/v1/library/reviews/' + uuid(1) + '/reconcile-source')
+      .send({})
+      .expect(401);
 
     const member = await createUser('review-member');
     const session = await sessionFor(member);
@@ -287,7 +291,17 @@ describe('library reviewer HTTP API', () => {
       provenance: [{ sourceHealth: { applicable: true, valid: false } }],
       verificationEligibility: { eligible: false, issues: expect.arrayContaining(['SOURCE_INVALID']) },
     });
+    expect(forbiddenProjectionKeys(invalidQueue.body.data)).toEqual([]);
+    expect(forbiddenProjectionKeys(detail.body.data)).toEqual([]);
     expect(JSON.stringify(detail.body.data)).not.toContain('sourceNote');
+
+    await api
+      .post('/api/v1/library/reviews/' + resource.id + '/reconcile-source')
+      .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
+      .set('Cookie', reviewerSession.cookie)
+      .send({ note: 'Missing CSRF token' })
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('AUTH_CSRF_INVALID'));
 
     await api
       .post('/api/v1/library/reviews/' + resource.id + '/reconcile-source')
@@ -425,4 +439,27 @@ function validSubmission() {
 
 function uuid(value: number): string {
   return `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
+}
+
+function forbiddenProjectionKeys(value: unknown, path = ''): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) => forbiddenProjectionKeys(entry, `${path}[${index}]`));
+  }
+  if (!value || typeof value !== 'object') return [];
+  const forbidden = new Set([
+    'email',
+    'password',
+    'passwordHash',
+    'accessToken',
+    'refreshToken',
+    'session',
+    'sessionId',
+    'sourceNote',
+    'contributorUserId',
+    'originalContributorUserId',
+  ]);
+  return Object.entries(value).flatMap(([key, entry]) => [
+    ...(forbidden.has(key) ? [`${path}.${key}`] : []),
+    ...forbiddenProjectionKeys(entry, `${path}.${key}`),
+  ]);
 }

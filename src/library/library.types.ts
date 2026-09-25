@@ -91,7 +91,8 @@ export interface NormalizedLibraryInvalidSourceQueueInput {
 }
 
 export interface LibrarySearchCursor {
-  updatedAt: Date;
+  /** Exact PostgreSQL timestamptz boundary in epoch microseconds. */
+  updatedAtMicros: string;
   id: string;
 }
 

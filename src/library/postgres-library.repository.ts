@@ -25,6 +25,9 @@ import {
   type Phase06SourceHealthRow,
 } from '../corrections/corrections.source-health';
 import { formatLibrarySourceInvalidationNote } from './library.source-reconciliation';
+import {
+  librarySearchCursorFromDate,
+} from './library.pagination';
 import type {
   CulturalNoteDetails,
   DialogueDetails,
@@ -309,17 +312,18 @@ export class PostgresLibraryRepository implements LibraryRepository {
          ON keyword_match.resource_id = resource.id`;
     }
     if (input.cursor) {
-      const cursorTimestamp = parameter(input.cursor.updatedAt);
+      const cursorTimestamp = cursorTimestampSql(parameter, input.cursor.updatedAtMicros);
       const cursorId = parameter(input.cursor.id);
       filters.push(`(
-        resource.updated_at < ${cursorTimestamp}::timestamptz
-        OR (resource.updated_at = ${cursorTimestamp}::timestamptz AND resource.id < ${cursorId}::uuid)
+        resource.updated_at < ${cursorTimestamp}
+        OR (resource.updated_at = ${cursorTimestamp} AND resource.id < ${cursorId}::uuid)
       )`);
     }
 
     const limitParameter = parameter(input.limit + 1);
     const result = await this.pool.query(
-      `${keywordMatches ? keywordMatches + '\n' : ''}SELECT resource.id, resource.updated_at
+      `${keywordMatches ? keywordMatches + '\n' : ''}SELECT resource.id, resource.updated_at,
+              (EXTRACT(EPOCH FROM resource.updated_at) * 1000000)::bigint::text AS cursor_updated_at_micros
        FROM library_resources AS resource
        ${keywordJoin ? keywordJoin + '\n       ' : ''}
        INNER JOIN languages AS primary_language ON primary_language.id = resource.primary_language_id
@@ -340,10 +344,7 @@ export class PostgresLibraryRepository implements LibraryRepository {
       items: resources.filter((resource): resource is LibraryResourceRecord => Boolean(resource)),
       hasMore,
       nextBoundary: hasMore && lastConsumedRow
-        ? {
-          updatedAt: new Date(lastConsumedRow.updated_at),
-          id: String(lastConsumedRow.id),
-        }
+        ? cursorFromOrderedRow(lastConsumedRow)
         : null,
     };
   }
@@ -416,17 +417,18 @@ export class PostgresLibraryRepository implements LibraryRepository {
          ON keyword_match.resource_id = resource.id`;
     }
     if (input.cursor) {
-      const cursorTimestamp = parameter(input.cursor.updatedAt);
+      const cursorTimestamp = cursorTimestampSql(parameter, input.cursor.updatedAtMicros);
       const cursorId = parameter(input.cursor.id);
       filters.push(`(
-        resource.updated_at > ${cursorTimestamp}::timestamptz
-        OR (resource.updated_at = ${cursorTimestamp}::timestamptz AND resource.id > ${cursorId}::uuid)
+        resource.updated_at > ${cursorTimestamp}
+        OR (resource.updated_at = ${cursorTimestamp} AND resource.id > ${cursorId}::uuid)
       )`);
     }
 
     const limitParameter = parameter(input.limit + 1);
     const result = await this.pool.query(
-      `${keywordMatches ? keywordMatches + '\n' : ''}SELECT resource.id, resource.updated_at
+      `${keywordMatches ? keywordMatches + '\n' : ''}SELECT resource.id, resource.updated_at,
+              (EXTRACT(EPOCH FROM resource.updated_at) * 1000000)::bigint::text AS cursor_updated_at_micros
        FROM library_resources AS resource
        ${keywordJoin ? keywordJoin + '\n       ' : ''}
        INNER JOIN languages AS primary_language ON primary_language.id = resource.primary_language_id
@@ -450,10 +452,7 @@ export class PostgresLibraryRepository implements LibraryRepository {
       items,
       hasMore,
       nextBoundary: hasMore && lastConsumedRow
-        ? {
-          updatedAt: new Date(lastConsumedRow.updated_at),
-          id: String(lastConsumedRow.id),
-        }
+        ? cursorFromOrderedRow(lastConsumedRow)
         : null,
     };
   }
@@ -462,6 +461,10 @@ export class PostgresLibraryRepository implements LibraryRepository {
     input: LibraryInvalidSourceQueueRepositoryInput,
   ): Promise<LibraryReviewQueueRepositoryPage> {
     const values: unknown[] = [];
+    const parameter = (value: unknown): string => {
+      values.push(value);
+      return '$' + values.length;
+    };
     const filters = [
       `resource.review_state = 'VERIFIED'::library_review_state`,
       `EXISTS (
@@ -472,19 +475,21 @@ export class PostgresLibraryRepository implements LibraryRepository {
       )`,
     ];
     if (input.cursor) {
-      values.push(input.cursor.updatedAt, input.cursor.id);
+      const cursorTimestamp = cursorTimestampSql(parameter, input.cursor.updatedAtMicros);
+      const cursorId = parameter(input.cursor.id);
       filters.push(`(
-        resource.updated_at > $${values.length - 1}::timestamptz
-        OR (resource.updated_at = $${values.length - 1}::timestamptz AND resource.id > $${values.length}::uuid)
+        resource.updated_at > ${cursorTimestamp}
+        OR (resource.updated_at = ${cursorTimestamp} AND resource.id > ${cursorId}::uuid)
       )`);
     }
-    values.push(input.limit + 1);
+    const limitParameter = parameter(input.limit + 1);
     const result = await this.pool.query(
-      `SELECT resource.id, resource.updated_at
+      `SELECT resource.id, resource.updated_at,
+              (EXTRACT(EPOCH FROM resource.updated_at) * 1000000)::bigint::text AS cursor_updated_at_micros
        FROM library_resources AS resource
        WHERE ${filters.join('\n         AND ')}
        ORDER BY resource.updated_at ASC, resource.id ASC
-       LIMIT $${values.length}`,
+       LIMIT ${limitParameter}`,
       values,
     );
     const rows = result.rows.slice(0, input.limit + 1);
@@ -493,14 +498,20 @@ export class PostgresLibraryRepository implements LibraryRepository {
       consumedRows.map((row) => this.findResourceWithExecutor(this.pool, String(row.id))),
     );
     const items = resources.filter((resource): resource is LibraryResourceRecord => Boolean(resource));
+    const itemById = new Map(
+      consumedRows.map((row) => [String(row.id), cursorFromOrderedRow(row)]),
+    );
     const hasMore = rows.length > input.limit;
     const lastConsumedRow = consumedRows.at(-1);
     return {
       items,
       hasMore,
       nextBoundary: hasMore && lastConsumedRow
-        ? { updatedAt: new Date(lastConsumedRow.updated_at), id: String(lastConsumedRow.id) }
+        ? cursorFromOrderedRow(lastConsumedRow)
         : null,
+      itemBoundaries: items
+        .map((resource) => itemById.get(resource.id))
+        .filter((boundary): boundary is NonNullable<typeof boundary> => Boolean(boundary)),
     };
   }
 
@@ -1416,6 +1427,31 @@ function provenanceValues(
     input.sourceAcceptanceId,
     now,
   ];
+}
+
+function cursorTimestampSql(
+  parameter: (value: unknown) => string,
+  updatedAtMicros: string,
+): string {
+  const microsParameter = parameter(updatedAtMicros);
+  return `(TIMESTAMPTZ 'epoch' + (${microsParameter}::numeric * INTERVAL '1 microsecond'))`;
+}
+
+function cursorFromOrderedRow(row: Record<string, unknown>): {
+  updatedAtMicros: string;
+  id: string;
+} {
+  const exactMicros = row.cursor_updated_at_micros;
+  if (exactMicros !== undefined && exactMicros !== null) {
+    return {
+      updatedAtMicros: String(exactMicros),
+      id: String(row.id),
+    };
+  }
+  // Test doubles and older repository adapters may not project the internal
+  // alias. Production PostgreSQL queries above always do, so this fallback is
+  // only a defensive adapter boundary and remains millisecond-safe there.
+  return librarySearchCursorFromDate(new Date(String(row.updated_at)), String(row.id));
 }
 
 function mapLicense(row: Record<string, unknown>): LibraryLicenseRecord {
