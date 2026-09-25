@@ -105,8 +105,7 @@ export interface ReconcileLibrarySourceRepositoryInput {
   expectedPreviousState: 'VERIFIED';
   expectedProvenanceRevision: number;
   actorUserId: string;
-  note: string;
-  sourceReasons: readonly string[];
+  note: string | null;
   occurredAt: Date;
 }
 
@@ -121,6 +120,8 @@ export interface LibraryRepository {
   findResourceById(id: string): Promise<LibraryResourceRecord | null>;
   searchPublicResources(input: LibrarySearchRepositoryInput): Promise<LibrarySearchRepositoryPage>;
   listReviewQueue(input: LibraryReviewQueueRepositoryInput): Promise<LibraryReviewQueueRepositoryPage>;
+  // The service scans this deterministic Phase 06-backed superset and applies
+  // current source health before exposing the logical invalid-source page.
   listInvalidSourceQueue(
     input: LibraryInvalidSourceQueueRepositoryInput,
   ): Promise<LibraryReviewQueueRepositoryPage>;
@@ -422,12 +423,6 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       throw new LibraryRepositoryConflictError(
         'LIBRARY_REVIEW_CONFLICT',
         'The resource review state or provenance changed before source reconciliation',
-      );
-    }
-    if (input.sourceReasons.length === 0) {
-      throw new LibraryRepositoryConflictError(
-        'LIBRARY_SOURCE_STILL_VALID',
-        'The Phase 06 source is currently valid',
       );
     }
     resource.reviewState = 'COMMUNITY_REVIEW';

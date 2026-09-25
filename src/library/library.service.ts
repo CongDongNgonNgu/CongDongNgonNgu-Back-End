@@ -56,6 +56,7 @@ import type {
   LibraryReviewAuditRecord,
   LibraryContributionSubmissionResult,
   SubmitLibraryContributionInput,
+  LibrarySearchCursor,
   NormalizedLibraryLicenseInput,
   NormalizedLibraryProvenanceInput,
 } from './library.types';
@@ -405,35 +406,70 @@ export class LibraryService {
       }
       throw error;
     }
-    const page = await this.repository.listInvalidSourceQueue({
-      cursor,
-      limit: normalized.limit,
-    });
     const items: LibraryInvalidSourceQueuePage['items'] = [];
-    for (const resource of page.items) {
-      if (resource.reviewState !== 'VERIFIED') continue;
-      const provenance = await this.projectReviewProvenance(resource.provenance);
-      const sourceHealth = provenance
-        .filter((entry) => entry.sourceHealth.applicable)
-        .map((entry) => entry.sourceHealth);
-      if (!sourceHealth.some((entry) => !entry.valid)) continue;
-      items.push({
-        resourceId: resource.id,
-        resourceType: resource.resourceType,
-        primaryLanguageCode: resource.primaryLanguageCode,
-        secondaryLanguageCode: resource.secondaryLanguageCode,
-        preview: toLibrarySearchPreview(resource.details),
-        reviewState: 'VERIFIED',
-        updatedAt: new Date(resource.updatedAt),
-        provenanceRevision: resource.provenanceRevision,
-        sourceHealth,
-        publicExposure: false,
+    let scanCursor: LibrarySearchCursor | undefined = cursor;
+    const visitedBoundaries = new Set<string>();
+    // Repository pages are a deterministic Phase 06-backed superset. Scan
+    // across currently healthy rows until the logical page has limit + 1
+    // invalid rows or the superset is exhausted.
+    while (items.length <= normalized.limit) {
+      const page = await this.repository.listInvalidSourceQueue({
+        cursor: scanCursor,
+        limit: normalized.limit,
       });
+      for (const resource of page.items) {
+        if (resource.reviewState !== 'VERIFIED') continue;
+        const provenance = await this.projectReviewProvenance(resource.provenance);
+        const sourceHealth = provenance
+          .filter((entry) => entry.sourceHealth.applicable)
+          .map((entry) => entry.sourceHealth);
+        if (!sourceHealth.some((entry) => !entry.valid)) continue;
+        items.push({
+          resourceId: resource.id,
+          resourceType: resource.resourceType,
+          primaryLanguageCode: resource.primaryLanguageCode,
+          secondaryLanguageCode: resource.secondaryLanguageCode,
+          preview: toLibrarySearchPreview(resource.details),
+          reviewState: 'VERIFIED',
+          updatedAt: new Date(resource.updatedAt),
+          provenanceRevision: resource.provenanceRevision,
+          sourceHealth,
+          publicExposure: false,
+        });
+        if (items.length > normalized.limit) break;
+      }
+      if (items.length > normalized.limit || !page.hasMore) break;
+      const nextBoundary = page.nextBoundary;
+      if (!nextBoundary) {
+        libraryFailure(
+          'LIBRARY_INVALID_SOURCE_QUEUE_PAGINATION',
+          'The invalid-source review queue could not advance safely',
+          409,
+        );
+      }
+      const boundaryKey = `${nextBoundary.updatedAt.toISOString()}::${nextBoundary.id}`;
+      if (boundaryKey === (
+        scanCursor ? `${scanCursor.updatedAt.toISOString()}::${scanCursor.id}` : null
+      ) || visitedBoundaries.has(boundaryKey)) {
+        libraryFailure(
+          'LIBRARY_INVALID_SOURCE_QUEUE_PAGINATION',
+          'The invalid-source review queue could not advance safely',
+          409,
+        );
+      }
+      visitedBoundaries.add(boundaryKey);
+      scanCursor = nextBoundary;
     }
+    const hasMore = items.length > normalized.limit;
+    const visibleItems = items.slice(0, normalized.limit);
+    const lastVisibleItem = visibleItems.at(-1);
     return {
-      items,
-      nextCursor: page.hasMore && page.nextBoundary
-        ? encodeLibrarySearchCursor(page.nextBoundary, cursorFilters)
+      items: visibleItems,
+      nextCursor: hasMore && lastVisibleItem
+        ? encodeLibrarySearchCursor({
+          updatedAt: lastVisibleItem.updatedAt,
+          id: lastVisibleItem.resourceId,
+        }, cursorFilters)
         : null,
     };
   }
@@ -490,10 +526,7 @@ export class LibraryService {
       );
     }
     const sourceHealth = await this.evaluateProvenanceSourceHealth(resource.provenance);
-    const invalidReasons = sourceHealth
-      .filter((entry) => entry.applicable && !entry.valid)
-      .map((entry) => entry.reason);
-    if (invalidReasons.length === 0) {
+    if (!sourceHealth.some((entry) => entry.applicable && !entry.valid)) {
       libraryFailure(
         'LIBRARY_SOURCE_STILL_VALID',
         'The Phase 06 source is currently valid',
@@ -501,18 +534,13 @@ export class LibraryService {
       );
     }
     const reviewerNote = this.normalizeReviewNote(note, false);
-    const reasonNote = `Phase 06 source invalid: ${[...new Set(invalidReasons)].join(', ')}`;
-    const reconciliationNote = reviewerNote
-      ? `${reasonNote} — ${reviewerNote}`.slice(0, 2_000)
-      : reasonNote;
     try {
       return await this.repository.reconcileSource({
         resourceId,
         expectedPreviousState: 'VERIFIED',
         expectedProvenanceRevision: resource.provenanceRevision,
         actorUserId: actor.userId,
-        note: reconciliationNote,
-        sourceReasons: invalidReasons,
+        note: reviewerNote,
         occurredAt: new Date(),
       });
     } catch (error) {

@@ -124,6 +124,78 @@ describe('LibraryService Phase 06 source health and reconciliation', () => {
       .rejects.toMatchObject({ code: 'LIBRARY_SOURCE_INVALID', status: 409 });
     await expect(service.getResource(resource.id)).resolves.toMatchObject({ reviewState: 'COMMUNITY_REVIEW' });
   });
+
+  it('paginates over the logical invalid-source set across valid resources', async () => {
+    const invalidCandidateIds = new Set<string>();
+    const { service, repository } = createService((candidateId) => (
+      invalidCandidateIds.has(candidateId)
+        ? { valid: false, reason: 'RESPONSE_INACTIVE_OR_MISSING' }
+        : { valid: true, reason: 'VALID' }
+    ));
+    const owner = actor('pagination-owner');
+    const reviewer = actor('pagination-reviewer', ['MODERATOR']);
+    await service.registerLicense(reviewer, license('PAGINATION-SAFE'));
+    const resources: Array<{ resourceId: string; candidateId: string }> = [];
+    const baseTime = new Date('2026-09-25T00:00:00.000Z');
+
+    for (let index = 1; index <= 5; index += 1) {
+      const candidateId = uuid(100 + index);
+      const resource = await createPhase06Resource(
+        service,
+        owner,
+        reviewer,
+        `pagination source ${index}`,
+        'PAGINATION-SAFE',
+        candidateId,
+      );
+      await repository.transitionReview({
+        resourceId: resource.id,
+        expectedPreviousState: 'DRAFT',
+        expectedProvenanceRevision: 1,
+        nextState: 'COMMUNITY_REVIEW',
+        action: 'SUBMIT',
+        actorUserId: owner.userId,
+        note: null,
+        occurredAt: new Date(baseTime.getTime() + index * 1_000),
+      });
+      await repository.transitionReview({
+        resourceId: resource.id,
+        expectedPreviousState: 'COMMUNITY_REVIEW',
+        expectedProvenanceRevision: 1,
+        nextState: 'VERIFIED',
+        action: 'VERIFY',
+        actorUserId: reviewer.userId,
+        note: null,
+        occurredAt: new Date(baseTime.getTime() + index * 1_000),
+      });
+      resources.push({ resourceId: resource.id, candidateId });
+    }
+    for (const index of [2, 4, 5]) invalidCandidateIds.add(uuid(100 + index));
+
+    const first = await service.listInvalidSourceQueue(reviewer, { limit: 2 });
+    expect(first.items.map((item) => item.resourceId)).toEqual([
+      resources[1].resourceId,
+      resources[3].resourceId,
+    ]);
+    expect(first.nextCursor).not.toBeNull();
+
+    await expect(service.reconcileSource(reviewer, resources[3].resourceId))
+      .resolves.toMatchObject({ resource: { reviewState: 'COMMUNITY_REVIEW' } });
+
+    const second = await service.listInvalidSourceQueue(reviewer, {
+      limit: 2,
+      cursor: first.nextCursor!,
+    });
+    expect(second.items.map((item) => item.resourceId)).toEqual([resources[4].resourceId]);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.items, ...second.items].map((item) => item.resourceId)).size).toBe(3);
+
+    invalidCandidateIds.clear();
+    await expect(service.listInvalidSourceQueue(reviewer, { limit: 2 })).resolves.toEqual({
+      items: [],
+      nextCursor: null,
+    });
+  });
 });
 
 function createService(
@@ -148,6 +220,7 @@ async function createPhase06Resource(
   reviewer: LibraryActor,
   title = 'phase06 source',
   licenseKey = 'SOURCE-SAFE',
+  candidateId = uuid(10),
 ) {
   const resource = await service.createDraftResource(owner, {
     resourceType: 'GRAMMAR_ITEM',
@@ -155,7 +228,7 @@ async function createPhase06Resource(
     visibility: 'PUBLIC',
     details: { title, explanation: 'source health fixture' },
   });
-  await service.attachProvenance(reviewer, resource.id, phase06Provenance(uuid(10), licenseKey));
+  await service.attachProvenance(reviewer, resource.id, phase06Provenance(candidateId, licenseKey));
   return resource;
 }
 

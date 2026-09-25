@@ -24,6 +24,7 @@ import {
   type Phase06SourceReference,
   type Phase06SourceHealthRow,
 } from '../corrections/corrections.source-health';
+import { formatLibrarySourceInvalidationNote } from './library.source-reconciliation';
 import type {
   CulturalNoteDetails,
   DialogueDetails,
@@ -803,7 +804,12 @@ export class PostgresLibraryRepository implements LibraryRepository {
          )
          VALUES ($1::uuid, $2::uuid, 'VERIFIED'::library_review_state, 'COMMUNITY_REVIEW'::library_review_state, 'INVALIDATE'::library_review_action, $3, $4::timestamptz)
          RETURNING *`,
-        [input.resourceId, input.actorUserId, input.note, input.occurredAt],
+        [
+          input.resourceId,
+          input.actorUserId,
+          formatLibrarySourceInvalidationNote(invalidReasons, input.note),
+          input.occurredAt,
+        ],
       );
       const resource = await this.findResourceWithExecutor(client, input.resourceId);
       if (!resource) {

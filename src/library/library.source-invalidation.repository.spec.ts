@@ -97,8 +97,7 @@ describe('PostgresLibraryRepository Phase 06 source transactions', () => {
       expectedPreviousState: 'VERIFIED',
       expectedProvenanceRevision: 3,
       actorUserId: ids.reviewerId,
-      note: 'Phase 06 source invalid: CANDIDATE_INVALIDATED',
-      sourceReasons: ['CANDIDATE_INVALIDATED'],
+      note: 'reviewer note',
       occurredAt,
     });
 
@@ -112,6 +111,34 @@ describe('PostgresLibraryRepository Phase 06 source transactions', () => {
     expect(sql[9]).toContain('resource.*');
     expect(sql.at(-1)).toBe('COMMIT');
     expect(sql.slice(sql.indexOf('COMMIT') + 1)).toEqual([]);
+  });
+
+  it('persists transaction-time source reasons instead of stale preflight reasons', async () => {
+    const ids = fixtureIds();
+    const occurredAt = new Date('2026-09-25T00:00:00.000Z');
+    const calls = successfulReconcileCalls(ids, occurredAt, {
+      postVisibility: 'PUBLIC',
+      responseModerationState: 'HIDDEN',
+    });
+    const clientQuery = jest.fn();
+    for (const call of calls) clientQuery.mockResolvedValueOnce(call);
+    const client = { query: clientQuery, release: jest.fn() };
+    const repository = repositoryFor(client);
+
+    await repository.reconcileSource({
+      resourceId: ids.resourceId,
+      expectedPreviousState: 'VERIFIED',
+      expectedProvenanceRevision: 3,
+      actorUserId: ids.reviewerId,
+      note: 'reviewer note',
+      occurredAt,
+    });
+
+    const auditInsert = clientQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO library_resource_review_audits'));
+    expect(auditInsert?.[1]?.[2]).toBe(
+      'Phase 06 source invalid: RESPONSE_INACTIVE_OR_MISSING — reviewer note',
+    );
+    expect(auditInsert?.[1]?.[2]).not.toContain('PARENT_NOT_PUBLIC');
   });
 
   it('rolls back reconciliation when final hydration fails', async () => {
@@ -134,8 +161,7 @@ describe('PostgresLibraryRepository Phase 06 source transactions', () => {
       expectedPreviousState: 'VERIFIED',
       expectedProvenanceRevision: 3,
       actorUserId: ids.reviewerId,
-      note: 'Phase 06 source invalid: CANDIDATE_INVALIDATED',
-      sourceReasons: ['CANDIDATE_INVALIDATED'],
+      note: 'reviewer note',
       occurredAt,
     })).rejects.toThrow('hydration failed');
     expect(clientQuery.mock.calls.some(([sql]) => String(sql).includes('UPDATE library_resources'))).toBe(true);
@@ -174,13 +200,20 @@ function successfulVerifyCalls(ids: ReturnType<typeof fixtureIds>, occurredAt: D
   ];
 }
 
-function successfulReconcileCalls(ids: ReturnType<typeof fixtureIds>, occurredAt: Date): MockQueryResult[] {
+function successfulReconcileCalls(
+  ids: ReturnType<typeof fixtureIds>,
+  occurredAt: Date,
+  options: {
+    postVisibility?: string;
+    responseModerationState?: string;
+  } = {},
+): MockQueryResult[] {
   return [
     { rows: [] },
     { rows: [resourceRow(ids.resourceId, 'VERIFIED', occurredAt, 3, ids.reviewerId)] },
     { rows: [provenanceRow(ids.resourceId, ids, occurredAt)] },
-    { rows: [{ id: ids.postId, moderation_state: 'ACTIVE', visibility: 'PRIVATE' }] },
-    { rows: [{ id: ids.responseId, parent_post_id: ids.postId, moderation_state: 'ACTIVE' }] },
+    { rows: [{ id: ids.postId, moderation_state: 'ACTIVE', visibility: options.postVisibility ?? 'PRIVATE' }] },
+    { rows: [{ id: ids.responseId, parent_post_id: ids.postId, moderation_state: options.responseModerationState ?? 'ACTIVE' }] },
     { rows: [{ id: ids.acceptanceId, parent_post_id: ids.postId, response_id: ids.responseId, revoked_at: null }] },
     { rows: [{ id: ids.candidateId, state: 'PENDING_REVIEW', source_post_id: ids.postId, source_response_id: ids.responseId, acceptance_id: ids.acceptanceId }] },
     { rows: [resourceRow(ids.resourceId, 'COMMUNITY_REVIEW', occurredAt, 3)] },
