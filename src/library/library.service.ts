@@ -411,6 +411,7 @@ export class LibraryService {
     });
     const items: LibraryInvalidSourceQueuePage['items'] = [];
     for (const resource of page.items) {
+      if (resource.reviewState !== 'VERIFIED') continue;
       const provenance = await this.projectReviewProvenance(resource.provenance);
       const sourceHealth = provenance
         .filter((entry) => entry.sourceHealth.applicable)
