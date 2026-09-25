@@ -90,6 +90,20 @@ export class ListLibraryReviewsDto {
   limit?: number;
 }
 
+export class ListInvalidLibrarySourcesDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  cursor?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(LIBRARY_SEARCH_MAX_LIMIT)
+  limit?: number;
+}
+
 export class CreateLibraryResourceDto {
   @IsString()
   @MaxLength(32)
@@ -187,6 +201,13 @@ export class TransitionLibraryReviewDto {
   @MaxLength(32)
   nextState!: string;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(2_000)
+  note?: string | null;
+}
+
+export class ReconcileLibrarySourceDto {
   @IsOptional()
   @IsString()
   @MaxLength(2_000)

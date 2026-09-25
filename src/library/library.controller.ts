@@ -17,7 +17,9 @@ import { LibraryService } from './library.service';
 import {
   AttachLibraryProvenanceDto,
   CreateLibraryResourceDto,
+  ListInvalidLibrarySourcesDto,
   ListLibraryReviewsDto,
+  ReconcileLibrarySourceDto,
   SearchLibraryResourcesDto,
   SubmitLibraryContributionDto,
   TransitionLibraryReviewDto,
@@ -51,6 +53,18 @@ export class LibraryController {
     );
   }
 
+  @Get('reviews/source-invalid')
+  @UseGuards(AccessTokenGuard)
+  async listInvalidSourceQueue(
+    @Query() input: ListInvalidLibrarySourcesDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.library.listInvalidSourceQueue(this.actor(request), input),
+      'Library invalid-source review queue',
+    );
+  }
+
   @Get('reviews/:resourceId')
   @UseGuards(AccessTokenGuard)
   async getReviewDetail(
@@ -60,6 +74,20 @@ export class LibraryController {
     return success(
       await this.library.getReviewDetail(this.actor(request), resourceId),
       'Library review detail',
+    );
+  }
+
+  @Post('reviews/:resourceId/reconcile-source')
+  @UseGuards(AccessTokenGuard)
+  async reconcileSource(
+    @Param('resourceId', new ParseUUIDPipe({ version: '4' })) resourceId: string,
+    @Body() input: ReconcileLibrarySourceDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.library.reconcileSource(this.actor(request), resourceId, input.note),
+      'Library source reconciled',
     );
   }
 

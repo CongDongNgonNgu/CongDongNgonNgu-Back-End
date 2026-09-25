@@ -27,8 +27,10 @@ import {
   type PronunciationDetails,
   type LearningCollectionDetails,
   type LibraryLicenseInput,
+  type LibraryInvalidSourceQueueInput,
   type LibraryReviewQueueInput,
   type LibrarySearchInput,
+  type NormalizedLibraryInvalidSourceQueueInput,
   type NormalizedLibraryReviewQueueInput,
   type NormalizedLibrarySearchInput,
 } from './library.types';
@@ -130,6 +132,16 @@ export function normalizeLibraryReviewQueueInput(
       languageCode: normalized.filters.languageCode,
       resourceType: normalized.filters.resourceType,
     },
+    cursor: normalized.cursor,
+    limit: normalized.limit,
+  };
+}
+
+export function normalizeLibraryInvalidSourceQueueInput(
+  input: LibraryInvalidSourceQueueInput,
+): NormalizedLibraryInvalidSourceQueueInput {
+  const normalized = normalizeLibrarySearchInput(input);
+  return {
     cursor: normalized.cursor,
     limit: normalized.limit,
   };

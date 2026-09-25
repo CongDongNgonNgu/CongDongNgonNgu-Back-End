@@ -4,6 +4,7 @@ import type {
   CommunityVisibility,
 } from '../community/community.types';
 import type { RoleKey } from '../identity/identity.types';
+import type { Phase06SourceHealthReason } from '../corrections/corrections.source-health';
 
 export const LIBRARY_RESOURCE_TYPES = [
   'VOCABULARY',
@@ -53,6 +54,11 @@ export interface LibraryReviewQueueInput {
   limit?: unknown;
 }
 
+export interface LibraryInvalidSourceQueueInput {
+  cursor?: unknown;
+  limit?: unknown;
+}
+
 export interface NormalizedLibrarySearchFilters {
   q: string | null;
   languageCode: string | null;
@@ -75,6 +81,11 @@ export interface NormalizedLibraryReviewQueueFilters {
 
 export interface NormalizedLibraryReviewQueueInput {
   filters: NormalizedLibraryReviewQueueFilters;
+  cursor: string | undefined;
+  limit: number;
+}
+
+export interface NormalizedLibraryInvalidSourceQueueInput {
   cursor: string | undefined;
   limit: number;
 }
@@ -449,6 +460,15 @@ export interface LibraryReviewProvenanceSummary {
   attribution: string;
   originalAuthorReference: string | null;
   license: LibraryReviewLicenseSummary;
+  sourceHealth: LibrarySourceHealth;
+}
+
+export type LibrarySourceHealthReason = Phase06SourceHealthReason | 'NOT_APPLICABLE';
+
+export interface LibrarySourceHealth {
+  applicable: boolean;
+  valid: boolean;
+  reason: LibrarySourceHealthReason;
 }
 
 export type LibraryReviewEligibilityIssue =
@@ -456,7 +476,8 @@ export type LibraryReviewEligibilityIssue =
   | 'LICENSE_UNKNOWN'
   | 'LICENSE_INACTIVE'
   | 'LICENSE_REDISTRIBUTION_UNSAFE'
-  | 'MODERATION_INACTIVE';
+  | 'MODERATION_INACTIVE'
+  | 'SOURCE_INVALID';
 
 export interface LibraryReviewEligibility {
   eligible: boolean;
@@ -480,6 +501,24 @@ export interface LibraryReviewQueueItem {
 
 export interface LibraryReviewQueuePage {
   items: LibraryReviewQueueItem[];
+  nextCursor: string | null;
+}
+
+export interface LibraryInvalidSourceQueueItem {
+  resourceId: string;
+  resourceType: LibraryResourceType;
+  primaryLanguageCode: string;
+  secondaryLanguageCode: string | null;
+  preview: LibraryPublicSearchPreview;
+  reviewState: 'VERIFIED';
+  updatedAt: Date;
+  provenanceRevision: number;
+  sourceHealth: LibrarySourceHealth[];
+  publicExposure: false;
+}
+
+export interface LibraryInvalidSourceQueuePage {
+  items: LibraryInvalidSourceQueueItem[];
   nextCursor: string | null;
 }
 

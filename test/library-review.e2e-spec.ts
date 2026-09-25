@@ -5,6 +5,8 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
 import { SessionService, type SessionCredentials } from '../src/auth/session/session.service';
+import { CorrectionsService } from '../src/corrections/corrections.service';
+import { CORRECTIONS_REPOSITORY, type CorrectionsRepository } from '../src/corrections/corrections.repository';
 import { IDENTITY_REPOSITORY } from '../src/identity/identity.module';
 import { InMemoryIdentityRepository } from '../src/identity/identity.repository';
 import type { RoleKey, UserRecord } from '../src/identity/identity.types';
@@ -15,6 +17,8 @@ describe('library reviewer HTTP API', () => {
   let identity: RoleAwareIdentityRepository;
   let sessions: SessionService;
   let library: LibraryService;
+  let corrections: CorrectionsService;
+  let correctionRepository: CorrectionsRepository;
   let sequence = 0;
 
   beforeAll(async () => {
@@ -28,6 +32,8 @@ describe('library reviewer HTTP API', () => {
     await app.init();
     sessions = app.get(SessionService);
     library = app.get(LibraryService);
+    corrections = app.get(CorrectionsService);
+    correctionRepository = app.get(CORRECTIONS_REPOSITORY);
   });
 
   afterAll(async () => {
@@ -38,6 +44,7 @@ describe('library reviewer HTTP API', () => {
     const api = request(app.getHttpServer());
     await api.get('/api/v1/library/reviews').expect(401);
     await api.get('/api/v1/library/reviews/' + uuid(1)).expect(401);
+    await api.get('/api/v1/library/reviews/source-invalid').expect(401);
 
     const member = await createUser('review-member');
     const session = await sessionFor(member);
@@ -48,6 +55,11 @@ describe('library reviewer HTTP API', () => {
       .expect(({ body }) => expect(body.error.code).toBe('LIBRARY_REVIEW_FORBIDDEN'));
     await api
       .get('/api/v1/library/reviews/' + uuid(1))
+      .set('Authorization', 'Bearer ' + session.accessToken)
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('LIBRARY_REVIEW_FORBIDDEN'));
+    await api
+      .get('/api/v1/library/reviews/source-invalid')
       .set('Authorization', 'Bearer ' + session.accessToken)
       .expect(403)
       .expect(({ body }) => expect(body.error.code).toBe('LIBRARY_REVIEW_FORBIDDEN'));
@@ -193,6 +205,118 @@ describe('library reviewer HTTP API', () => {
       .send({ nextState: 'VERIFIED' })
       .expect(409)
       .expect(({ body }) => expect(body.error.code).toBe('LIBRARY_REVIEW_CONFLICT'));
+  });
+
+  it('fails public reads closed and reconciles an invalidated Phase 06 source', async () => {
+    const api = request(app.getHttpServer());
+    const owner = await createUser('source-health-owner');
+    const responder = await createUser('source-health-responder');
+    const reviewer = await createUser('source-health-reviewer', ['MODERATOR']);
+    const reviewerSession = await sessionFor(reviewer);
+    const licenseKey = await registerLicense('HTTP-SOURCE-SAFE', reviewer);
+
+    const correction = await corrections.createCorrectionRequest(owner.id, {
+      languageCode: 'en',
+      originalText: 'She go home.',
+      correctionIntent: 'GRAMMAR',
+      visibility: 'PUBLIC',
+    });
+    const response = await corrections.createStructuredResponse(correction.post.id, responder.id, {
+      responseKind: 'CORRECTION_PROPOSAL',
+      correctedText: 'She goes home.',
+      explanation: 'Third-person singular agreement.',
+    });
+    await corrections.acceptStructuredResponse(correction.post.id, response.id, owner.id);
+    const candidateResponse = await corrections.nominateStructuredResponseAsLibraryCandidate(response.id, owner.id);
+    const candidate = (await correctionRepository.findLibraryCandidateById(candidateResponse.id))!;
+
+    const resource = await library.createDraftResource(
+      { userId: owner.id, roles: owner.roles },
+      {
+        resourceType: 'GRAMMAR_ITEM',
+        primaryLanguageCode: 'en',
+        visibility: 'PUBLIC',
+        details: { title: 'source health e2e', explanation: 'Phase 06 source health fixture' },
+      },
+    );
+    await library.attachProvenance(
+      { userId: reviewer.id, roles: reviewer.roles },
+      resource.id,
+      {
+        sourceType: 'PHASE06_LIBRARY_CANDIDATE',
+        sourceId: candidate.id,
+        sourcePostId: candidate.sourcePostId,
+        sourceResponseId: candidate.sourceResponseId,
+        sourceCandidateId: candidate.id,
+        sourceAcceptanceId: candidate.acceptanceId,
+        licenseKey,
+        attribution: 'Phase 06 public attribution',
+      },
+    );
+    await library.transitionReview({ userId: owner.id, roles: owner.roles }, resource.id, 'COMMUNITY_REVIEW');
+    await library.transitionReview({ userId: reviewer.id, roles: reviewer.roles }, resource.id, 'VERIFIED');
+
+    await api.get('/api/v1/library/resources/' + resource.id).expect(200);
+    await corrections.revokeStructuredResponseAcceptance(correction.post.id, owner.id);
+
+    await api.get('/api/v1/library/resources/' + resource.id).expect(404);
+    const search = await api.get('/api/v1/library/resources').query({ q: 'source health e2e' }).expect(200);
+    expect(search.body.data.items.map((item: { id: string }) => item.id)).not.toContain(resource.id);
+
+    const invalidQueue = await api
+      .get('/api/v1/library/reviews/source-invalid')
+      .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
+      .expect(200);
+    expect(invalidQueue.body.data.items).toEqual([
+      expect.objectContaining({
+        resourceId: resource.id,
+        publicExposure: false,
+        sourceHealth: [expect.objectContaining({
+          valid: false,
+          reason: 'CANDIDATE_INVALIDATED',
+        })],
+      }),
+    ]);
+
+    const detail = await api
+      .get('/api/v1/library/reviews/' + resource.id)
+      .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
+      .expect(200);
+    expect(detail.body.data).toMatchObject({
+      resource: { reviewState: 'VERIFIED' },
+      provenance: [{ sourceHealth: { applicable: true, valid: false } }],
+      verificationEligibility: { eligible: false, issues: expect.arrayContaining(['SOURCE_INVALID']) },
+    });
+    expect(JSON.stringify(detail.body.data)).not.toContain('sourceNote');
+
+    await api
+      .post('/api/v1/library/reviews/' + resource.id + '/reconcile-source')
+      .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
+      .set('Cookie', reviewerSession.cookie)
+      .set('x-csrf-token', reviewerSession.csrfToken)
+      .send({ note: 'Reconcile invalid Phase 06 source' })
+      .expect(201)
+      .expect(({ body }) => {
+        expect(body.data.resource.reviewState).toBe('COMMUNITY_REVIEW');
+        expect(body.data.audit.action).toBe('INVALIDATE');
+      });
+
+    await api
+      .get('/api/v1/library/reviews')
+      .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ resourceId: resource.id, reviewState: 'COMMUNITY_REVIEW' }),
+      ])));
+    await api
+      .post('/api/v1/library/reviews/' + resource.id + '/reconcile-source')
+      .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
+      .set('Cookie', reviewerSession.cookie)
+      .set('x-csrf-token', reviewerSession.csrfToken)
+      .send({})
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('LIBRARY_REVIEW_CONFLICT'));
+
   });
 
   async function createUser(label: string, roles: RoleKey[] = ['MEMBER']): Promise<UserRecord> {

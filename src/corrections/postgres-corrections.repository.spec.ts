@@ -105,6 +105,42 @@ describe('PostgresCorrectionsRepository', () => {
     expect(sql).toContain('acceptance.parent_post_id = candidate.source_post_id');
     expect(sql).toContain('acceptance.response_id = candidate.source_response_id');
   });
+
+  it('evaluates current source health without applying the pending-only read filter', async () => {
+    const query = jest.fn(async (..._args: unknown[]) => ({ rows: [{
+      candidate_id: candidateRow().id,
+      candidate_state: 'INVALIDATED',
+      candidate_source_post_id: candidateRow().source_post_id,
+      candidate_source_response_id: candidateRow().source_response_id,
+      candidate_acceptance_id: candidateRow().acceptance_id,
+      post_id: candidateRow().source_post_id,
+      post_moderation_state: 'ACTIVE',
+      post_visibility: 'PUBLIC',
+      response_id: candidateRow().source_response_id,
+      response_parent_post_id: candidateRow().source_post_id,
+      response_moderation_state: 'ACTIVE',
+      acceptance_id: candidateRow().acceptance_id,
+      acceptance_parent_post_id: candidateRow().source_post_id,
+      acceptance_response_id: candidateRow().source_response_id,
+      acceptance_revoked_at: null,
+      current_acceptance_id: candidateRow().acceptance_id,
+      current_acceptance_response_id: candidateRow().source_response_id,
+    }] }));
+    const repository = new PostgresCorrectionsRepository({ query } as unknown as Pool);
+
+    await expect(repository.inspectLibraryCandidateSource({
+      sourceId: candidateRow().id,
+      sourcePostId: candidateRow().source_post_id,
+      sourceResponseId: candidateRow().source_response_id,
+      sourceCandidateId: candidateRow().id,
+      sourceAcceptanceId: candidateRow().acceptance_id,
+    })).resolves.toEqual({
+      valid: false,
+      reason: 'CANDIDATE_INVALIDATED',
+    });
+    expect(String(query.mock.calls[0]?.[0])).toContain('LEFT JOIN community_posts');
+    expect(String(query.mock.calls[0]?.[0])).not.toContain('candidate.state =');
+  });
 });
 
 function postRow() {

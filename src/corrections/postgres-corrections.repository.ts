@@ -28,6 +28,11 @@ import type {
   StructuredResponseListQuery,
   StructuredResponseRecord,
 } from './corrections.types';
+import {
+  evaluatePhase06SourceHealth,
+  type Phase06SourceHealth,
+  type Phase06SourceReference,
+} from './corrections.source-health';
 
 export class PostgresCorrectionsRepository implements CorrectionsRepository {
   constructor(private readonly pool: Pool) {}
@@ -709,6 +714,66 @@ export class PostgresCorrectionsRepository implements CorrectionsRepository {
       [id],
     );
     return result.rows[0] ? mapCandidate(result.rows[0]) : null;
+  }
+
+  async inspectLibraryCandidateSource(
+    reference: Phase06SourceReference,
+  ): Promise<Phase06SourceHealth> {
+    const result = await this.pool.query(
+      `SELECT
+         candidate.id AS candidate_id,
+         candidate.state AS candidate_state,
+         candidate.source_post_id AS candidate_source_post_id,
+         candidate.source_response_id AS candidate_source_response_id,
+         candidate.acceptance_id AS candidate_acceptance_id,
+         post.id AS post_id,
+         post.moderation_state AS post_moderation_state,
+         post.visibility AS post_visibility,
+         response.id AS response_id,
+         response.parent_post_id AS response_parent_post_id,
+         response.moderation_state AS response_moderation_state,
+         acceptance.id AS acceptance_id,
+         acceptance.parent_post_id AS acceptance_parent_post_id,
+         acceptance.response_id AS acceptance_response_id,
+         acceptance.revoked_at AS acceptance_revoked_at,
+         current_acceptance.id AS current_acceptance_id,
+         current_acceptance.response_id AS current_acceptance_response_id
+       FROM community_library_candidates AS candidate
+       LEFT JOIN community_posts AS post
+         ON post.id = candidate.source_post_id
+       LEFT JOIN community_structured_responses AS response
+         ON response.id = candidate.source_response_id
+       LEFT JOIN community_structured_response_acceptances AS acceptance
+         ON acceptance.id = candidate.acceptance_id
+       LEFT JOIN community_structured_response_acceptances AS current_acceptance
+         ON current_acceptance.parent_post_id = candidate.source_post_id
+        AND current_acceptance.revoked_at IS NULL
+       WHERE candidate.id = $1::uuid`,
+      [reference.sourceCandidateId],
+    );
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) return evaluatePhase06SourceHealth(reference, null);
+    return evaluatePhase06SourceHealth(reference, {
+      candidateId: String(row.candidate_id),
+      candidateState: String(row.candidate_state),
+      candidateSourcePostId: String(row.candidate_source_post_id),
+      candidateSourceResponseId: String(row.candidate_source_response_id),
+      candidateAcceptanceId: String(row.candidate_acceptance_id),
+      postExists: row.post_id !== null && row.post_id !== undefined,
+      postModerationState: row.post_moderation_state ? String(row.post_moderation_state) : null,
+      postVisibility: row.post_visibility ? String(row.post_visibility) : null,
+      responseExists: row.response_id !== null && row.response_id !== undefined,
+      responseParentPostId: row.response_parent_post_id ? String(row.response_parent_post_id) : null,
+      responseModerationState: row.response_moderation_state ? String(row.response_moderation_state) : null,
+      acceptanceExists: row.acceptance_id !== null && row.acceptance_id !== undefined,
+      acceptanceParentPostId: row.acceptance_parent_post_id ? String(row.acceptance_parent_post_id) : null,
+      acceptanceResponseId: row.acceptance_response_id ? String(row.acceptance_response_id) : null,
+      acceptanceRevokedAt: row.acceptance_revoked_at ? new Date(String(row.acceptance_revoked_at)).toISOString() : null,
+      currentAcceptanceId: row.current_acceptance_id ? String(row.current_acceptance_id) : null,
+      currentAcceptanceResponseId: row.current_acceptance_response_id
+        ? String(row.current_acceptance_response_id)
+        : null,
+    });
   }
 
   async listContributionEvents(

@@ -24,6 +24,13 @@ import type {
   StructuredResponseListQuery,
   StructuredResponseRecord,
 } from './corrections.types';
+import {
+  evaluatePhase06SourceHealth,
+} from './corrections.source-health';
+import type {
+  Phase06SourceHealth,
+  Phase06SourceReference,
+} from './corrections.source-health';
 
 export const CORRECTIONS_REPOSITORY = 'CORRECTIONS_REPOSITORY';
 
@@ -131,6 +138,7 @@ export interface CorrectionsRepository {
     input: CreateLibraryCandidateRepositoryInput,
   ): Promise<LibraryCandidateRecord>;
   findLibraryCandidateById(id: string): Promise<LibraryCandidateRecord | null>;
+  inspectLibraryCandidateSource(reference: Phase06SourceReference): Promise<Phase06SourceHealth>;
   listPendingLibraryCandidates(limit?: number): Promise<LibraryCandidateRecord[]>;
   listContributionEvents(
     query?: Phase06ContributionEventQuery,
@@ -511,6 +519,38 @@ export class InMemoryCorrectionsRepository implements CorrectionsRepository {
       acceptance.responseId !== candidate.sourceResponseId
     ) return null;
     return cloneCandidate(candidate);
+  }
+
+  async inspectLibraryCandidateSource(
+    reference: Phase06SourceReference,
+  ): Promise<Phase06SourceHealth> {
+    const candidate = this.candidates.get(reference.sourceCandidateId);
+    if (!candidate) return evaluatePhase06SourceHealth(reference, null);
+    const parent = await this.community.findPostById(candidate.sourcePostId);
+    const response = this.responses.get(candidate.sourceResponseId);
+    const acceptance = [...this.acceptances.values()]
+      .flat()
+      .find((entry) => entry.id === candidate.acceptanceId);
+    const currentAcceptance = this.getActiveAcceptance(candidate.sourcePostId);
+    return evaluatePhase06SourceHealth(reference, {
+      candidateId: candidate.id,
+      candidateState: candidate.state,
+      candidateSourcePostId: candidate.sourcePostId,
+      candidateSourceResponseId: candidate.sourceResponseId,
+      candidateAcceptanceId: candidate.acceptanceId,
+      postExists: Boolean(parent),
+      postModerationState: parent?.moderationState ?? null,
+      postVisibility: parent?.visibility ?? null,
+      responseExists: Boolean(response),
+      responseParentPostId: response?.parentPostId ?? null,
+      responseModerationState: response?.moderationState ?? null,
+      acceptanceExists: Boolean(acceptance),
+      acceptanceParentPostId: acceptance?.parentPostId ?? null,
+      acceptanceResponseId: acceptance?.responseId ?? null,
+      acceptanceRevokedAt: acceptance?.revokedAt?.toISOString() ?? null,
+      currentAcceptanceId: currentAcceptance?.id ?? null,
+      currentAcceptanceResponseId: currentAcceptance?.responseId ?? null,
+    });
   }
 
   async listContributionEvents(

@@ -95,6 +95,21 @@ export interface LibraryReviewQueueRepositoryPage {
   nextBoundary: LibrarySearchCursor | null;
 }
 
+export interface LibraryInvalidSourceQueueRepositoryInput {
+  cursor?: LibrarySearchCursor;
+  limit: number;
+}
+
+export interface ReconcileLibrarySourceRepositoryInput {
+  resourceId: string;
+  expectedPreviousState: 'VERIFIED';
+  expectedProvenanceRevision: number;
+  actorUserId: string;
+  note: string;
+  sourceReasons: readonly string[];
+  occurredAt: Date;
+}
+
 export interface LibraryRepository {
   upsertLicense(
     input: NormalizedLibraryLicenseInput,
@@ -106,6 +121,9 @@ export interface LibraryRepository {
   findResourceById(id: string): Promise<LibraryResourceRecord | null>;
   searchPublicResources(input: LibrarySearchRepositoryInput): Promise<LibrarySearchRepositoryPage>;
   listReviewQueue(input: LibraryReviewQueueRepositoryInput): Promise<LibraryReviewQueueRepositoryPage>;
+  listInvalidSourceQueue(
+    input: LibraryInvalidSourceQueueRepositoryInput,
+  ): Promise<LibraryReviewQueueRepositoryPage>;
   addProvenance(
     resourceId: string,
     input: NormalizedLibraryProvenanceInput,
@@ -120,6 +138,9 @@ export interface LibraryRepository {
   ): Promise<LibraryProvenanceRecord[]>;
   transitionReview(
     input: TransitionLibraryReviewRepositoryInput,
+  ): Promise<LibraryReviewTransitionResult>;
+  reconcileSource(
+    input: ReconcileLibrarySourceRepositoryInput,
   ): Promise<LibraryReviewTransitionResult>;
   submitContribution(
     input: SubmitLibraryContributionRepositoryInput,
@@ -230,6 +251,29 @@ export class InMemoryLibraryRepository implements LibraryRepository {
           updatedAt: new Date(consumedRows.at(-1)!.updatedAt),
           id: consumedRows.at(-1)!.id,
         }
+        : null,
+    };
+  }
+
+  async listInvalidSourceQueue(
+    input: LibraryInvalidSourceQueueRepositoryInput,
+  ): Promise<LibraryReviewQueueRepositoryPage> {
+    const candidates = [...this.resources.values()]
+      .filter((resource) => (
+        resource.reviewState === 'VERIFIED' &&
+        resource.provenance.some((entry) => entry.sourceType === 'PHASE06_LIBRARY_CANDIDATE')
+      ))
+      .filter((resource) => isAfterReviewCursor(resource, input.cursor))
+      .sort(compareReviewQueueResources);
+    const rows = candidates.slice(0, input.limit + 1);
+    const items = rows.slice(0, input.limit).map(cloneResource);
+    const hasMore = rows.length > input.limit;
+    const last = items.at(-1);
+    return {
+      items,
+      hasMore,
+      nextBoundary: hasMore && last
+        ? { updatedAt: new Date(last.updatedAt), id: last.id }
         : null,
     };
   }
@@ -365,6 +409,45 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       resource: cloneResource(resource),
       audit: cloneAudit(audit),
     };
+  }
+
+  async reconcileSource(
+    input: ReconcileLibrarySourceRepositoryInput,
+  ): Promise<LibraryReviewTransitionResult> {
+    const resource = this.requireResource(input.resourceId);
+    if (
+      resource.reviewState !== input.expectedPreviousState ||
+      resource.provenanceRevision !== input.expectedProvenanceRevision
+    ) {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_REVIEW_CONFLICT',
+        'The resource review state or provenance changed before source reconciliation',
+      );
+    }
+    if (input.sourceReasons.length === 0) {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_SOURCE_STILL_VALID',
+        'The Phase 06 source is currently valid',
+      );
+    }
+    resource.reviewState = 'COMMUNITY_REVIEW';
+    resource.reviewedByUserId = null;
+    resource.reviewedAt = null;
+    resource.updatedAt = new Date(input.occurredAt);
+    const audit: LibraryReviewAuditRecord = {
+      id: randomUUID(),
+      resourceId: resource.id,
+      actorUserId: input.actorUserId,
+      previousState: 'VERIFIED',
+      newState: 'COMMUNITY_REVIEW',
+      action: 'INVALIDATE',
+      note: input.note,
+      createdAt: new Date(input.occurredAt),
+    };
+    const history = this.reviewAudits.get(resource.id) ?? [];
+    history.push(audit);
+    this.reviewAudits.set(resource.id, history);
+    return { resource: cloneResource(resource), audit: cloneAudit(audit) };
   }
 
   async submitContribution(
@@ -519,6 +602,17 @@ function compareReviewQueueResources(a: LibraryResourceRecord, b: LibraryResourc
   const timestampDifference = a.updatedAt.getTime() - b.updatedAt.getTime();
   if (timestampDifference !== 0) return timestampDifference;
   return a.id > b.id ? 1 : a.id < b.id ? -1 : 0;
+}
+
+function isAfterReviewCursor(
+  resource: LibraryResourceRecord,
+  cursor: LibrarySearchCursor | undefined,
+): boolean {
+  if (!cursor) return true;
+  return (
+    resource.updatedAt.getTime() > cursor.updatedAt.getTime() ||
+    (resource.updatedAt.getTime() === cursor.updatedAt.getTime() && resource.id > cursor.id)
+  );
 }
 
 function createProvenance(

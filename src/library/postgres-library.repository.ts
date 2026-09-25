@@ -9,13 +9,21 @@ import {
   type LibraryRepository,
   type LibrarySearchRepositoryInput,
   type LibrarySearchRepositoryPage,
+  type LibraryInvalidSourceQueueRepositoryInput,
   type LibraryReviewTransitionResult,
   type LibraryReviewQueueRepositoryInput,
   type LibraryReviewQueueRepositoryPage,
   type LibraryProvenanceMutationExpectation,
   type SubmitLibraryContributionRepositoryInput,
   type TransitionLibraryReviewRepositoryInput,
+  type ReconcileLibrarySourceRepositoryInput,
 } from './library.repository';
+import {
+  evaluatePhase06SourceHealth,
+  type Phase06SourceHealth,
+  type Phase06SourceReference,
+  type Phase06SourceHealthRow,
+} from '../corrections/corrections.source-health';
 import type {
   CulturalNoteDetails,
   DialogueDetails,
@@ -449,6 +457,52 @@ export class PostgresLibraryRepository implements LibraryRepository {
     };
   }
 
+  async listInvalidSourceQueue(
+    input: LibraryInvalidSourceQueueRepositoryInput,
+  ): Promise<LibraryReviewQueueRepositoryPage> {
+    const values: unknown[] = [];
+    const filters = [
+      `resource.review_state = 'VERIFIED'::library_review_state`,
+      `EXISTS (
+        SELECT 1
+        FROM library_resource_provenance AS phase06_provenance
+        WHERE phase06_provenance.resource_id = resource.id
+          AND phase06_provenance.source_type = 'PHASE06_LIBRARY_CANDIDATE'::library_source_type
+      )`,
+    ];
+    if (input.cursor) {
+      values.push(input.cursor.updatedAt, input.cursor.id);
+      filters.push(`(
+        resource.updated_at > $${values.length - 1}::timestamptz
+        OR (resource.updated_at = $${values.length - 1}::timestamptz AND resource.id > $${values.length}::uuid)
+      )`);
+    }
+    values.push(input.limit + 1);
+    const result = await this.pool.query(
+      `SELECT resource.id, resource.updated_at
+       FROM library_resources AS resource
+       WHERE ${filters.join('\n         AND ')}
+       ORDER BY resource.updated_at ASC, resource.id ASC
+       LIMIT $${values.length}`,
+      values,
+    );
+    const rows = result.rows.slice(0, input.limit + 1);
+    const consumedRows = rows.slice(0, input.limit);
+    const resources = await Promise.all(
+      consumedRows.map((row) => this.findResourceWithExecutor(this.pool, String(row.id))),
+    );
+    const items = resources.filter((resource): resource is LibraryResourceRecord => Boolean(resource));
+    const hasMore = rows.length > input.limit;
+    const lastConsumedRow = consumedRows.at(-1);
+    return {
+      items,
+      hasMore,
+      nextBoundary: hasMore && lastConsumedRow
+        ? { updatedAt: new Date(lastConsumedRow.updated_at), id: String(lastConsumedRow.id) }
+        : null,
+    };
+  }
+
   async addProvenance(
     resourceId: string,
     input: NormalizedLibraryProvenanceInput,
@@ -676,6 +730,99 @@ export class PostgresLibraryRepository implements LibraryRepository {
     }
   }
 
+  async reconcileSource(
+    input: ReconcileLibrarySourceRepositoryInput,
+  ): Promise<LibraryReviewTransitionResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const lockedResult = await client.query(
+        `SELECT *
+         FROM library_resources
+         WHERE id = $1::uuid
+         FOR UPDATE`,
+        [input.resourceId],
+      );
+      const lockedRow = lockedResult.rows[0] as Record<string, unknown> | undefined;
+      if (!lockedRow) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_RESOURCE_NOT_FOUND',
+          'The library resource was not found',
+        );
+      }
+      if (
+        String(lockedRow.review_state) !== input.expectedPreviousState ||
+        Number(lockedRow.provenance_revision) !== input.expectedProvenanceRevision
+      ) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_REVIEW_CONFLICT',
+          'The resource review state or provenance changed before source reconciliation',
+        );
+      }
+
+      const provenanceRows = await this.readLockedProvenanceRows(client, input.resourceId);
+      const sourceHealth = await this.lockAndEvaluatePhase06Sources(client, provenanceRows);
+      const invalidReasons = sourceHealth
+        .filter((entry) => !entry.health.valid)
+        .map((entry) => entry.health.reason);
+      if (invalidReasons.length === 0) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_SOURCE_STILL_VALID',
+          'The Phase 06 source is currently valid',
+        );
+      }
+
+      const updated = await client.query(
+        `UPDATE library_resources
+         SET review_state = 'COMMUNITY_REVIEW'::library_review_state,
+             reviewed_by_user_id = NULL,
+             reviewed_at = NULL,
+             updated_at = $2::timestamptz
+         WHERE id = $1::uuid
+           AND review_state = 'VERIFIED'::library_review_state
+           AND provenance_revision = $3::bigint
+         RETURNING *`,
+        [input.resourceId, input.occurredAt, input.expectedProvenanceRevision],
+      );
+      if (!updated.rows[0]) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_REVIEW_CONFLICT',
+          'The resource review state changed before source reconciliation',
+        );
+      }
+
+      const auditResult = await client.query(
+        `INSERT INTO library_resource_review_audits (
+           resource_id,
+           actor_user_id,
+           previous_state,
+           new_state,
+           action,
+           note,
+           created_at
+         )
+         VALUES ($1::uuid, $2::uuid, 'VERIFIED'::library_review_state, 'COMMUNITY_REVIEW'::library_review_state, 'INVALIDATE'::library_review_action, $3, $4::timestamptz)
+         RETURNING *`,
+        [input.resourceId, input.actorUserId, input.note, input.occurredAt],
+      );
+      const resource = await this.findResourceWithExecutor(client, input.resourceId);
+      if (!resource) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_RESOURCE_NOT_FOUND',
+          'Library resource was not found after source reconciliation',
+        );
+      }
+      const audit = mapAudit(auditResult.rows[0]);
+      await client.query('COMMIT');
+      return { resource, audit };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw mapPostgresError(error);
+    } finally {
+      client.release();
+    }
+  }
+
   private async validateVerificationEligibility(
     client: PoolClient,
     resourceRow: Record<string, unknown>,
@@ -686,15 +833,7 @@ export class PostgresLibraryRepository implements LibraryRepository {
         'Only actively moderated resources can be verified',
       );
     }
-    const provenanceResult = await client.query(
-      `SELECT source_type, license_key
-       FROM library_resource_provenance
-       WHERE resource_id = $1::uuid
-       ORDER BY id ASC
-       FOR SHARE`,
-      [String(resourceRow.id)],
-    );
-    const provenanceRows = provenanceResult.rows as Record<string, unknown>[];
+    const provenanceRows = await this.readLockedProvenanceRows(client, String(resourceRow.id));
     if (provenanceRows.length === 0) {
       throw new LibraryRepositoryConflictError(
         'LIBRARY_PROVENANCE_REQUIRED',
@@ -738,6 +877,138 @@ export class PostgresLibraryRepository implements LibraryRepository {
         );
       }
     }
+
+    const sourceHealth = await this.lockAndEvaluatePhase06Sources(client, provenanceRows);
+    const invalidSource = sourceHealth.find((entry) => !entry.health.valid);
+    if (invalidSource) {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_SOURCE_INVALID',
+        'A Phase 06 source is no longer eligible for verification',
+      );
+    }
+  }
+
+  private async readLockedProvenanceRows(
+    client: PoolClient,
+    resourceId: string,
+  ): Promise<Record<string, unknown>[]> {
+    const result = await client.query(
+      `SELECT id, source_type, source_id, source_post_id, source_response_id,
+              source_candidate_id, source_acceptance_id, license_key
+       FROM library_resource_provenance
+       WHERE resource_id = $1::uuid
+       ORDER BY id ASC
+       FOR SHARE`,
+      [resourceId],
+    );
+    return result.rows as Record<string, unknown>[];
+  }
+
+  private async lockAndEvaluatePhase06Sources(
+    client: PoolClient,
+    provenanceRows: readonly Record<string, unknown>[],
+  ): Promise<Array<{ provenance: Record<string, unknown>; health: Phase06SourceHealth }>> {
+    const phase06Rows = provenanceRows
+      .filter((row) => String(row.source_type) === 'PHASE06_LIBRARY_CANDIDATE')
+      .sort((left, right) => String(left.source_candidate_id ?? '').localeCompare(String(right.source_candidate_id ?? '')));
+    if (phase06Rows.length === 0) return [];
+
+    const postIds = [...new Set(phase06Rows.map((row) => String(row.source_post_id ?? '')).filter(Boolean))].sort();
+    const responseIds = [...new Set(phase06Rows.map((row) => String(row.source_response_id ?? '')).filter(Boolean))].sort();
+    const acceptanceIds = [...new Set(phase06Rows.map((row) => String(row.source_acceptance_id ?? '')).filter(Boolean))].sort();
+    const candidateIds = [...new Set(phase06Rows.map((row) => String(row.source_candidate_id ?? '')).filter(Boolean))].sort();
+
+    // Source mutations in Phase 06 acquire parent, response, acceptance, then
+    // candidate locks. Keep the same order here to produce a coherent race.
+    const postRows = postIds.length === 0 ? [] : (await client.query(
+      `SELECT id, moderation_state, visibility
+       FROM community_posts
+       WHERE id = ANY($1::uuid[])
+       ORDER BY id ASC
+       FOR SHARE`,
+      [postIds],
+    )).rows as Record<string, unknown>[];
+    const responseRows = responseIds.length === 0 ? [] : (await client.query(
+      `SELECT id, parent_post_id, moderation_state
+       FROM community_structured_responses
+       WHERE id = ANY($1::uuid[])
+       ORDER BY id ASC
+       FOR SHARE`,
+      [responseIds],
+    )).rows as Record<string, unknown>[];
+    const acceptanceRows = (await client.query(
+      `SELECT id, parent_post_id, response_id, revoked_at
+       FROM community_structured_response_acceptances
+       WHERE id = ANY($1::uuid[])
+          OR (parent_post_id = ANY($2::uuid[]) AND revoked_at IS NULL)
+       ORDER BY id ASC
+       FOR SHARE`,
+      [acceptanceIds, postIds],
+    )).rows as Record<string, unknown>[];
+    const candidateRows = candidateIds.length === 0 ? [] : (await client.query(
+      `SELECT id, state, source_post_id, source_response_id, acceptance_id
+       FROM community_library_candidates
+       WHERE id = ANY($1::uuid[])
+       ORDER BY id ASC
+       FOR SHARE`,
+      [candidateIds],
+    )).rows as Record<string, unknown>[];
+
+    const posts = new Map(postRows.map((row) => [String(row.id), row]));
+    const responses = new Map(responseRows.map((row) => [String(row.id), row]));
+    const candidates = new Map(candidateRows.map((row) => [String(row.id), row]));
+    const acceptances = new Map(acceptanceRows.map((row) => [String(row.id), row]));
+    const activeAcceptances = new Map(
+      acceptanceRows
+        .filter((row) => row.revoked_at === null || row.revoked_at === undefined)
+        .map((row) => [String(row.parent_post_id), row]),
+    );
+
+    return phase06Rows.map((provenance) => {
+      const sourcePostId = String(provenance.source_post_id ?? '');
+      const sourceResponseId = String(provenance.source_response_id ?? '');
+      const sourceCandidateId = String(provenance.source_candidate_id ?? '');
+      const sourceAcceptanceId = String(provenance.source_acceptance_id ?? '');
+      const reference: Phase06SourceReference = {
+        sourceId: String(provenance.source_id ?? ''),
+        sourcePostId,
+        sourceResponseId,
+        sourceCandidateId,
+        sourceAcceptanceId,
+      };
+      const candidate = candidates.get(sourceCandidateId);
+      const post = posts.get(sourcePostId);
+      const response = responses.get(sourceResponseId);
+      const acceptance = acceptances.get(sourceAcceptanceId);
+      const currentAcceptance = activeAcceptances.get(sourcePostId);
+      const row: Phase06SourceHealthRow | null = candidate
+        ? {
+          candidateId: String(candidate.id),
+          candidateState: String(candidate.state),
+          candidateSourcePostId: String(candidate.source_post_id),
+          candidateSourceResponseId: String(candidate.source_response_id),
+          candidateAcceptanceId: String(candidate.acceptance_id),
+          postExists: Boolean(post),
+          postModerationState: post?.moderation_state ? String(post.moderation_state) : null,
+          postVisibility: post?.visibility ? String(post.visibility) : null,
+          responseExists: Boolean(response),
+          responseParentPostId: response?.parent_post_id ? String(response.parent_post_id) : null,
+          responseModerationState: response?.moderation_state ? String(response.moderation_state) : null,
+          acceptanceExists: Boolean(acceptance),
+          acceptanceParentPostId: acceptance?.parent_post_id ? String(acceptance.parent_post_id) : null,
+          acceptanceResponseId: acceptance?.response_id ? String(acceptance.response_id) : null,
+          acceptanceRevokedAt: acceptance?.revoked_at ? new Date(String(acceptance.revoked_at)).toISOString() : null,
+          currentAcceptanceId: currentAcceptance?.id ? String(currentAcceptance.id) : null,
+          currentAcceptanceResponseId: currentAcceptance?.response_id
+            ? String(currentAcceptance.response_id)
+            : null,
+        }
+        : null;
+      return {
+        provenance,
+        health: evaluatePhase06SourceHealth(reference, row),
+      };
+    });
   }
 
   async submitContribution(
