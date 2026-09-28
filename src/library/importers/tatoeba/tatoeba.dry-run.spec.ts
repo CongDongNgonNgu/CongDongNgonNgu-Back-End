@@ -240,4 +240,44 @@ describe('Tatoeba bounded dry-run orchestration', () => {
     expect(supplied.snapshot.snapshotRetrievedAt).toBe('2026-09-27T18:00:00+07:00');
     await fs.rm(directory, { recursive: true, force: true });
   });
+
+  it('does not build a translation from a sentence that fails Library text eligibility', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'tatoeba-text-boundary-'));
+    const detailedPath = path.join(directory, 'sentences_detailed.csv');
+    const cc0Path = path.join(directory, 'sentences_CC0.csv');
+    const linksPath = path.join(directory, 'links.csv');
+    const overLimit = 'x'.repeat(20_001);
+    await fs.writeFile(detailedPath, [
+      `1\tvie\t${overLimit}\talice\t2026-01-01\t2026-01-02`,
+      '2\teng\tok\tbob\t2026-01-01\t2026-01-02',
+    ].join('\n') + '\n', 'utf8');
+    await fs.writeFile(cc0Path, '', 'utf8');
+    await fs.writeFile(linksPath, '1\t2\n', 'utf8');
+
+    const getSentence = jest.fn(async (sentenceId: string): Promise<TatoebaApiSentenceCheck> => sentenceId === '1'
+      ? api('1', { tatoebaLanguage: 'vie', text: overLimit, license: 'CC BY 2.0 FR', owner: 'alice' })
+      : api('2', { tatoebaLanguage: 'eng', text: 'ok', license: 'CC BY 2.0 FR', owner: 'bob' }));
+
+    const report = await runTatoebaDryRun({
+      sentencesDetailedPath: detailedPath,
+      sentencesCc0Path: cc0Path,
+      linksPath,
+      languages: ['vi', 'en'],
+      directions: [{ sourceLanguage: 'vi', targetLanguage: 'en' }],
+      sentenceLimit: 10,
+      linkLimit: 10,
+      apiClient: { getSentence },
+      now: () => '2026-09-28T00:00:00.000Z',
+    });
+
+    expect(report.counts.textTooLong).toBe(1);
+    expect(report.counts.sentencesEligible).toBe(1);
+    expect(report.counts.translationCandidates).toBe(0);
+    expect(report.counts.missingLinkEndpoints).toBe(1);
+    expect(report.quarantine).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: 'TATOEBA_TEXT_TOO_LONG' }),
+      expect.objectContaining({ reason: 'TATOEBA_LINK_ENDPOINT_NOT_ELIGIBLE' }),
+    ]));
+    await fs.rm(directory, { recursive: true, force: true });
+  });
 });

@@ -139,6 +139,7 @@ function sentenceErrorCount(
     case 'TATOEBA_UNAPPROVED': counts.apiUnapproved += 1; break;
     case 'TATOEBA_OWNER_REQUIRED': counts.ownerRequired += 1; break;
     case 'TATOEBA_OWNER_MISMATCH': counts.ownerMismatch += 1; break;
+    case 'TATOEBA_TEXT_TOO_LONG': counts.textTooLong += 1; break;
     case 'TATOEBA_TEXT_MISMATCH': counts.textMismatch += 1; break;
     case 'TATOEBA_LANGUAGE_MISMATCH': counts.languageMismatch += 1; break;
     case 'TATOEBA_CC0_MISMATCH': counts.cc0Mismatch += 1; break;
@@ -164,6 +165,7 @@ function emptyCounts(): TatoebaDryRunReport['counts'] {
     licenseCc0: 0,
     ownerRequired: 0,
     ownerMismatch: 0,
+    textTooLong: 0,
     textMismatch: 0,
     languageMismatch: 0,
     cc0Mismatch: 0,

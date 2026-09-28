@@ -35,6 +35,7 @@ export const TATOEBA_SUPPORTED_PROJECT_LANGUAGES = [
 
 export const TATOEBA_MAX_ID_DIGITS = 40;
 export const TATOEBA_MAX_LINE_LENGTH = 100_000;
+export const TATOEBA_LIBRARY_TEXT_MAX_CHARS = 20_000;
 // These are internal dry-run evidence budgets, not Tatoeba provider limits.
 export const TATOEBA_MAX_REPORT_BYTES = 4_000_000;
 export const TATOEBA_MAX_REPORT_CANDIDATE_ROWS = 256;

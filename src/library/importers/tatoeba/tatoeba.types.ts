@@ -174,6 +174,7 @@ export interface TatoebaDryRunReport {
     licenseCc0: number;
     ownerRequired: number;
     ownerMismatch: number;
+    textTooLong: number;
     textMismatch: number;
     languageMismatch: number;
     cc0Mismatch: number;

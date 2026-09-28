@@ -3,6 +3,7 @@ import { buildTatoebaAttribution, sentenceSourceUrl } from './tatoeba.attributio
 import { TatoebaImportError } from './tatoeba.errors';
 import { mapTatoebaLanguage, isProjectLanguage } from './tatoeba.languages';
 import { sentenceSourceIdentity } from './tatoeba.identities';
+import { validateTatoebaLibraryText } from './tatoeba.text';
 import type {
   TatoebaApiSentenceCheck,
   TatoebaBulkSentenceRow,
@@ -52,8 +53,21 @@ export function validateTatoebaSentenceCandidate(
       details: { bulkLanguage, apiLanguage },
     };
   }
-  if (input.bulk.text.length === 0 || input.api.facts.text.length === 0) {
-    return { ok: false, reason: 'TATOEBA_EMPTY_TEXT', details: {} };
+  const bulkTextEligibility = validateTatoebaLibraryText(input.bulk.text);
+  if (!bulkTextEligibility.ok) {
+    return {
+      ok: false,
+      reason: bulkTextEligibility.reason,
+      details: { representation: 'bulk', characterLength: bulkTextEligibility.characterLength },
+    };
+  }
+  const apiTextEligibility = validateTatoebaLibraryText(input.api.facts.text);
+  if (!apiTextEligibility.ok) {
+    return {
+      ok: false,
+      reason: apiTextEligibility.reason,
+      details: { representation: 'api', characterLength: apiTextEligibility.characterLength },
+    };
   }
   if (input.bulk.text !== input.api.facts.text) {
     return { ok: false, reason: 'TATOEBA_TEXT_MISMATCH', details: {} };

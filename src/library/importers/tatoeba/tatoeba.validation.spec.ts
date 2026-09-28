@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { buildTatoebaAttribution, sentenceSourceUrl } from './tatoeba.attribution';
+import { libraryTextCharacterLength } from './tatoeba.text';
 import { validateTatoebaSentenceCandidate } from './tatoeba.validation';
 import type {
   TatoebaApiSentenceCheck,
@@ -157,6 +158,74 @@ describe('Tatoeba sentence validation and attribution', () => {
     expect(cc0Accepted.ok).toBe(true);
     expect(missingSnapshot).toMatchObject({ ok: false, reason: 'TATOEBA_CC0_MISMATCH' });
     expect(wrongApiLicense).toMatchObject({ ok: false, reason: 'TATOEBA_CC0_MISMATCH' });
+  });
+
+  it('aligns sentence text eligibility with the Library character and blank-text contract', () => {
+    const exactLimit = 'x'.repeat(20_000);
+    const overLimit = 'x'.repeat(20_001);
+    const emojiText = '😀'.repeat(20_000);
+    const paddedText = '  Xin chào  ';
+
+    const exactLimitResult = validateTatoebaSentenceCandidate({
+      bulk: bulk({ text: exactLimit }),
+      api: api({ text: exactLimit }),
+      cc0SentenceIds: new Set(),
+      snapshot,
+      importBatch: 'tatoeba-dry-run-test',
+    });
+    const overLimitBulkResult = validateTatoebaSentenceCandidate({
+      bulk: bulk({ text: overLimit }),
+      api: api({ text: overLimit }),
+      cc0SentenceIds: new Set(),
+      snapshot,
+      importBatch: 'tatoeba-dry-run-test',
+    });
+    const overLimitApiResult = validateTatoebaSentenceCandidate({
+      bulk: bulk({ text: exactLimit }),
+      api: api({ text: overLimit }),
+      cc0SentenceIds: new Set(),
+      snapshot,
+      importBatch: 'tatoeba-dry-run-test',
+    });
+    const emojiResult = validateTatoebaSentenceCandidate({
+      bulk: bulk({ text: emojiText }),
+      api: api({ text: emojiText }),
+      cc0SentenceIds: new Set(),
+      snapshot,
+      importBatch: 'tatoeba-dry-run-test',
+    });
+    const paddedResult = validateTatoebaSentenceCandidate({
+      bulk: bulk({ text: paddedText }),
+      api: api({ text: paddedText }),
+      cc0SentenceIds: new Set(),
+      snapshot,
+      importBatch: 'tatoeba-dry-run-test',
+    });
+    const spacesOnlyResult = validateTatoebaSentenceCandidate({
+      bulk: bulk({ text: '     ' }),
+      api: api({ text: '     ' }),
+      cc0SentenceIds: new Set(),
+      snapshot,
+      importBatch: 'tatoeba-dry-run-test',
+    });
+    const emptyResult = validateTatoebaSentenceCandidate({
+      bulk: bulk({ text: '' }),
+      api: api({ text: '' }),
+      cc0SentenceIds: new Set(),
+      snapshot,
+      importBatch: 'tatoeba-dry-run-test',
+    });
+
+    expect(libraryTextCharacterLength(exactLimit)).toBe(20_000);
+    expect(libraryTextCharacterLength(emojiText)).toBe(20_000);
+    expect(exactLimitResult.ok).toBe(true);
+    expect(overLimitBulkResult).toMatchObject({ ok: false, reason: 'TATOEBA_TEXT_TOO_LONG' });
+    expect(overLimitApiResult).toMatchObject({ ok: false, reason: 'TATOEBA_TEXT_TOO_LONG' });
+    expect(emojiResult.ok).toBe(true);
+    expect(paddedResult).toMatchObject({ ok: true });
+    if (paddedResult.ok) expect(paddedResult.candidate.text).toBe(paddedText);
+    expect(spacesOnlyResult).toMatchObject({ ok: false, reason: 'TATOEBA_EMPTY_TEXT' });
+    expect(emptyResult).toMatchObject({ ok: false, reason: 'TATOEBA_EMPTY_TEXT' });
   });
 
   it('quarantines text, language, owner, unsupported language, and missing-owner mismatches', () => {
