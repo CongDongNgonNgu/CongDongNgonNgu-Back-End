@@ -75,9 +75,32 @@ describe('PostgresTatoebaImportPreflightRepository', () => {
 
     await expect(repository.withReadOnlyTransaction(async (transaction) => {
       await transaction.findImportActor(ACTOR_ID);
-    })).rejects.toThrow('connection dropped');
+    })).rejects.toMatchObject({
+      code: 'TATOEBA_IMPORT_PREFLIGHT_DB_UNAVAILABLE',
+      message: 'Tatoeba import preflight database access failed closed.',
+    });
     expect(query).toHaveBeenLastCalledWith(PREFLIGHT_SQL.rollback);
     expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('sanitizes connection acquisition failures at the repository boundary', async () => {
+    const rawError = new Error('connect failed: postgresql://LEAK_USER:LEAK_PASSWORD@leak.test/db?token=LEAK_QUERY_SECRET');
+    const pool = {
+      connect: async () => {
+        throw rawError;
+      },
+    };
+    const repository = new PostgresTatoebaImportPreflightRepository(
+      pool,
+      'congdongngonngu_test',
+      'readonly_test',
+    );
+
+    await expect(repository.withReadOnlyTransaction(async () => undefined))
+      .rejects.toMatchObject({
+        code: 'TATOEBA_IMPORT_PREFLIGHT_DB_UNAVAILABLE',
+        message: 'Tatoeba import preflight database access failed closed.',
+      });
   });
 
   it('does not accept an unexpected database target', async () => {

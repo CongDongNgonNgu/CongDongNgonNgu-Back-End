@@ -41,12 +41,23 @@ export type TatoebaLicenseValidation =
   | { ok: true; summary: TatoebaLicenseContractSummary }
   | { ok: false; reason: TatoebaPreflightFailureCode; summary: TatoebaLicenseContractSummary };
 
+const DATABASE_URL_PATTERN = /\bpostgres(?:ql)?:\/\/[^\s"'`]+/giu;
+const SENSITIVE_ASSIGNMENT_PATTERN = /\b(?:password|passwd|pwd|username|user|token|secret|api[_-]?key|connectionString|database_url)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/giu;
+const AUTHENTICATION_USER_PATTERN = /(\bfor\s+user\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/giu;
+
+export function sanitizePreflightDiagnostic(message: string): string {
+  return message
+    .replace(DATABASE_URL_PATTERN, '[REDACTED_DATABASE_URL]')
+    .replace(SENSITIVE_ASSIGNMENT_PATTERN, '$1[REDACTED]')
+    .replace(AUTHENTICATION_USER_PATTERN, '$1[REDACTED_USER]');
+}
+
 export class TatoebaPreflightError extends Error {
   constructor(
     readonly code: TatoebaPreflightFailureCode,
     message: string,
   ) {
-    super(message);
+    super(sanitizePreflightDiagnostic(message));
     this.name = 'TatoebaPreflightError';
   }
 }

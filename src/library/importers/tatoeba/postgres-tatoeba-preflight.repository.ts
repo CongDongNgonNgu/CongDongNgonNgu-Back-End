@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 
 import {
   preflightError,
+  TatoebaPreflightError,
 } from './tatoeba-preflight.contract';
 import {
   TATOEBA_IMPORT_EXPECTED_DATABASE_ENV,
@@ -113,9 +114,10 @@ export class PostgresTatoebaImportPreflightRepository implements TatoebaImportPr
       );
     }
 
-    const client = await this.pool.connect();
+    let client: PoolClient | null = null;
     let transactionStarted = false;
     try {
+      client = await this.pool.connect();
       await client.query(PREFLIGHT_SQL.begin);
       transactionStarted = true;
       await client.query(PREFLIGHT_SQL.statementTimeout);
@@ -140,10 +142,18 @@ export class PostgresTatoebaImportPreflightRepository implements TatoebaImportPr
       await client.query(PREFLIGHT_SQL.commit);
       return result;
     } catch (error) {
-      if (transactionStarted) await client.query(PREFLIGHT_SQL.rollback).catch(() => undefined);
-      throw error;
+      if (client && transactionStarted) await client.query(PREFLIGHT_SQL.rollback).catch(() => undefined);
+      if (error instanceof TatoebaPreflightError) throw error;
+      throw preflightError(
+        'TATOEBA_IMPORT_PREFLIGHT_DB_UNAVAILABLE',
+        'Tatoeba import preflight database access failed closed.',
+      );
     } finally {
-      client.release();
+      try {
+        client?.release();
+      } catch {
+        // Client release has no safe diagnostic value.
+      }
     }
   }
 }
