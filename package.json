@@ -10,6 +10,7 @@
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
     "library:import:tatoeba": "node dist/cli/library-import-tatoeba.js",
+    "library:import:tatoeba:preflight": "node dist/cli/library-import-tatoeba-preflight.js",
     "db:migrate": "node --env-file-if-exists=.env database/migrate.cjs",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js",
     "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
