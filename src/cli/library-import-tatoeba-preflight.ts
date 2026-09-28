@@ -1,6 +1,7 @@
 import {
   isUuid,
   preflightError,
+  sanitizePreflightDiagnostic,
   TatoebaPreflightError,
 } from '../library/importers/tatoeba/tatoeba-preflight.contract';
 import {
@@ -51,7 +52,7 @@ export function parseTatoebaPreflightCliArgs(
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (!VALUE_FLAGS.has(argument)) {
-      throw preflightError('TATOEBA_IMPORT_ENVIRONMENT_INVALID', `Unknown Tatoeba preflight argument: ${argument}.`);
+      throw preflightError('TATOEBA_IMPORT_ENVIRONMENT_INVALID', 'Unknown Tatoeba preflight argument.');
     }
     const value = argv[index + 1];
     if (!value || value.startsWith('--')) {
@@ -86,7 +87,7 @@ function writeCliError(errorOutput: CliWriter, error: unknown): void {
   const safeError = error instanceof TatoebaPreflightError
     ? error
     : preflightError('TATOEBA_IMPORT_PREFLIGHT_DB_UNAVAILABLE', 'Tatoeba import preflight failed closed.');
-  errorOutput.write(`${safeError.code}: ${safeError.message}\n`);
+  errorOutput.write(`${safeError.code}: ${sanitizePreflightDiagnostic(safeError.message)}\n`);
 }
 
 export async function executeTatoebaPreflightCli(
