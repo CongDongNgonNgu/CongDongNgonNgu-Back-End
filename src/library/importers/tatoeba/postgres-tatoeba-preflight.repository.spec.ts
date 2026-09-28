@@ -31,14 +31,18 @@ describe('PostgresTatoebaImportPreflightRepository', () => {
     const query = jest.fn<QueryFn>().mockResolvedValue({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ database_name: 'congdongngonngu_test', database_user: 'readonly', server_version: 'PostgreSQL 16' }] })
+      .mockResolvedValueOnce({ rows: [{ database_name: 'congdongngonngu_test', database_user: 'readonly_test', server_version: 'PostgreSQL 16' }] })
       .mockResolvedValueOnce({ rows: [{ user_id: ACTOR_ID, status: 'ACTIVE', roles: ['ADMIN'] }] })
       .mockResolvedValueOnce({ rows: [{ license_key: 'CC_BY_2_0_FR', display_name: 'CC BY 2.0 France', canonical_url: 'https://creativecommons.org/licenses/by/2.0/fr/', attribution_required: true, redistribution_allowed: true, active: true }] })
       .mockResolvedValueOnce({ rows: [{ license_key: 'CC0_1_0', display_name: 'CC0 1.0', canonical_url: 'https://creativecommons.org/publicdomain/zero/1.0/', attribution_required: false, redistribution_allowed: true, active: true }] })
       .mockResolvedValueOnce({ rows: [] });
     const client = fakeClient(query);
     const pool = { connect: async () => client };
-    const repository = new PostgresTatoebaImportPreflightRepository(pool, 'congdongngonngu_test');
+    const repository = new PostgresTatoebaImportPreflightRepository(
+      pool,
+      'congdongngonngu_test',
+      'readonly_test',
+    );
 
     await repository.withReadOnlyTransaction(async (transaction) => {
       await transaction.findImportActor(ACTOR_ID);
@@ -63,7 +67,11 @@ describe('PostgresTatoebaImportPreflightRepository', () => {
       .mockRejectedValueOnce(new Error('connection dropped'));
     const client = fakeClient(query);
     const pool = { connect: async () => client };
-    const repository = new PostgresTatoebaImportPreflightRepository(pool, 'congdongngonngu_test');
+    const repository = new PostgresTatoebaImportPreflightRepository(
+      pool,
+      'congdongngonngu_test',
+      'readonly_test',
+    );
 
     await expect(repository.withReadOnlyTransaction(async (transaction) => {
       await transaction.findImportActor(ACTOR_ID);
@@ -79,10 +87,35 @@ describe('PostgresTatoebaImportPreflightRepository', () => {
       .mockResolvedValueOnce({ rows: [{ database_name: 'production', database_user: 'app', server_version: 'PostgreSQL 16' }] });
     const client = fakeClient(query);
     const pool = { connect: async () => client };
-    const repository = new PostgresTatoebaImportPreflightRepository(pool, 'congdongngonngu_test');
+    const repository = new PostgresTatoebaImportPreflightRepository(
+      pool,
+      'congdongngonngu_test',
+      'readonly_test',
+    );
 
     await expect(repository.withReadOnlyTransaction(async () => undefined))
-      .rejects.toMatchObject({ code: 'TATOEBA_IMPORT_TEST_TARGET_MISMATCH' });
+      .rejects.toMatchObject({ code: 'TATOEBA_IMPORT_DATABASE_NAME_MISMATCH' });
     expect(query).toHaveBeenLastCalledWith(PREFLIGHT_SQL.rollback);
+    expect(query.mock.calls).not.toContainEqual([PREFLIGHT_SQL.actor, [ACTOR_ID]]);
+  });
+
+  it('rejects an unexpected database user before actor/license reads', async () => {
+    const query = jest.fn<QueryFn>().mockResolvedValue({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ database_name: 'congdongngonngu_test', database_user: 'app', server_version: 'PostgreSQL 16' }] });
+    const client = fakeClient(query);
+    const pool = { connect: async () => client };
+    const repository = new PostgresTatoebaImportPreflightRepository(
+      pool,
+      'congdongngonngu_test',
+      'readonly_test',
+    );
+
+    await expect(repository.withReadOnlyTransaction(async (transaction) => {
+      await transaction.findImportActor(ACTOR_ID);
+    })).rejects.toMatchObject({ code: 'TATOEBA_IMPORT_DATABASE_USER_MISMATCH' });
+    expect(query).toHaveBeenLastCalledWith(PREFLIGHT_SQL.rollback);
+    expect(query.mock.calls).not.toContainEqual([PREFLIGHT_SQL.actor, [ACTOR_ID]]);
   });
 });

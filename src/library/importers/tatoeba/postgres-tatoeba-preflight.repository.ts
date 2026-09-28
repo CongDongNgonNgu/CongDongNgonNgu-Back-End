@@ -6,6 +6,7 @@ import {
 } from './tatoeba-preflight.contract';
 import {
   TATOEBA_IMPORT_EXPECTED_DATABASE_ENV,
+  TATOEBA_IMPORT_EXPECTED_DATABASE_USER_ENV,
   TATOEBA_PREFLIGHT_CONNECTION_TIMEOUT_MS,
   TATOEBA_PREFLIGHT_STATEMENT_TIMEOUT_MS,
   type TatoebaImportActorRecord,
@@ -14,6 +15,7 @@ import {
   type TatoebaImportPreflightTransaction,
   type TatoebaLibraryLicenseKey,
 } from './tatoeba-preflight.types';
+import type { TatoebaPreflightDatabaseTarget } from './tatoeba-preflight.target';
 
 export const PREFLIGHT_SQL = {
   begin: 'BEGIN READ ONLY',
@@ -92,6 +94,7 @@ export class PostgresTatoebaImportPreflightRepository implements TatoebaImportPr
   constructor(
     private readonly pool: QueryablePool,
     private readonly expectedDatabaseName: string,
+    private readonly expectedDatabaseUser: string,
   ) {}
 
   async withReadOnlyTransaction<T>(
@@ -99,8 +102,14 @@ export class PostgresTatoebaImportPreflightRepository implements TatoebaImportPr
   ): Promise<T> {
     if (!this.expectedDatabaseName) {
       throw preflightError(
-        'TATOEBA_IMPORT_TEST_TARGET_UNVERIFIED',
+        'TATOEBA_IMPORT_EXPECTED_DATABASE_REQUIRED',
         `${TATOEBA_IMPORT_EXPECTED_DATABASE_ENV} is required for TEST target verification.`,
+      );
+    }
+    if (!this.expectedDatabaseUser) {
+      throw preflightError(
+        'TATOEBA_IMPORT_EXPECTED_DATABASE_USER_REQUIRED',
+        `${TATOEBA_IMPORT_EXPECTED_DATABASE_USER_ENV} is required for TEST target verification.`,
       );
     }
 
@@ -115,8 +124,14 @@ export class PostgresTatoebaImportPreflightRepository implements TatoebaImportPr
       const targetRow = readRows(targetResult as { rows: Array<Record<string, unknown>> })[0];
       if (String(targetRow?.database_name ?? '') !== this.expectedDatabaseName) {
         throw preflightError(
-          'TATOEBA_IMPORT_TEST_TARGET_MISMATCH',
-          'The connected database is not the explicitly expected TEST target.',
+          'TATOEBA_IMPORT_DATABASE_NAME_MISMATCH',
+          'The connected database name is not the explicitly expected TEST database.',
+        );
+      }
+      if (String(targetRow?.database_user ?? '') !== this.expectedDatabaseUser) {
+        throw preflightError(
+          'TATOEBA_IMPORT_DATABASE_USER_MISMATCH',
+          'The connected database user is not the explicitly expected TEST user.',
         );
       }
 
@@ -139,17 +154,21 @@ export interface TatoebaPreflightRepositoryHandle {
 }
 
 export function createPostgresTatoebaImportPreflightRepository(
-  databaseUrl: string,
-  expectedDatabaseName: string,
+  target: TatoebaPreflightDatabaseTarget,
 ): TatoebaPreflightRepositoryHandle {
   const pool = new Pool({
-    connectionString: databaseUrl,
+    connectionString: target.databaseUrl,
     max: 1,
     connectionTimeoutMillis: TATOEBA_PREFLIGHT_CONNECTION_TIMEOUT_MS,
     idleTimeoutMillis: TATOEBA_PREFLIGHT_CONNECTION_TIMEOUT_MS,
+    ...(target.ssl === undefined ? {} : { ssl: target.ssl }),
   });
   return {
-    repository: new PostgresTatoebaImportPreflightRepository(pool, expectedDatabaseName),
+    repository: new PostgresTatoebaImportPreflightRepository(
+      pool,
+      target.expectedDatabaseName,
+      target.expectedDatabaseUser,
+    ),
     close: () => pool.end(),
   };
 }

@@ -6,6 +6,7 @@ import {
 } from './library-import-tatoeba-preflight';
 import type { TatoebaImportPreflightRepository } from '../library/importers/tatoeba/tatoeba-preflight.types';
 import type { TatoebaPreflightRepositoryHandle } from '../library/importers/tatoeba/postgres-tatoeba-preflight.repository';
+import type { TatoebaPreflightDatabaseTarget } from '../library/importers/tatoeba/tatoeba-preflight.target';
 
 const ACTOR_ID = '00000000-0000-4000-8000-000000000001';
 
@@ -50,7 +51,7 @@ describe('Tatoeba preflight CLI boundary', () => {
 
   it('invokes the preflight only after valid TEST/actor arguments and never accepts a DB URL argument', async () => {
     const createRepository = jest.fn(
-      (_databaseUrl: string, _expectedDatabaseName: string): TatoebaPreflightRepositoryHandle => ({
+      (_target: TatoebaPreflightDatabaseTarget): TatoebaPreflightRepositoryHandle => ({
         repository: passingRepository(),
         close: async () => undefined,
       }),
@@ -63,24 +64,29 @@ describe('Tatoeba preflight CLI boundary', () => {
       '--actor-user-id', ACTOR_ID,
     ], output, error, {
       env: {
-        TATOEBA_IMPORT_DATABASE_URL: 'postgresql://test.example/db',
+        TATOEBA_IMPORT_DATABASE_URL: 'postgresql://readonly:secret@test.example/db?sslmode=require',
+        TATOEBA_IMPORT_EXPECTED_DATABASE_HOST: 'TEST.EXAMPLE',
         TATOEBA_IMPORT_EXPECTED_DATABASE_NAME: 'congdongngonngu_test',
+        TATOEBA_IMPORT_EXPECTED_DATABASE_USER: 'readonly_test',
       },
       createRepository,
     });
 
     expect(exitCode).toBe(0);
-    expect(createRepository).toHaveBeenCalledWith(
-      'postgresql://test.example/db',
-      'congdongngonngu_test',
-    );
+    expect(createRepository).toHaveBeenCalledWith(expect.objectContaining({
+      databaseUrl: 'postgresql://readonly:secret@test.example/db?sslmode=require',
+      expectedDatabaseHost: 'test.example',
+      expectedDatabaseName: 'congdongngonngu_test',
+      expectedDatabaseUser: 'readonly_test',
+      hostname: 'test.example',
+    }));
     expect(output.write).toHaveBeenCalledWith(expect.stringContaining('"status":"PASS"'));
     expect(error.write).not.toHaveBeenCalled();
   });
 
   it('fails before opening a pool when the dedicated DB URL or target identity is absent', async () => {
     const createRepository = jest.fn(
-      (_databaseUrl: string, _expectedDatabaseName: string): TatoebaPreflightRepositoryHandle => {
+      (_target: TatoebaPreflightDatabaseTarget): TatoebaPreflightRepositoryHandle => {
         throw new Error('should not be called');
       },
     );
@@ -98,7 +104,7 @@ describe('Tatoeba preflight CLI boundary', () => {
     const missingTarget = await executeTatoebaPreflightCli([
       '--environment', 'TEST', '--actor-user-id', ACTOR_ID,
     ], { write: jest.fn() }, error, {
-      env: { TATOEBA_IMPORT_DATABASE_URL: 'postgresql://secret:password@example.test/db' },
+      env: { TATOEBA_IMPORT_DATABASE_URL: 'postgresql://secret:password@example.test/db?sslmode=require' },
       createRepository,
     });
     expect(missingTarget).toBe(2);
@@ -109,13 +115,15 @@ describe('Tatoeba preflight CLI boundary', () => {
   it('sanitizes DB failures and never prints the connection string', async () => {
     const output = { write: jest.fn() };
     const error = { write: jest.fn() };
-    const databaseUrl = 'postgresql://secret:password@example.test/db';
+    const databaseUrl = 'postgresql://secret:password@example.test/db?sslmode=require';
     const exitCode = await executeTatoebaPreflightCli([
       '--environment', 'TEST', '--actor-user-id', ACTOR_ID,
     ], output, error, {
       env: {
         TATOEBA_IMPORT_DATABASE_URL: databaseUrl,
+        TATOEBA_IMPORT_EXPECTED_DATABASE_HOST: 'example.test',
         TATOEBA_IMPORT_EXPECTED_DATABASE_NAME: 'congdongngonngu_test',
+        TATOEBA_IMPORT_EXPECTED_DATABASE_USER: 'readonly_test',
       },
       createRepository: (): TatoebaPreflightRepositoryHandle => ({
         repository: {
@@ -130,5 +138,124 @@ describe('Tatoeba preflight CLI boundary', () => {
     expect(exitCode).toBe(2);
     expect(error.write).toHaveBeenCalledWith(expect.stringContaining('TATOEBA_IMPORT_PREFLIGHT_DB_UNAVAILABLE'));
     expect(error.write.mock.calls.flat().join('\n')).not.toContain(databaseUrl);
+  });
+
+  it('rejects every incomplete or mismatched target before creating a repository', async () => {
+    const createRepository = jest.fn(
+      (_target: TatoebaPreflightDatabaseTarget): TatoebaPreflightRepositoryHandle => {
+        throw new Error('should not be called');
+      },
+    );
+    const cases: Array<{ name: string; env: NodeJS.ProcessEnv; argv?: string[]; code: string }> = [
+      {
+        name: 'missing expected host',
+        env: {
+          TATOEBA_IMPORT_DATABASE_URL: 'postgresql://test.example/db?sslmode=require',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_NAME: 'congdongngonngu_test',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_USER: 'readonly_test',
+        },
+        code: 'TATOEBA_IMPORT_EXPECTED_HOST_REQUIRED',
+      },
+      {
+        name: 'host mismatch',
+        env: {
+          TATOEBA_IMPORT_DATABASE_URL: 'postgresql://prod.example/neondb?sslmode=require',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_HOST: 'test.example',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_NAME: 'neondb',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_USER: 'readonly_test',
+        },
+        code: 'TATOEBA_IMPORT_DATABASE_HOST_MISMATCH',
+      },
+      {
+        name: 'malformed URL',
+        env: {
+          TATOEBA_IMPORT_DATABASE_URL: 'not a postgres URL',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_HOST: 'test.example',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_NAME: 'congdongngonngu_test',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_USER: 'readonly_test',
+        },
+        code: 'TATOEBA_IMPORT_DATABASE_URL_INVALID',
+      },
+      {
+        name: 'missing expected database name',
+        env: {
+          TATOEBA_IMPORT_DATABASE_URL: 'postgresql://test.example/db?sslmode=require',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_HOST: 'test.example',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_USER: 'readonly_test',
+        },
+        code: 'TATOEBA_IMPORT_EXPECTED_DATABASE_REQUIRED',
+      },
+      {
+        name: 'missing expected database user',
+        env: {
+          TATOEBA_IMPORT_DATABASE_URL: 'postgresql://test.example/db?sslmode=require',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_HOST: 'test.example',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_NAME: 'congdongngonngu_test',
+        },
+        code: 'TATOEBA_IMPORT_EXPECTED_DATABASE_USER_REQUIRED',
+      },
+      {
+        name: 'production environment',
+        env: {
+          TATOEBA_IMPORT_DATABASE_URL: 'postgresql://prod.example/neondb?sslmode=require',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_HOST: 'prod.example',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_NAME: 'neondb',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_USER: 'readonly_test',
+        },
+        argv: ['--environment', 'PRODUCTION', '--actor-user-id', ACTOR_ID],
+        code: 'TATOEBA_IMPORT_PRODUCTION_UNSUPPORTED',
+      },
+      {
+        name: 'invalid actor UUID',
+        env: {
+          TATOEBA_IMPORT_DATABASE_URL: 'postgresql://test.example/db?sslmode=require',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_HOST: 'test.example',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_NAME: 'congdongngonngu_test',
+          TATOEBA_IMPORT_EXPECTED_DATABASE_USER: 'readonly_test',
+        },
+        argv: ['--environment', 'TEST', '--actor-user-id', 'not-a-uuid'],
+        code: 'TATOEBA_IMPORT_ACTOR_ID_INVALID',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const error = { write: jest.fn() };
+      const exitCode = await executeTatoebaPreflightCli(
+        testCase.argv ?? ['--environment', 'TEST', '--actor-user-id', ACTOR_ID],
+        { write: jest.fn() },
+        error,
+        { env: testCase.env, createRepository },
+      );
+      expect(exitCode).toBe(2);
+      expect(error.write.mock.calls.flat().join('\n')).toContain(testCase.code);
+    }
+
+    expect(createRepository).not.toHaveBeenCalled();
+  });
+
+  it('rejects a same-name production target before network access', async () => {
+    const createRepository = jest.fn(
+      (_target: TatoebaPreflightDatabaseTarget): TatoebaPreflightRepositoryHandle => {
+        throw new Error('should not be called');
+      },
+    );
+    const error = { write: jest.fn() };
+
+    const exitCode = await executeTatoebaPreflightCli([
+      '--environment', 'TEST', '--actor-user-id', ACTOR_ID,
+    ], { write: jest.fn() }, error, {
+      env: {
+        TATOEBA_IMPORT_DATABASE_URL: 'postgresql://readonly:password@prod.example/neondb?sslmode=require',
+        TATOEBA_IMPORT_EXPECTED_DATABASE_HOST: 'test.example',
+        TATOEBA_IMPORT_EXPECTED_DATABASE_NAME: 'neondb',
+        TATOEBA_IMPORT_EXPECTED_DATABASE_USER: 'readonly_test',
+      },
+      createRepository,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(error.write.mock.calls.flat().join('\n')).toContain('TATOEBA_IMPORT_DATABASE_HOST_MISMATCH');
+    expect(error.write.mock.calls.flat().join('\n')).not.toContain('password');
+    expect(createRepository).not.toHaveBeenCalled();
   });
 });

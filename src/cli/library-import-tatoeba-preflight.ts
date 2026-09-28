@@ -9,8 +9,14 @@ import {
 } from '../library/importers/tatoeba/postgres-tatoeba-preflight.repository';
 import { runTatoebaImportPreflight } from '../library/importers/tatoeba/tatoeba-preflight.service';
 import {
+  parseTatoebaPreflightDatabaseTarget,
+  type TatoebaPreflightDatabaseTarget,
+} from '../library/importers/tatoeba/tatoeba-preflight.target';
+import {
   TATOEBA_IMPORT_DATABASE_URL_ENV,
+  TATOEBA_IMPORT_EXPECTED_DATABASE_HOST_ENV,
   TATOEBA_IMPORT_EXPECTED_DATABASE_ENV,
+  TATOEBA_IMPORT_EXPECTED_DATABASE_USER_ENV,
   TATOEBA_IMPORT_TEST_ENVIRONMENT,
   type TatoebaImportEnvironment,
   type TatoebaImportPreflightRepository,
@@ -27,10 +33,7 @@ interface CliWriter {
 
 export interface TatoebaPreflightCliDependencies {
   env?: NodeJS.ProcessEnv;
-  createRepository?: (
-    databaseUrl: string,
-    expectedDatabaseName: string,
-  ) => TatoebaPreflightRepositoryHandle;
+  createRepository?: (target: TatoebaPreflightDatabaseTarget) => TatoebaPreflightRepositoryHandle;
 }
 
 const VALUE_FLAGS = new Set(['--environment', '--actor-user-id']);
@@ -101,28 +104,16 @@ export async function executeTatoebaPreflightCli(
   }
 
   const environment = dependencies.env ?? process.env;
-  const databaseUrl = environment[TATOEBA_IMPORT_DATABASE_URL_ENV];
-  if (!databaseUrl) {
-    writeCliError(errorOutput, preflightError(
-      'TATOEBA_IMPORT_DATABASE_URL_REQUIRED',
-      `${TATOEBA_IMPORT_DATABASE_URL_ENV} is required for TEST preflight.`,
-    ));
-    return 2;
-  }
-  if (!/^postgres(?:ql)?:\/\//iu.test(databaseUrl)) {
-    writeCliError(errorOutput, preflightError(
-      'TATOEBA_IMPORT_DATABASE_URL_INVALID',
-      `${TATOEBA_IMPORT_DATABASE_URL_ENV} must be a PostgreSQL connection URL.`,
-    ));
-    return 2;
-  }
-
-  const expectedDatabaseName = environment[TATOEBA_IMPORT_EXPECTED_DATABASE_ENV];
-  if (!expectedDatabaseName) {
-    writeCliError(errorOutput, preflightError(
-      'TATOEBA_IMPORT_TEST_TARGET_UNVERIFIED',
-      `${TATOEBA_IMPORT_EXPECTED_DATABASE_ENV} is required to prove the TEST target.`,
-    ));
+  let target: TatoebaPreflightDatabaseTarget;
+  try {
+    target = parseTatoebaPreflightDatabaseTarget(
+      environment[TATOEBA_IMPORT_DATABASE_URL_ENV],
+      environment[TATOEBA_IMPORT_EXPECTED_DATABASE_HOST_ENV],
+      environment[TATOEBA_IMPORT_EXPECTED_DATABASE_ENV],
+      environment[TATOEBA_IMPORT_EXPECTED_DATABASE_USER_ENV],
+    );
+  } catch (error) {
+    writeCliError(errorOutput, error);
     return 2;
   }
 
@@ -130,7 +121,7 @@ export async function executeTatoebaPreflightCli(
     ?? createPostgresTatoebaImportPreflightRepository;
   let handle: TatoebaPreflightRepositoryHandle | null = null;
   try {
-    handle = createRepository(databaseUrl, expectedDatabaseName);
+    handle = createRepository(target);
     const result = await runTatoebaImportPreflight(parsed, handle.repository);
     output.write(`${JSON.stringify(result)}\n`);
     return result.status === 'PASS' ? 0 : 2;
