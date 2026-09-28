@@ -38,6 +38,7 @@ const KNOWN_HEADERS = {
 async function* readUtf8Lines(
   filePath: string,
   maxLineLength: number,
+  artifact: TatoebaSnapshotArtifact['kind'],
 ): AsyncGenerator<TatoebaLine, void, void> {
   const stream = createReadStream(filePath, { highWaterMark: 64 * 1024 });
   const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -66,7 +67,7 @@ async function* readUtf8Lines(
         lineNumber += 1;
         if (line.length > maxLineLength) {
           throw tatoebaError('TATOEBA_LINE_TOO_LONG', 'Tatoeba export row exceeds the configured line bound.', {
-            filePath,
+            artifact,
             lineNumber,
           });
         }
@@ -75,7 +76,7 @@ async function* readUtf8Lines(
       }
       if (buffer.length > maxLineLength) {
         throw tatoebaError('TATOEBA_LINE_TOO_LONG', 'Tatoeba export row exceeds the configured line bound.', {
-          filePath,
+          artifact,
           lineNumber: lineNumber + 1,
         });
       }
@@ -120,11 +121,11 @@ function normalizedOptions(options: TatoebaReaderOptions): Required<TatoebaReade
   return { maxRows, maxLineLength, onMalformed: options.onMalformed ?? (() => undefined) };
 }
 
-function parseFields(line: TatoebaLine, filePath: string, expectedColumns: number): string[] {
+function parseFields(line: TatoebaLine, artifact: TatoebaSnapshotArtifact['kind'], expectedColumns: number): string[] {
   const fields = line.line.split('\t');
   if (fields.length !== expectedColumns || fields.some((field, index) => index < 3 && field.length === 0)) {
     throw tatoebaError('TATOEBA_MALFORMED_BULK_ROW', 'Tatoeba export row has an unexpected shape.', {
-      filePath,
+      artifact,
       lineNumber: line.lineNumber,
       expectedColumns,
       actualColumns: fields.length,
@@ -138,13 +139,13 @@ function isKnownHeader(fields: readonly string[], kind: keyof typeof KNOWN_HEADE
   return fields.length === header.length && fields.every((field, index) => field === header[index]);
 }
 
-function parseId(value: string, filePath: string, lineNumber: number): string {
+function parseId(value: string, artifact: TatoebaSnapshotArtifact['kind'], lineNumber: number): string {
   try {
     return canonicalSentenceId(value);
   } catch (error) {
     if (error instanceof TatoebaImportError) {
       throw tatoebaError('TATOEBA_MALFORMED_BULK_ROW', 'Tatoeba export row has an invalid sentence ID.', {
-        filePath,
+        artifact,
         lineNumber,
       });
     }
@@ -162,21 +163,20 @@ export async function* readDetailedSentenceRows(
 ): AsyncGenerator<TatoebaBulkSentenceRow, void, void> {
   const bounds = normalizedOptions(options);
   let parsedRows = 0;
-  for await (const line of readUtf8Lines(filePath, bounds.maxLineLength)) {
+  for await (const line of readUtf8Lines(filePath, bounds.maxLineLength, 'sentences_detailed')) {
     const fields = line.line.split('\t');
     if (line.lineNumber === 1 && isKnownHeader(fields, 'sentencesDetailed')) continue;
     parsedRows += 1;
     try {
-      const row = parseFields(line, filePath, TATOEBA_EXPORT_COLUMNS.sentencesDetailed);
+      const row = parseFields(line, 'sentences_detailed', TATOEBA_EXPORT_COLUMNS.sentencesDetailed);
       yield {
-        sentenceId: parseId(row[0], filePath, line.lineNumber),
+        sentenceId: parseId(row[0], 'sentences_detailed', line.lineNumber),
         tatoebaLanguage: row[1],
         text: row[2],
         username: nullableUsername(row[3]),
         dateAdded: row[4],
         dateLastModified: row[5],
         lineNumber: line.lineNumber,
-        filePath,
       };
     } catch (error) {
       if (error instanceof TatoebaImportError && error.code === 'TATOEBA_MALFORMED_BULK_ROW') {
@@ -195,19 +195,18 @@ export async function* readCc0SentenceRows(
 ): AsyncGenerator<TatoebaCc0SentenceRow, void, void> {
   const bounds = normalizedOptions(options);
   let parsedRows = 0;
-  for await (const line of readUtf8Lines(filePath, bounds.maxLineLength)) {
+  for await (const line of readUtf8Lines(filePath, bounds.maxLineLength, 'sentences_cc0')) {
     const fields = line.line.split('\t');
     if (line.lineNumber === 1 && isKnownHeader(fields, 'sentencesCc0')) continue;
     parsedRows += 1;
     try {
-      const row = parseFields(line, filePath, TATOEBA_EXPORT_COLUMNS.sentencesCc0);
+      const row = parseFields(line, 'sentences_cc0', TATOEBA_EXPORT_COLUMNS.sentencesCc0);
       yield {
-        sentenceId: parseId(row[0], filePath, line.lineNumber),
+        sentenceId: parseId(row[0], 'sentences_cc0', line.lineNumber),
         tatoebaLanguage: row[1],
         text: row[2],
         dateLastModified: row[3],
         lineNumber: line.lineNumber,
-        filePath,
       };
     } catch (error) {
       if (error instanceof TatoebaImportError && error.code === 'TATOEBA_MALFORMED_BULK_ROW') {
@@ -226,17 +225,16 @@ export async function* readLinkRows(
 ): AsyncGenerator<TatoebaLinkRow, void, void> {
   const bounds = normalizedOptions(options);
   let parsedRows = 0;
-  for await (const line of readUtf8Lines(filePath, bounds.maxLineLength)) {
+  for await (const line of readUtf8Lines(filePath, bounds.maxLineLength, 'links')) {
     const fields = line.line.split('\t');
     if (line.lineNumber === 1 && isKnownHeader(fields, 'links')) continue;
     parsedRows += 1;
     try {
-      const row = parseFields(line, filePath, TATOEBA_EXPORT_COLUMNS.links);
+      const row = parseFields(line, 'links', TATOEBA_EXPORT_COLUMNS.links);
       yield {
-        sentenceId: parseId(row[0], filePath, line.lineNumber),
-        translationId: parseId(row[1], filePath, line.lineNumber),
+        sentenceId: parseId(row[0], 'links', line.lineNumber),
+        translationId: parseId(row[1], 'links', line.lineNumber),
         lineNumber: line.lineNumber,
-        filePath,
       };
     } catch (error) {
       if (error instanceof TatoebaImportError && error.code === 'TATOEBA_MALFORMED_BULK_ROW') {
@@ -254,7 +252,7 @@ export async function hashTatoebaArtifact(
   filePath: string,
 ): Promise<TatoebaSnapshotArtifact> {
   const stat = await fs.stat(filePath);
-  if (!stat.isFile()) throw tatoebaError('TATOEBA_MALFORMED_BULK_ROW', 'Tatoeba artifact path is not a file.', { filePath });
+  if (!stat.isFile()) throw tatoebaError('TATOEBA_MALFORMED_BULK_ROW', 'Tatoeba artifact path is not a file.', { artifact: kind });
   const hash = createHash('sha256');
   const stream = createReadStream(filePath, { highWaterMark: 64 * 1024 });
   try {
@@ -265,7 +263,6 @@ export async function hashTatoebaArtifact(
   return {
     kind,
     fileName: basename(filePath),
-    filePath,
     sizeBytes: stat.size,
     sha256: hash.digest('hex'),
   };

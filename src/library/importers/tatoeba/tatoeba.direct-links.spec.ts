@@ -19,14 +19,14 @@ function candidate(sentenceId: string, projectLanguage: TatoebaValidatedSentence
     sourceIdentity: `TATOEBA:SENTENCE:${sentenceId}`,
     attribution: `Tatoeba sentence ${sentenceId}.`,
     importBatch: 'test-batch',
-    snapshot: { snapshotId: 'test', retrievedAt: '2026-09-28T00:00:00.000Z', artifacts: [] },
+    snapshotId: 'test',
     apiCheckedAt: '2026-09-28T00:00:01.000Z',
     transformationNote: null,
   };
 }
 
 function link(sentenceId: string, translationId: string, lineNumber: number): TatoebaLinkRow {
-  return { sentenceId, translationId, lineNumber, filePath: 'links.csv' };
+  return { sentenceId, translationId, lineNumber };
 }
 
 const viToEn: TatoebaConfiguredDirection[] = [{ sourceLanguage: 'vi', targetLanguage: 'en' }];

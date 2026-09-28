@@ -25,7 +25,6 @@ export interface TatoebaBulkSentenceRow {
   dateAdded: string;
   dateLastModified: string;
   lineNumber: number;
-  filePath: string;
 }
 
 export interface TatoebaCc0SentenceRow {
@@ -34,14 +33,12 @@ export interface TatoebaCc0SentenceRow {
   text: string;
   dateLastModified: string;
   lineNumber: number;
-  filePath: string;
 }
 
 export interface TatoebaLinkRow {
   sentenceId: string;
   translationId: string;
   lineNumber: number;
-  filePath: string;
 }
 
 export interface TatoebaApiSentenceFacts {
@@ -86,14 +83,13 @@ export interface TatoebaApiClientOptions {
 export interface TatoebaSnapshotArtifact {
   kind: 'sentences_detailed' | 'sentences_cc0' | 'links';
   fileName: string;
-  filePath: string;
   sizeBytes: number;
   sha256: string;
 }
 
 export interface TatoebaSnapshotMetadata {
   snapshotId: string;
-  retrievedAt: string;
+  snapshotRetrievedAt: string | null;
   artifacts: TatoebaSnapshotArtifact[];
 }
 
@@ -108,7 +104,7 @@ export interface TatoebaValidatedSentenceCandidate {
   sourceIdentity: string;
   attribution: string;
   importBatch: string;
-  snapshot: TatoebaSnapshotMetadata;
+  snapshotId: string;
   apiCheckedAt: string;
   transformationNote: null;
 }
@@ -149,6 +145,7 @@ export interface TatoebaDryRunReport {
   reportVersion: 1;
   mode: 'DRY_RUN';
   dbPreflight: 'SKIPPED_08D3A';
+  runStartedAt: string;
   snapshot: TatoebaSnapshotMetadata;
   configuration: {
     languages: TatoebaProjectLanguage[];
@@ -197,6 +194,11 @@ export interface TatoebaDryRunReport {
     sentences: TatoebaValidatedSentenceCandidate[];
     translations: TatoebaTranslationCandidate[];
   };
+  sentenceCandidatesTruncated: boolean;
+  sentenceCandidatesOmitted: number;
+  translationCandidatesTruncated: boolean;
+  translationCandidatesOmitted: number;
   quarantine: TatoebaQuarantineEntry[];
   quarantineTruncated: boolean;
+  quarantineOmitted: number;
 }

@@ -16,6 +16,7 @@ describe('Tatoeba 08D3A zero-write architecture', () => {
       'tatoeba.errors.ts',
       'tatoeba.identities.ts',
       'tatoeba.languages.ts',
+      'tatoeba.timestamps.ts',
       'tatoeba.types.ts',
       'tatoeba.validation.ts',
     ];

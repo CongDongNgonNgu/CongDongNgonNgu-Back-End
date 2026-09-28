@@ -21,6 +21,7 @@ export type TatoebaErrorCode =
   | 'TATOEBA_API_RESPONSE_TOO_LARGE'
   | 'TATOEBA_API_HOST_REJECTED'
   | 'TATOEBA_API_ID_INVALID'
+  | 'TATOEBA_REPORT_BOUNDS_EXCEEDED'
   | 'TATOEBA_REPORT_WRITE_FAILED'
   | 'TATOEBA_IMPORT_ARGUMENT_INVALID'
   | 'TATOEBA_IMPORT_WRITE_MODE_NOT_IMPLEMENTED';
@@ -42,4 +43,19 @@ export function tatoebaError(
   details?: Record<string, string | number | boolean | null>,
 ): TatoebaImportError {
   return new TatoebaImportError(code, message, details);
+}
+
+export function safeTatoebaDetails(
+  details: Record<string, string | number | boolean | null>,
+): Record<string, string | number | boolean | null> {
+  const safe: Record<string, string | number | boolean | null> = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (/path|filename/i.test(key)) continue;
+    if (
+      typeof value === 'string' &&
+      (/^(?:[A-Za-z]:[\\/]|[\\/])/.test(value) || value.includes('\\'))
+    ) continue;
+    safe[key] = value;
+  }
+  return safe;
 }

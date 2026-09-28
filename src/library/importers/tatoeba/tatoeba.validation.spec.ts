@@ -10,7 +10,7 @@ import type {
 
 const snapshot: TatoebaSnapshotMetadata = {
   snapshotId: 'TATOEBA-SNAPSHOT-test',
-  retrievedAt: '2026-09-28T00:00:00.000Z',
+  snapshotRetrievedAt: null,
   artifacts: [],
 };
 
@@ -23,7 +23,6 @@ function bulk(overrides: Partial<TatoebaBulkSentenceRow> = {}): TatoebaBulkSente
     dateAdded: '2026-01-01',
     dateLastModified: '2026-01-02',
     lineNumber: 1,
-    filePath: 'sentences_detailed.csv',
     ...overrides,
   };
 }
@@ -44,6 +43,68 @@ function api(overrides: Partial<TatoebaApiSentenceCheck['facts']> = {}): Tatoeba
 }
 
 describe('Tatoeba sentence validation and attribution', () => {
+  it('requires exact CC BY owner agreement between bulk and API snapshots', () => {
+    const cases = [
+      {
+        name: 'bulk owner missing while API owner is present',
+        bulk: bulk({ username: null }),
+        api: api({ owner: 'alice' }),
+        expected: 'TATOEBA_OWNER_MISMATCH',
+      },
+      {
+        name: 'bulk owner present while API owner is missing',
+        bulk: bulk({ username: 'alice' }),
+        api: api({ owner: null }),
+        expected: 'TATOEBA_OWNER_MISMATCH',
+      },
+      {
+        name: 'both owners missing',
+        bulk: bulk({ username: null }),
+        api: api({ owner: null }),
+        expected: 'TATOEBA_OWNER_REQUIRED',
+      },
+      {
+        name: 'both owners agree',
+        bulk: bulk({ username: 'alice' }),
+        api: api({ owner: 'alice' }),
+        expected: 'PASS',
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const result = validateTatoebaSentenceCandidate({
+        bulk: testCase.bulk,
+        api: testCase.api,
+        cc0SentenceIds: new Set(),
+        snapshot,
+        importBatch: 'tatoeba-dry-run-test',
+      });
+
+      if (testCase.expected === 'PASS') expect(result.ok).toBe(true);
+      else expect(result).toMatchObject({ ok: false, reason: testCase.expected });
+    }
+  });
+
+  it('allows a null owner for CC0 but rejects disagreement when both CC0 owners are known', () => {
+    const nullOwner = validateTatoebaSentenceCandidate({
+      bulk: bulk({ username: null }),
+      api: api({ license: 'CC0 1.0', owner: null }),
+      cc0SentenceIds: new Set(['123']),
+      snapshot,
+      importBatch: 'tatoeba-dry-run-test',
+    });
+    const disagreement = validateTatoebaSentenceCandidate({
+      bulk: bulk({ username: 'alice' }),
+      api: api({ license: 'CC0 1.0', owner: 'bob' }),
+      cc0SentenceIds: new Set(['123']),
+      snapshot,
+      importBatch: 'tatoeba-dry-run-test',
+    });
+
+    expect(nullOwner.ok).toBe(true);
+    expect(disagreement).toMatchObject({ ok: false, reason: 'TATOEBA_OWNER_MISMATCH' });
+  });
+
   it('accepts a matching CC BY sentence and builds safe attribution without a false modification notice', () => {
     const result = validateTatoebaSentenceCandidate({
       bulk: bulk(),

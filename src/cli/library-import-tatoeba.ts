@@ -5,6 +5,7 @@ import {
   type TatoebaDryRunOptions,
 } from '../library/importers/tatoeba/tatoeba.dry-run';
 import { parseConfiguredDirections, parseConfiguredLanguages } from '../library/importers/tatoeba/tatoeba.languages';
+import { validateSnapshotRetrievedAt } from '../library/importers/tatoeba/tatoeba.timestamps';
 
 export interface ParsedTatoebaCliArgs extends TatoebaDryRunOptions {
   dryRun: true;
@@ -27,6 +28,7 @@ const VALUE_FLAGS = new Set([
   '--api-timeout-ms',
   '--api-retries',
   '--api-max-response-bytes',
+  '--snapshot-retrieved-at',
   '--report',
 ]);
 
@@ -90,6 +92,9 @@ export function parseTatoebaCliArgs(argv: readonly string[]): ParsedTatoebaCliAr
     apiTimeoutMs: values.has('--api-timeout-ms') ? parsePositiveInteger('--api-timeout-ms', values.get('--api-timeout-ms')!) : undefined,
     apiRetries: values.has('--api-retries') ? parsePositiveInteger('--api-retries', values.get('--api-retries')!, true) : undefined,
     apiMaxResponseBytes: values.has('--api-max-response-bytes') ? parsePositiveInteger('--api-max-response-bytes', values.get('--api-max-response-bytes')!) : undefined,
+    snapshotRetrievedAt: values.has('--snapshot-retrieved-at')
+      ? validateSnapshotRetrievedAt(values.get('--snapshot-retrieved-at')!)
+      : null,
     reportPath: values.get('--report') ?? null,
   };
 }

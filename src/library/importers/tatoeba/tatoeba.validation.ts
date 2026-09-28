@@ -7,7 +7,6 @@ import type {
   TatoebaApiSentenceCheck,
   TatoebaBulkSentenceRow,
   TatoebaLicense,
-  TatoebaSnapshotMetadata,
   TatoebaValidatedSentenceCandidate,
 } from './tatoeba.types';
 
@@ -15,7 +14,7 @@ export interface TatoebaSentenceValidationInput {
   bulk: TatoebaBulkSentenceRow;
   api: TatoebaApiSentenceCheck;
   cc0SentenceIds: ReadonlySet<string>;
-  snapshot: TatoebaSnapshotMetadata;
+  snapshot: { snapshotId: string };
   importBatch: string;
 }
 
@@ -65,15 +64,27 @@ export function validateTatoebaSentenceCandidate(
   if (input.api.facts.isUnapproved) {
     return { ok: false, reason: 'TATOEBA_UNAPPROVED', details: {} };
   }
-  if (input.bulk.username !== null && input.bulk.username !== input.api.facts.owner) {
+  if (input.api.facts.license === 'CC BY 2.0 FR') {
+    if (input.bulk.username === null && input.api.facts.owner === null) {
+      return { ok: false, reason: 'TATOEBA_OWNER_REQUIRED', details: {} };
+    }
+    if (input.bulk.username === null || input.api.facts.owner === null || input.bulk.username !== input.api.facts.owner) {
+      return {
+        ok: false,
+        reason: 'TATOEBA_OWNER_MISMATCH',
+        details: { bulkOwner: input.bulk.username, apiOwner: input.api.facts.owner },
+      };
+    }
+  } else if (
+    input.bulk.username !== null &&
+    input.api.facts.owner !== null &&
+    input.bulk.username !== input.api.facts.owner
+  ) {
     return {
       ok: false,
       reason: 'TATOEBA_OWNER_MISMATCH',
       details: { bulkOwner: input.bulk.username, apiOwner: input.api.facts.owner },
     };
-  }
-  if (input.api.facts.license === 'CC BY 2.0 FR' && input.api.facts.owner === null) {
-    return { ok: false, reason: 'TATOEBA_OWNER_REQUIRED', details: {} };
   }
   const cc0Snapshot = input.cc0SentenceIds.has(input.bulk.sentenceId);
   if (cc0Snapshot !== (input.api.facts.license === 'CC0 1.0')) {
@@ -105,7 +116,7 @@ export function validateTatoebaSentenceCandidate(
           transformationNote: null,
         }),
         importBatch: input.importBatch,
-        snapshot: input.snapshot,
+        snapshotId: input.snapshot.snapshotId,
         apiCheckedAt: input.api.checkedAt,
         transformationNote: null,
       },

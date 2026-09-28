@@ -50,6 +50,27 @@ describe('Tatoeba strict bulk readers', () => {
     await fs.rm(directory, { recursive: true, force: true });
   });
 
+  it('sanitizes malformed-row diagnostics to artifact and line, never the local path', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'tatoeba-reader-'));
+    const filePath = path.join(directory, 'sentences_detailed.csv');
+    await fs.writeFile(filePath, 'not-an-id\tvie\ttext\towner\tdate\n', 'utf8');
+    const errors = [] as unknown[];
+
+    for await (const _row of readDetailedSentenceRows(filePath, {
+      maxRows: 1,
+      onMalformed: (error) => errors.push(error),
+    })) {
+      // The malformed row is reported and skipped.
+    }
+
+    expect(errors).toHaveLength(1);
+    expect(JSON.stringify(errors)).not.toContain(directory);
+    expect(errors[0]).toMatchObject({
+      details: { artifact: 'sentences_detailed', lineNumber: 1 },
+    });
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
   it('parses CC0 membership and direct link rows without transitive expansion', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'tatoeba-reader-'));
     const cc0Path = path.join(directory, 'sentences_CC0.csv');

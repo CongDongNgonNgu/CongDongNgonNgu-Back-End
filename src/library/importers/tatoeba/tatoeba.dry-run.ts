@@ -6,15 +6,21 @@ import {
   TATOEBA_MAX_CC0_SCAN_ROWS,
   TATOEBA_MAX_API_RESPONSE_BYTES,
   TATOEBA_MAX_API_TIMEOUT_MS,
-  TATOEBA_MAX_REPORT_ROWS,
+  TATOEBA_MAX_REPORT_BYTES,
+  TATOEBA_MAX_REPORT_CANDIDATE_ROWS,
+  TATOEBA_MAX_REPORT_QUARANTINE_ROWS,
+  TATOEBA_MAX_REPORT_SENTENCE_SAMPLE_BYTES,
+  TATOEBA_MAX_REPORT_TRANSLATION_SAMPLE_BYTES,
+  TATOEBA_MAX_REPORT_QUARANTINE_SAMPLE_BYTES,
 } from './tatoeba.constants';
 import { TatoebaSentenceApiClient } from './tatoeba.api-client';
 import { hashTatoebaArtifact, readCc0SentenceRows, readDetailedSentenceRows, readLinkRows } from './tatoeba.bulk-reader';
-import { TatoebaImportError, tatoebaError } from './tatoeba.errors';
+import { safeTatoebaDetails, TatoebaImportError, tatoebaError } from './tatoeba.errors';
 import { buildTatoebaTranslationCandidates } from './tatoeba.direct-links';
 import { deterministicSnapshotId, compareSentenceIds } from './tatoeba.identities';
 import { mapTatoebaLanguage } from './tatoeba.languages';
 import { validateTatoebaSentenceCandidate } from './tatoeba.validation';
+import { validateSnapshotRetrievedAt } from './tatoeba.timestamps';
 import type {
   TatoebaApiSentenceCheck,
   TatoebaBulkSentenceRow,
@@ -22,6 +28,7 @@ import type {
   TatoebaDryRunReport,
   TatoebaQuarantineEntry,
   TatoebaSnapshotMetadata,
+  TatoebaTranslationCandidate,
   TatoebaValidatedSentenceCandidate,
 } from './tatoeba.types';
 
@@ -41,6 +48,7 @@ export interface TatoebaDryRunOptions {
   apiMaxResponseBytes?: number;
   apiClient?: Pick<TatoebaSentenceApiClient, 'getSentence'>;
   now?: () => string;
+  snapshotRetrievedAt?: string | null;
 }
 
 interface ApiOutcome {
@@ -83,6 +91,9 @@ function assertRunBounds(options: TatoebaDryRunOptions): Required<Pick<TatoebaDr
   ) {
     throw tatoebaError('TATOEBA_IMPORT_ARGUMENT_INVALID', 'Tatoeba dry-run bounds or input paths are invalid.');
   }
+  if (options.snapshotRetrievedAt !== undefined && options.snapshotRetrievedAt !== null) {
+    validateSnapshotRetrievedAt(options.snapshotRetrievedAt);
+  }
   const configuredLanguages = new Set(options.languages);
   if (configuredLanguages.size !== options.languages.length || options.languages.length === 0) {
     throw tatoebaError('TATOEBA_IMPORT_ARGUMENT_INVALID', 'Tatoeba dry-run languages must be unique and non-empty.');
@@ -113,13 +124,6 @@ async function mapWithConcurrency<T, R>(
   const workers = Array.from({ length: Math.min(concurrency, values.length) }, () => runWorker());
   await Promise.all(workers);
   return results;
-}
-
-function addQuarantine(
-  quarantine: TatoebaQuarantineEntry[],
-  entry: TatoebaQuarantineEntry,
-): void {
-  if (quarantine.length < TATOEBA_MAX_REPORT_ROWS) quarantine.push(entry);
 }
 
 function sentenceErrorCount(
@@ -183,29 +187,113 @@ function quarantineFromError(
   sourceId: string | null,
   error: TatoebaImportError,
 ): TatoebaQuarantineEntry {
-  return { kind, sourceId, relatedSourceId: null, reason: error.code, details: error.details };
+  return { kind, sourceId, relatedSourceId: null, reason: error.code, details: safeTatoebaDetails(error.details) };
+}
+
+function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, 'utf8');
+}
+
+function jsonlRecord(type: string, value: TatoebaValidatedSentenceCandidate | TatoebaTranslationCandidate | TatoebaQuarantineEntry): Record<string, unknown> {
+  return type === 'quarantine'
+    ? { type, entry: value }
+    : { type, candidate: value };
+}
+
+function reportSummary(report: TatoebaDryRunReport): Record<string, unknown> {
+  return {
+    type: 'summary',
+    reportVersion: report.reportVersion,
+    mode: report.mode,
+    dbPreflight: report.dbPreflight,
+    runStartedAt: report.runStartedAt,
+    snapshot: report.snapshot,
+    configuration: report.configuration,
+    counts: report.counts,
+    sentenceCandidatesTruncated: report.sentenceCandidatesTruncated,
+    sentenceCandidatesOmitted: report.sentenceCandidatesOmitted,
+    translationCandidatesTruncated: report.translationCandidatesTruncated,
+    translationCandidatesOmitted: report.translationCandidatesOmitted,
+    quarantineTruncated: report.quarantineTruncated,
+    quarantineOmitted: report.quarantineOmitted,
+  };
+}
+
+function estimatedReportBytes(report: TatoebaDryRunReport): number {
+  const reportWithoutRows: TatoebaDryRunReport = {
+    ...report,
+    candidates: { sentences: [], translations: [] },
+    quarantine: [],
+  };
+  let jsonBytes = utf8ByteLength(JSON.stringify(reportWithoutRows)) + 1;
+  let jsonlBytes = utf8ByteLength(JSON.stringify(reportSummary(report))) + 1;
+  for (const candidate of report.candidates.sentences) {
+    jsonBytes += utf8ByteLength(JSON.stringify(candidate)) + 2;
+    jsonlBytes += utf8ByteLength(JSON.stringify(jsonlRecord('sentence-candidate', candidate))) + 1;
+  }
+  for (const candidate of report.candidates.translations) {
+    jsonBytes += utf8ByteLength(JSON.stringify(candidate)) + 2;
+    jsonlBytes += utf8ByteLength(JSON.stringify(jsonlRecord('translation-candidate', candidate))) + 1;
+  }
+  for (const entry of report.quarantine) {
+    jsonBytes += utf8ByteLength(JSON.stringify(entry)) + 2;
+    jsonlBytes += utf8ByteLength(JSON.stringify(jsonlRecord('quarantine', entry))) + 1;
+  }
+  return Math.max(jsonBytes, jsonlBytes);
+}
+
+function assertReportOutputBounded(report: TatoebaDryRunReport): void {
+  if (
+    report.candidates.sentences.length > TATOEBA_MAX_REPORT_CANDIDATE_ROWS ||
+    report.candidates.translations.length > TATOEBA_MAX_REPORT_CANDIDATE_ROWS ||
+    report.quarantine.length > TATOEBA_MAX_REPORT_QUARANTINE_ROWS ||
+    estimatedReportBytes(report) > TATOEBA_MAX_REPORT_BYTES
+  ) {
+    throw tatoebaError('TATOEBA_REPORT_BOUNDS_EXCEEDED', 'Tatoeba dry-run report exceeds its configured output bound.');
+  }
+}
+
+function selectReportRows<T extends TatoebaValidatedSentenceCandidate | TatoebaTranslationCandidate | TatoebaQuarantineEntry>(
+  rows: readonly T[],
+  type: string,
+  maxRows: number,
+  maxBytes: number,
+): { selected: T[]; omitted: number } {
+  const selected: T[] = [];
+  let usedBytes = 0;
+  for (const row of rows) {
+    if (selected.length >= maxRows) break;
+    const jsonBytes = utf8ByteLength(JSON.stringify(row)) + 2;
+    const jsonlBytes = utf8ByteLength(JSON.stringify(jsonlRecord(type, row))) + 1;
+    const rowBytes = Math.max(jsonBytes, jsonlBytes);
+    if (usedBytes + rowBytes > maxBytes) break;
+    selected.push(row);
+    usedBytes += rowBytes;
+  }
+  return { selected, omitted: rows.length - selected.length };
 }
 
 export async function runTatoebaDryRun(options: TatoebaDryRunOptions): Promise<TatoebaDryRunReport> {
   const bounds = assertRunBounds(options);
   const now = options.now ?? (() => new Date().toISOString());
-  const retrievedAt = now();
+  const runStartedAt = now();
   const artifacts = [];
   artifacts.push(await hashTatoebaArtifact('sentences_detailed', options.sentencesDetailedPath));
   artifacts.push(await hashTatoebaArtifact('sentences_cc0', options.sentencesCc0Path));
   artifacts.push(await hashTatoebaArtifact('links', options.linksPath));
   const snapshot: TatoebaSnapshotMetadata = {
     snapshotId: deterministicSnapshotId(artifacts),
-    retrievedAt,
+    snapshotRetrievedAt: options.snapshotRetrievedAt ?? null,
     artifacts,
   };
   const importBatch = `tatoeba-08d3a-${snapshot.snapshotId.slice(-24)}`;
   const counts = emptyCounts();
   const quarantine: TatoebaQuarantineEntry[] = [];
-  let quarantineOverflow = false;
+  let quarantineOmittedBeforeBound = 0;
   const recordQuarantine = (entry: TatoebaQuarantineEntry): void => {
-    if (quarantine.length >= TATOEBA_MAX_REPORT_ROWS) quarantineOverflow = true;
-    addQuarantine(quarantine, entry);
+    const safeEntry = { ...entry, details: safeTatoebaDetails(entry.details) };
+    if (quarantine.length < TATOEBA_MAX_REPORT_QUARANTINE_ROWS) quarantine.push(safeEntry);
+    else quarantineOmittedBeforeBound += 1;
   };
 
   const selectedRows = new Map<string, TatoebaBulkSentenceRow>();
@@ -403,10 +491,30 @@ export async function runTatoebaDryRun(options: TatoebaDryRunOptions): Promise<T
   counts.wouldCreateSentences = eligible.size;
   counts.wouldCreateTranslations = translationResult.candidates.length;
 
+  const sentenceSample = selectReportRows(
+    [...eligible.values()].sort((left, right) => compareSentenceIds(left.sentenceId, right.sentenceId)),
+    'sentence-candidate',
+    TATOEBA_MAX_REPORT_CANDIDATE_ROWS,
+    TATOEBA_MAX_REPORT_SENTENCE_SAMPLE_BYTES,
+  );
+  const translationSample = selectReportRows(
+    translationResult.candidates,
+    'translation-candidate',
+    TATOEBA_MAX_REPORT_CANDIDATE_ROWS,
+    TATOEBA_MAX_REPORT_TRANSLATION_SAMPLE_BYTES,
+  );
+  const quarantineSample = selectReportRows(
+    quarantine,
+    'quarantine',
+    TATOEBA_MAX_REPORT_QUARANTINE_ROWS,
+    TATOEBA_MAX_REPORT_QUARANTINE_SAMPLE_BYTES,
+  );
+
   const report: TatoebaDryRunReport = {
     reportVersion: 1,
     mode: 'DRY_RUN',
     dbPreflight: 'SKIPPED_08D3A',
+    runStartedAt,
     snapshot,
     configuration: {
       languages: [...options.languages],
@@ -420,25 +528,35 @@ export async function runTatoebaDryRun(options: TatoebaDryRunOptions): Promise<T
     },
     counts,
     candidates: {
-      sentences: [...eligible.values()].sort((left, right) => compareSentenceIds(left.sentenceId, right.sentenceId)),
-      translations: translationResult.candidates,
+      sentences: sentenceSample.selected as TatoebaValidatedSentenceCandidate[],
+      translations: translationSample.selected as TatoebaTranslationCandidate[],
     },
-    quarantine,
-    quarantineTruncated: quarantineOverflow,
+    sentenceCandidatesTruncated: sentenceSample.omitted > 0,
+    sentenceCandidatesOmitted: sentenceSample.omitted,
+    translationCandidatesTruncated: translationSample.omitted > 0,
+    translationCandidatesOmitted: translationSample.omitted,
+    quarantine: quarantineSample.selected as TatoebaQuarantineEntry[],
+    quarantineTruncated: quarantineOmittedBeforeBound + quarantineSample.omitted > 0,
+    quarantineOmitted: quarantineOmittedBeforeBound + quarantineSample.omitted,
   };
+  assertReportOutputBounded(report);
   return report;
 }
 
 export async function writeTatoebaDryRunReport(report: TatoebaDryRunReport, reportPath: string): Promise<void> {
   const extension = extname(reportPath).toLowerCase();
+  assertReportOutputBounded(report);
   const output = extension === '.jsonl'
     ? [
-        JSON.stringify({ type: 'summary', reportVersion: report.reportVersion, mode: report.mode, dbPreflight: report.dbPreflight, snapshot: report.snapshot, configuration: report.configuration, counts: report.counts, quarantineTruncated: report.quarantineTruncated }),
-        ...report.candidates.sentences.map((candidate) => JSON.stringify({ type: 'sentence-candidate', candidate })),
-        ...report.candidates.translations.map((candidate) => JSON.stringify({ type: 'translation-candidate', candidate })),
-        ...report.quarantine.map((entry) => JSON.stringify({ type: 'quarantine', entry })),
+        JSON.stringify(reportSummary(report)),
+        ...report.candidates.sentences.map((candidate) => JSON.stringify(jsonlRecord('sentence-candidate', candidate))),
+        ...report.candidates.translations.map((candidate) => JSON.stringify(jsonlRecord('translation-candidate', candidate))),
+        ...report.quarantine.map((entry) => JSON.stringify(jsonlRecord('quarantine', entry))),
       ].join('\n') + '\n'
-    : JSON.stringify(report, null, 2) + '\n';
+    : JSON.stringify(report) + '\n';
+  if (utf8ByteLength(output) > TATOEBA_MAX_REPORT_BYTES) {
+    throw tatoebaError('TATOEBA_REPORT_BOUNDS_EXCEEDED', 'Tatoeba dry-run report exceeds its configured output bound.');
+  }
   try {
     await fs.writeFile(reportPath, output, 'utf8');
   } catch (error) {
