@@ -52,6 +52,7 @@ export interface TatoebaImportPreflightInput {
 }
 
 export type TatoebaPreflightFailureCode =
+  | 'TATOEBA_IMPORT_ARGUMENT_INVALID'
   | 'TATOEBA_IMPORT_ACTOR_ID_INVALID'
   | 'TATOEBA_IMPORT_ENVIRONMENT_REQUIRED'
   | 'TATOEBA_IMPORT_ENVIRONMENT_INVALID'
