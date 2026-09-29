@@ -138,6 +138,85 @@ describe('PostgresCorrectionsRepository', () => {
     expect(candidate?.acceptedAt.toISOString()).toBe('2026-09-16T05:49:31.627Z');
   });
 
+  it('normalizes an explicit offset timestamp to canonical UTC', async () => {
+    const row = {
+      ...candidateRow(),
+      accepted_at: '2026-09-16T12:49:31.627+07:00',
+    };
+    const query = jest.fn(async (..._args: unknown[]) => ({ rows: [row] }));
+    const repository = new PostgresCorrectionsRepository({ query } as unknown as Pool);
+
+    const candidate = await repository.findLibraryCandidateById(row.id);
+
+    expect(candidate?.acceptedAt.toISOString()).toBe('2026-09-16T05:49:31.627Z');
+  });
+
+  it('maps explicit offset timestamps independently of process timezone', async () => {
+    const originalTimezone = process.env.TZ;
+    try {
+      for (const timezone of ['UTC', 'America/New_York']) {
+        process.env.TZ = timezone;
+        const row = {
+          ...candidateRow(),
+          accepted_at: '2026-09-16T12:49:31.627+07:00',
+        };
+        const query = jest.fn(async (..._args: unknown[]) => ({ rows: [row] }));
+        const repository = new PostgresCorrectionsRepository({ query } as unknown as Pool);
+
+        const candidate = await repository.findLibraryCandidateById(row.id);
+
+        expect(candidate?.acceptedAt.toISOString()).toBe('2026-09-16T05:49:31.627Z');
+      }
+    } finally {
+      if (originalTimezone === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = originalTimezone;
+      }
+    }
+  });
+
+  it.each([
+    ['timezone-less milliseconds', '2026-09-16T05:49:31.627'],
+    ['timezone-less seconds', '2026-09-16T05:49:31'],
+    ['locale-like', 'Sep 16 2026 05:49:31'],
+    ['ambiguous numeric date', '09/16/2026 05:49:31'],
+    ['invalid value', 'not-a-date'],
+    ['invalid month', '2026-13-16T05:49:31.627Z'],
+    ['invalid day', '2026-02-30T05:49:31.627Z'],
+    ['invalid time', '2026-09-16T25:49:31.627Z'],
+    ['malformed offset', '2026-09-16T05:49:31.627+07'],
+    ['out-of-range offset', '2026-09-16T05:49:31.627+24:00'],
+  ])('fails closed for %s timestamp strings', async (_caseName, acceptedAt) => {
+    const row = {
+      ...candidateRow(),
+      accepted_at: acceptedAt,
+    };
+    const query = jest.fn(async (..._args: unknown[]) => ({ rows: [row] }));
+    const repository = new PostgresCorrectionsRepository({ query } as unknown as Pool);
+
+    await expect(repository.findLibraryCandidateById(row.id))
+      .rejects.toMatchObject({
+        name: 'CorrectionsRepositoryConflictError',
+        message: 'Invalid accepted_at timestamp',
+      });
+  });
+
+  it('fails closed for an unsupported non-Date timestamp value', async () => {
+    const row = {
+      ...candidateRow(),
+      accepted_at: 1726465771627,
+    };
+    const query = jest.fn(async (..._args: unknown[]) => ({ rows: [row] }));
+    const repository = new PostgresCorrectionsRepository({ query } as unknown as Pool);
+
+    await expect(repository.findLibraryCandidateById(row.id))
+      .rejects.toMatchObject({
+        name: 'CorrectionsRepositoryConflictError',
+        message: 'Invalid accepted_at timestamp',
+      });
+  });
+
   it('fails closed for an invalid candidate timestamp', async () => {
     const row = {
       ...candidateRow(),
