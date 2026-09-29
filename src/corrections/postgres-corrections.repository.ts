@@ -34,6 +34,8 @@ import {
   type Phase06SourceReference,
 } from './corrections.source-health';
 
+const OFFSET_AWARE_ISO_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-](\d{2}):(\d{2}))$/;
+
 export class PostgresCorrectionsRepository implements CorrectionsRepository {
   constructor(private readonly pool: Pool) {}
 
@@ -1071,14 +1073,42 @@ function mapRequiredTimestamp(value: unknown, fieldName: string): Date {
 function mapOptionalTimestamp(value: unknown, fieldName: string): Date | null {
   if (value === null || value === undefined) return null;
   const timestamp = value instanceof Date
-    ? new Date(value.getTime())
+    ? Number.isNaN(value.getTime()) ? null : new Date(value.getTime())
     : typeof value === 'string'
-      ? new Date(value)
+      ? parseOffsetAwareTimestamp(value)
       : null;
   if (!timestamp || Number.isNaN(timestamp.getTime())) {
     throw new CorrectionsRepositoryConflictError(`Invalid ${fieldName} timestamp`);
   }
   return timestamp;
+}
+
+function parseOffsetAwareTimestamp(value: string): Date | null {
+  const match = OFFSET_AWARE_ISO_TIMESTAMP.exec(value);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hours = Number(match[4]);
+  const minutes = Number(match[5]);
+  const seconds = match[6] === undefined ? 0 : Number(match[6]);
+  const offsetHours = match[9] === undefined ? 0 : Number(match[9]);
+  const offsetMinutes = match[10] === undefined ? 0 : Number(match[10]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+
+  if (
+    month < 1 || month > 12 ||
+    day < 1 || day > (daysInMonth ?? 0) ||
+    hours > 23 || minutes > 59 || seconds > 59 ||
+    offsetHours > 23 || offsetMinutes > 59
+  ) {
+    return null;
+  }
+
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp;
 }
 
 function mapContributionEvent(row: Record<string, unknown>): Phase06ContributionEvent {
