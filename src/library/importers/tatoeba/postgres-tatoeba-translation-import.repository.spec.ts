@@ -11,6 +11,8 @@ import type { TatoebaTranslationImportCommand } from './tatoeba-translation-impo
 
 const ACTOR_ID = '00000000-0000-4000-8000-000000000001';
 const RESOURCE_ID = '00000000-0000-4000-8000-000000000010';
+const SOURCE_SENTENCE_RESOURCE_ID = '00000000-0000-4000-8000-000000000011';
+const TARGET_SENTENCE_RESOURCE_ID = '00000000-0000-4000-8000-000000000012';
 const sourceId = '100';
 const targetId = '200';
 const durableIdentity = directTranslationIdentity(sourceId, targetId);
@@ -106,6 +108,42 @@ function licenseRow(key: 'CC_BY_2_0_FR' | 'CC0_1_0') {
   }];
 }
 
+function canonicalSentenceRows(overrides: {
+  source?: Record<string, unknown>;
+  target?: Record<string, unknown>;
+} = {}) {
+  return [
+    {
+      source_id: `TATOEBA:SENTENCE:${sourceId}`,
+      resource_id: SOURCE_SENTENCE_RESOURCE_ID,
+      resource_type: 'SENTENCE',
+      project_language: 'vi',
+      text_content: command.candidate.sourceText,
+      source_url: command.candidate.sourceProvenance.sourceUrl,
+      license_key: 'CC_BY_2_0_FR',
+      attribution: command.candidate.sourceProvenance.attribution,
+      original_author_reference: command.candidate.sourceProvenance.owner,
+      import_batch: command.candidate.sourceProvenance.importBatch,
+      transformation_history: [{ metadata: { snapshotId: command.candidate.sourceProvenance.snapshotId } }],
+      ...overrides.source,
+    },
+    {
+      source_id: `TATOEBA:SENTENCE:${targetId}`,
+      resource_id: TARGET_SENTENCE_RESOURCE_ID,
+      resource_type: 'SENTENCE',
+      project_language: 'en',
+      text_content: command.candidate.translatedText,
+      source_url: command.candidate.targetProvenance.sourceUrl,
+      license_key: 'CC0_1_0',
+      attribution: command.candidate.targetProvenance.attribution,
+      original_author_reference: command.candidate.targetProvenance.owner,
+      import_batch: command.candidate.targetProvenance.importBatch,
+      transformation_history: [{ metadata: { snapshotId: command.candidate.targetProvenance.snapshotId } }],
+      ...overrides.target,
+    },
+  ];
+}
+
 function hydratedRows(reviewState = 'COMMUNITY_REVIEW') {
   return [
     {
@@ -188,6 +226,7 @@ function createQuery(): jest.MockedFunction<QueryFn> {
     .mockResolvedValueOnce({ rows: [{ role_key: 'ADMIN' }] })
     .mockResolvedValueOnce({ rows: licenseRow('CC_BY_2_0_FR') })
     .mockResolvedValueOnce({ rows: licenseRow('CC0_1_0') })
+    .mockResolvedValueOnce({ rows: canonicalSentenceRows() })
     .mockResolvedValueOnce({ rows: [{ id: RESOURCE_ID }] })
     .mockResolvedValueOnce({ rows: [{ resource_id: RESOURCE_ID }] })
     .mockResolvedValueOnce({ rows: [{ id: '00000000-0000-4000-8000-000000000020' }] })
@@ -246,6 +285,9 @@ function concurrentPool() {
         const key = String(Array.isArray(values) ? values[0] : '');
         return { rows: licenseRow(key === 'CC0_1_0' ? 'CC0_1_0' : 'CC_BY_2_0_FR') };
       }
+      if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.canonicalSentenceEndpointLookup) {
+        return { rows: canonicalSentenceRows() };
+      }
       if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.resourceLock) return { rows: [{ id: RESOURCE_ID }] };
       if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.resourceState) return { rows: stateRows() };
       if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.insertResource) {
@@ -285,12 +327,62 @@ function concurrentPool() {
   };
 }
 
+function canonicalEndpointValidationQuery(endpointRows: Array<Record<string, unknown>>) {
+  return jest.fn<QueryFn>().mockImplementation(async (sql, values) => {
+    if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.begin) return { rows: [] };
+    if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.statementTimeout || sql === TATOEBA_TRANSLATION_IMPORT_SQL.lockTimeout) {
+      return { rows: [] };
+    }
+    if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.target) return { rows: targetRows() };
+    if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.advisoryLock) return { rows: [] };
+    if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.globalIdentityLookup) return { rows: [] };
+    if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.actorUser) return { rows: actorRows() };
+    if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.actorRoles) return { rows: [{ role_key: 'ADMIN' }] };
+    if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.license) {
+      const key = String(Array.isArray(values) ? values[0] : '');
+      return { rows: licenseRow(key === 'CC0_1_0' ? 'CC0_1_0' : 'CC_BY_2_0_FR') };
+    }
+    if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.canonicalSentenceEndpointLookup) return { rows: endpointRows };
+    if (sql === TATOEBA_TRANSLATION_IMPORT_SQL.rollback || sql === TATOEBA_TRANSLATION_IMPORT_SQL.commit) return { rows: [] };
+    throw new Error('unexpected SQL in canonical endpoint validation test');
+  });
+}
+
+async function expectCanonicalEndpointFailure(
+  endpointRows: Array<Record<string, unknown>>,
+  reason: string,
+): Promise<void> {
+  const query = canonicalEndpointValidationQuery(endpointRows);
+  const { repository } = repositoryWith(query);
+  await expect(repository.importTranslation(command)).resolves.toMatchObject({
+    status: 'QUARANTINED',
+    reason,
+    durableResourceCreated: false,
+  });
+  const writeSql = [
+    TATOEBA_TRANSLATION_IMPORT_SQL.insertResource,
+    TATOEBA_TRANSLATION_IMPORT_SQL.insertTranslation,
+    TATOEBA_TRANSLATION_IMPORT_SQL.insertProvenance,
+    TATOEBA_TRANSLATION_IMPORT_SQL.updateTranslation,
+    TATOEBA_TRANSLATION_IMPORT_SQL.updateProvenance,
+    TATOEBA_TRANSLATION_IMPORT_SQL.insertSubmitAudit,
+    TATOEBA_TRANSLATION_IMPORT_SQL.insertInvalidateAudit,
+    TATOEBA_TRANSLATION_IMPORT_SQL.transitionDraft,
+    TATOEBA_TRANSLATION_IMPORT_SQL.transitionVerified,
+  ];
+  expect(query.mock.calls.some(([sql]) => writeSql.includes(sql as typeof writeSql[number]))).toBe(false);
+  expect(query.mock.calls.some(([sql]) => sql === TATOEBA_TRANSLATION_IMPORT_SQL.rollback)).toBe(true);
+}
+
 describe('PostgresTatoebaTranslationImportRepository', () => {
   it('uses directed lock and role-qualified identity lookup without contribution events or mutating SQL outside the contract', () => {
     const sql = Object.values(TATOEBA_TRANSLATION_IMPORT_SQL).join('\n');
     expect(sql).toContain('pg_advisory_xact_lock');
     expect(sql).toContain('hashtextextended($1::text, 0)');
     expect(sql).toContain('source_id IN ($1, $2)');
+    expect(sql).toContain('library_sentences AS sentence');
+    expect(sql).toContain('FOR UPDATE OF resource');
+    expect(sql).not.toContain('INSERT INTO library_sentences');
     expect(sql).toContain("resource_type::text AS resource_type");
     expect(sql).not.toContain('library_contribution_events');
   });
@@ -311,7 +403,60 @@ describe('PostgresTatoebaTranslationImportRepository', () => {
     expect(query.mock.calls.filter(([sql]) => sql === TATOEBA_TRANSLATION_IMPORT_SQL.insertProvenance)).toHaveLength(2);
     expect(query.mock.calls.filter(([sql]) => sql === TATOEBA_TRANSLATION_IMPORT_SQL.insertSubmitAudit)).toHaveLength(1);
     expect(query.mock.calls.find(([sql]) => sql === TATOEBA_TRANSLATION_IMPORT_SQL.transitionDraft)?.[1]).toEqual([RESOURCE_ID, 2]);
+    expect(query.mock.calls.find(([sql]) => sql === TATOEBA_TRANSLATION_IMPORT_SQL.canonicalSentenceEndpointLookup)?.[1]).toEqual([
+      `TATOEBA:SENTENCE:${sourceId}`,
+      `TATOEBA:SENTENCE:${targetId}`,
+    ]);
     expect(release).toHaveBeenCalled();
+  });
+
+  it('fails closed when the source canonical SENTENCE endpoint is missing', async () => {
+    await expectCanonicalEndpointFailure(canonicalSentenceRows().slice(1), 'TATOEBA_TRANSLATION_SOURCE_SENTENCE_NOT_FOUND');
+  });
+
+  it('fails closed when the target canonical SENTENCE endpoint is missing', async () => {
+    await expectCanonicalEndpointFailure(canonicalSentenceRows().slice(0, 1), 'TATOEBA_TRANSLATION_TARGET_SENTENCE_NOT_FOUND');
+  });
+
+  it('fails closed when both canonical SENTENCE endpoints are missing', async () => {
+    await expectCanonicalEndpointFailure([], 'TATOEBA_TRANSLATION_SOURCE_SENTENCE_NOT_FOUND');
+  });
+
+  it('fails closed when the source endpoint maps to a non-SENTENCE resource', async () => {
+    await expectCanonicalEndpointFailure(
+      canonicalSentenceRows({ source: { resource_type: 'VOCABULARY' } }),
+      'TATOEBA_TRANSLATION_ENDPOINT_NOT_SENTENCE',
+    );
+  });
+
+  it('fails closed when the target endpoint maps to a non-SENTENCE resource', async () => {
+    await expectCanonicalEndpointFailure(
+      canonicalSentenceRows({ target: { resource_type: 'VOCABULARY' } }),
+      'TATOEBA_TRANSLATION_ENDPOINT_NOT_SENTENCE',
+    );
+  });
+
+  it('fails closed when a canonical endpoint mapping is ambiguous', async () => {
+    const rows = canonicalSentenceRows();
+    await expectCanonicalEndpointFailure([
+      rows[0],
+      { ...rows[0], resource_id: '00000000-0000-4000-8000-000000000013' },
+      rows[1],
+    ], 'TATOEBA_TRANSLATION_SENTENCE_ENDPOINT_AMBIGUOUS');
+  });
+
+  it('fails closed when an external identity maps to unrelated canonical sentence facts', async () => {
+    await expectCanonicalEndpointFailure(
+      canonicalSentenceRows({ source: { text_content: 'Unrelated canonical sentence' } }),
+      'TATOEBA_TRANSLATION_SENTENCE_ENDPOINT_MISMATCH',
+    );
+  });
+
+  it('fails closed when both endpoint identities resolve to one canonical resource', async () => {
+    await expectCanonicalEndpointFailure(
+      canonicalSentenceRows({ target: { resource_id: SOURCE_SENTENCE_RESOURCE_ID } }),
+      'TATOEBA_TRANSLATION_SENTENCE_RESOURCE_CONFLICT',
+    );
   });
 
   it('rolls back and exposes a safe unavailable error when a write fails', async () => {
@@ -326,6 +471,7 @@ describe('PostgresTatoebaTranslationImportRepository', () => {
       .mockResolvedValueOnce({ rows: [{ role_key: 'ADMIN' }] })
       .mockResolvedValueOnce({ rows: licenseRow('CC_BY_2_0_FR') })
       .mockResolvedValueOnce({ rows: licenseRow('CC0_1_0') })
+      .mockResolvedValueOnce({ rows: canonicalSentenceRows() })
       .mockRejectedValueOnce(new Error('secret-password in driver failure'))
       .mockResolvedValueOnce({ rows: [] });
     const { repository } = repositoryWith(query);
@@ -370,6 +516,7 @@ describe('PostgresTatoebaTranslationImportRepository', () => {
       .mockResolvedValueOnce({ rows: [{ role_key: 'ADMIN' }] })
       .mockResolvedValueOnce({ rows: licenseRow('CC_BY_2_0_FR') })
       .mockResolvedValueOnce({ rows: licenseRow('CC0_1_0') })
+      .mockResolvedValueOnce({ rows: canonicalSentenceRows() })
       .mockResolvedValueOnce({ rows: [{ id: RESOURCE_ID }] })
       .mockResolvedValueOnce({ rows: stateRows() })
       .mockResolvedValueOnce({ rows: hydratedRows() })
@@ -400,6 +547,7 @@ describe('PostgresTatoebaTranslationImportRepository', () => {
       .mockResolvedValueOnce({ rows: [{ role_key: 'ADMIN' }] })
       .mockResolvedValueOnce({ rows: licenseRow('CC_BY_2_0_FR') })
       .mockResolvedValueOnce({ rows: licenseRow('CC0_1_0') })
+      .mockResolvedValueOnce({ rows: canonicalSentenceRows() })
       .mockResolvedValueOnce({ rows: [{ id: RESOURCE_ID }] })
       .mockResolvedValueOnce({ rows: stateRows('DRAFT') })
       .mockResolvedValueOnce({ rows: [{ id: '00000000-0000-4000-8000-000000000030' }] })
@@ -419,6 +567,7 @@ describe('PostgresTatoebaTranslationImportRepository', () => {
 
   it('invalidates changed VERIFIED content before any translation/provenance rewrite', async () => {
     const changed = { ...command, candidate: { ...command.candidate, sourceText: 'Changed source' } };
+    const canonicalRows = canonicalSentenceRows({ source: { text_content: changed.candidate.sourceText } });
     const query = jest.fn<QueryFn>()
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
@@ -433,6 +582,7 @@ describe('PostgresTatoebaTranslationImportRepository', () => {
       .mockResolvedValueOnce({ rows: [{ role_key: 'ADMIN' }] })
       .mockResolvedValueOnce({ rows: licenseRow('CC_BY_2_0_FR') })
       .mockResolvedValueOnce({ rows: licenseRow('CC0_1_0') })
+      .mockResolvedValueOnce({ rows: canonicalRows })
       .mockResolvedValueOnce({ rows: [{ id: RESOURCE_ID }] })
       .mockResolvedValueOnce({ rows: stateRows('VERIFIED') })
       .mockResolvedValueOnce({ rows: [{ id: '00000000-0000-4000-8000-000000000040' }] })
@@ -453,6 +603,7 @@ describe('PostgresTatoebaTranslationImportRepository', () => {
 
   it('does not reopen a REJECTED translation when facts change', async () => {
     const changed = { ...command, candidate: { ...command.candidate, translatedText: 'Changed' } };
+    const canonicalRows = canonicalSentenceRows({ target: { text_content: changed.candidate.translatedText } });
     const query = jest.fn<QueryFn>()
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
@@ -467,6 +618,7 @@ describe('PostgresTatoebaTranslationImportRepository', () => {
       .mockResolvedValueOnce({ rows: [{ role_key: 'ADMIN' }] })
       .mockResolvedValueOnce({ rows: licenseRow('CC_BY_2_0_FR') })
       .mockResolvedValueOnce({ rows: licenseRow('CC0_1_0') })
+      .mockResolvedValueOnce({ rows: canonicalRows })
       .mockResolvedValueOnce({ rows: [{ id: RESOURCE_ID }] })
       .mockResolvedValueOnce({ rows: stateRows('REJECTED') })
       .mockResolvedValueOnce({ rows: [] });

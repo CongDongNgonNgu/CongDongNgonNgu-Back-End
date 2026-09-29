@@ -16,6 +16,7 @@ import {
 } from './tatoeba-preflight.types';
 import { TATOEBA_IMPORT_TEST_ENVIRONMENT } from './tatoeba-preflight.types';
 import { parseTatoebaPreflightDatabaseTarget } from './tatoeba-preflight.target';
+import { compareSentenceIds } from './tatoeba.identities';
 import {
   safeTatoebaInputPairIdentity,
   safeTatoebaTranslationIdentity,
@@ -47,6 +48,32 @@ export const TATOEBA_TRANSLATION_IMPORT_SQL = {
     WHERE provenance.source_type = 'OPEN_DATASET'::library_source_type
       AND provenance.source_id IN ($1, $2)
     ORDER BY provenance.source_id, provenance.resource_id`,
+  canonicalSentenceEndpointLookup: `SELECT provenance.source_id,
+      resource.id AS resource_id,
+      resource.resource_type::text AS resource_type,
+      primary_language.code AS project_language,
+      sentence.text_content,
+      provenance.source_url,
+      provenance.license_key,
+      provenance.attribution,
+      provenance.original_author_reference,
+      provenance.import_batch,
+      provenance.transformation_history
+    FROM library_resource_provenance AS provenance
+    INNER JOIN library_resources AS resource
+      ON resource.id = provenance.resource_id
+    LEFT JOIN languages AS primary_language
+      ON primary_language.id = resource.primary_language_id
+    LEFT JOIN library_sentences AS sentence
+      ON sentence.resource_id = resource.id
+    WHERE provenance.source_type = 'OPEN_DATASET'::library_source_type
+      AND provenance.source_id IN ($1, $2)
+    ORDER BY CASE provenance.source_id
+      WHEN $1 THEN 0
+      WHEN $2 THEN 1
+      ELSE 2
+    END, provenance.resource_id
+    FOR UPDATE OF resource`,
   resourceLock: `SELECT id
     FROM library_resources
     WHERE id = $1::uuid
@@ -266,6 +293,20 @@ interface ExistingEndpointState {
   snapshotId: string | null;
 }
 
+interface ExistingCanonicalSentenceState {
+  sourceId: string;
+  resourceId: string;
+  resourceType: string;
+  projectLanguage: string;
+  text: string | null;
+  sourceUrl: string | null;
+  licenseKey: string;
+  attribution: string;
+  owner: string | null;
+  importBatch: string | null;
+  snapshotId: string | null;
+}
+
 interface ExistingTranslationState {
   resourceId: string;
   resourceType: string;
@@ -327,6 +368,22 @@ function transformationMetadata(value: unknown): Record<string, unknown> | null 
 function readEndpointState(row: Record<string, unknown>): ExistingEndpointState {
   return {
     sourceId: stringValue(row.source_id),
+    sourceUrl: nullableStringValue(row.source_url),
+    licenseKey: stringValue(row.license_key),
+    attribution: stringValue(row.attribution),
+    owner: nullableStringValue(row.original_author_reference),
+    importBatch: nullableStringValue(row.import_batch),
+    snapshotId: nullableStringValue(transformationMetadata(row.transformation_history)?.snapshotId),
+  };
+}
+
+function readCanonicalSentenceState(row: Record<string, unknown>): ExistingCanonicalSentenceState {
+  return {
+    sourceId: stringValue(row.source_id),
+    resourceId: stringValue(row.resource_id),
+    resourceType: stringValue(row.resource_type),
+    projectLanguage: stringValue(row.project_language),
+    text: nullableStringValue(row.text_content),
     sourceUrl: nullableStringValue(row.source_url),
     licenseKey: stringValue(row.license_key),
     attribution: stringValue(row.attribution),
@@ -403,6 +460,19 @@ function endpointFactsMatch(
 ): boolean {
   return existing.sourceId === candidate.sourceId
     && existing.sourceUrl === candidate.sourceUrl
+    && existing.licenseKey === licenseKey
+    && existing.attribution === candidate.attribution
+    && existing.owner === candidate.owner
+    && existing.importBatch === candidate.importBatch
+    && existing.snapshotId === candidate.snapshotId;
+}
+
+function canonicalSentenceFactsMatch(
+  existing: ExistingCanonicalSentenceState,
+  candidate: TatoebaTranslationImportCommand['candidate']['sourceProvenance'],
+  licenseKey: string,
+): boolean {
+  return existing.sourceUrl === candidate.sourceUrl
     && existing.licenseKey === licenseKey
     && existing.attribution === candidate.attribution
     && existing.owner === candidate.owner
@@ -519,6 +589,7 @@ export class PostgresTatoebaTranslationImportRepository implements TatoebaTransl
         validation.sourceLicenseKey,
         validation.targetLicenseKey,
       );
+      await this.validateCanonicalSentenceEndpoints(client, command, validation);
 
       let outcome: TatoebaTranslationImportOutcome;
       if (identityRows.length === 0) {
@@ -656,6 +727,87 @@ export class PostgresTatoebaTranslationImportRepository implements TatoebaTransl
       if (!validation.ok) {
         throw new TatoebaTranslationImportQuarantine(durableIdentity, inputPairIdentity, validation.reason);
       }
+    }
+  }
+
+  private async validateCanonicalSentenceEndpoints(
+    client: PoolClient,
+    command: TatoebaTranslationImportCommand,
+    validation: Extract<ReturnType<typeof validateTatoebaTranslationImportCandidate>, { ok: true }>,
+  ): Promise<void> {
+    const { candidate } = command;
+    const endpointIdentities = [
+      {
+        role: 'SOURCE' as const,
+        sentenceId: candidate.sourceSentenceId,
+        identity: validation.sourceIdentity,
+        language: candidate.primaryLanguageCode,
+        text: candidate.sourceText,
+        provenance: candidate.sourceProvenance,
+        licenseKey: validation.sourceLicenseKey,
+      },
+      {
+        role: 'TARGET' as const,
+        sentenceId: candidate.targetSentenceId,
+        identity: validation.targetIdentity,
+        language: candidate.secondaryLanguageCode,
+        text: candidate.translatedText,
+        provenance: candidate.targetProvenance,
+        licenseKey: validation.targetLicenseKey,
+      },
+    ].sort((left, right) => compareSentenceIds(left.sentenceId, right.sentenceId));
+    const endpointRows = await queryRows(
+      client,
+      TATOEBA_TRANSLATION_IMPORT_SQL.canonicalSentenceEndpointLookup,
+      [endpointIdentities[0].identity, endpointIdentities[1].identity],
+    );
+    const resolved = endpointIdentities.map((expected) => {
+      const matchingRows = endpointRows.filter((row) => stringValue(row.source_id) === expected.identity);
+      if (matchingRows.length === 0) {
+        throw new TatoebaTranslationImportQuarantine(
+          validation.durableIdentity,
+          validation.inputPairIdentity,
+          expected.role === 'SOURCE'
+            ? 'TATOEBA_TRANSLATION_SOURCE_SENTENCE_NOT_FOUND'
+            : 'TATOEBA_TRANSLATION_TARGET_SENTENCE_NOT_FOUND',
+        );
+      }
+      if (matchingRows.length !== 1) {
+        throw new TatoebaTranslationImportQuarantine(
+          validation.durableIdentity,
+          validation.inputPairIdentity,
+          'TATOEBA_TRANSLATION_SENTENCE_ENDPOINT_AMBIGUOUS',
+        );
+      }
+      const sentence = readCanonicalSentenceState(matchingRows[0]);
+      if (sentence.resourceType !== 'SENTENCE') {
+        throw new TatoebaTranslationImportQuarantine(
+          validation.durableIdentity,
+          validation.inputPairIdentity,
+          'TATOEBA_TRANSLATION_ENDPOINT_NOT_SENTENCE',
+        );
+      }
+      const endpointMatches = sentence.sourceId === expected.identity
+        && Boolean(sentence.resourceId)
+        && sentence.projectLanguage === expected.language
+        && sentence.text === expected.text
+        && canonicalSentenceFactsMatch(sentence, expected.provenance, expected.licenseKey);
+      if (!endpointMatches) {
+        throw new TatoebaTranslationImportQuarantine(
+          validation.durableIdentity,
+          validation.inputPairIdentity,
+          'TATOEBA_TRANSLATION_SENTENCE_ENDPOINT_MISMATCH',
+        );
+      }
+      return sentence;
+    });
+
+    if (resolved[0].resourceId === resolved[1].resourceId) {
+      throw new TatoebaTranslationImportQuarantine(
+        validation.durableIdentity,
+        validation.inputPairIdentity,
+        'TATOEBA_TRANSLATION_SENTENCE_RESOURCE_CONFLICT',
+      );
     }
   }
 
