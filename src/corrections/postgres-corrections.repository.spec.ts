@@ -106,6 +106,50 @@ describe('PostgresCorrectionsRepository', () => {
     expect(sql).toContain('acceptance.response_id = candidate.source_response_id');
   });
 
+  it('preserves millisecond precision when mapping pg Date values for a candidate', async () => {
+    const timestamp = new Date('2026-09-16T05:49:31.627Z');
+    const row = {
+      ...candidateRow(),
+      accepted_at: timestamp,
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+    const query = jest.fn(async (..._args: unknown[]) => ({ rows: [row] }));
+    const repository = new PostgresCorrectionsRepository({ query } as unknown as Pool);
+
+    const candidate = await repository.findLibraryCandidateById(row.id);
+
+    expect(candidate?.acceptedAt.toISOString()).toBe('2026-09-16T05:49:31.627Z');
+    expect(candidate?.createdAt.toISOString()).toBe('2026-09-16T05:49:31.627Z');
+    expect(candidate?.updatedAt.toISOString()).toBe('2026-09-16T05:49:31.627Z');
+    expect(candidate?.invalidatedAt).toBeNull();
+  });
+
+  it('maps an ISO timestamp string without losing milliseconds', async () => {
+    const row = {
+      ...candidateRow(),
+      accepted_at: '2026-09-16T05:49:31.627Z',
+    };
+    const query = jest.fn(async (..._args: unknown[]) => ({ rows: [row] }));
+    const repository = new PostgresCorrectionsRepository({ query } as unknown as Pool);
+
+    const candidate = await repository.findLibraryCandidateById(row.id);
+
+    expect(candidate?.acceptedAt.toISOString()).toBe('2026-09-16T05:49:31.627Z');
+  });
+
+  it('fails closed for an invalid candidate timestamp', async () => {
+    const row = {
+      ...candidateRow(),
+      accepted_at: new Date(Number.NaN),
+    };
+    const query = jest.fn(async (..._args: unknown[]) => ({ rows: [row] }));
+    const repository = new PostgresCorrectionsRepository({ query } as unknown as Pool);
+
+    await expect(repository.findLibraryCandidateById(row.id))
+      .rejects.toBeInstanceOf(CorrectionsRepositoryConflictError);
+  });
+
   it('evaluates current source health without applying the pending-only read filter', async () => {
     const query = jest.fn(async (..._args: unknown[]) => ({ rows: [{
       candidate_id: candidateRow().id,

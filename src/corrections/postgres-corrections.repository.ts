@@ -268,9 +268,7 @@ export class PostgresCorrectionsRepository implements CorrectionsRepository {
       acceptedByUserId: acceptance.rows[0]?.accepted_by_user_id
         ? String(acceptance.rows[0].accepted_by_user_id)
         : null,
-      acceptedAt: acceptance.rows[0]?.accepted_at
-        ? new Date(String(acceptance.rows[0].accepted_at))
-        : null,
+      acceptedAt: mapOptionalTimestamp(acceptance.rows[0]?.accepted_at, 'accepted_at'),
       libraryCandidateState: candidate.rows[0]?.state
         ? String(candidate.rows[0].state) as StructuredResponseInteractionRecord['libraryCandidateState']
         : null,
@@ -768,7 +766,7 @@ export class PostgresCorrectionsRepository implements CorrectionsRepository {
       acceptanceExists: row.acceptance_id !== null && row.acceptance_id !== undefined,
       acceptanceParentPostId: row.acceptance_parent_post_id ? String(row.acceptance_parent_post_id) : null,
       acceptanceResponseId: row.acceptance_response_id ? String(row.acceptance_response_id) : null,
-      acceptanceRevokedAt: row.acceptance_revoked_at ? new Date(String(row.acceptance_revoked_at)).toISOString() : null,
+      acceptanceRevokedAt: mapOptionalTimestamp(row.acceptance_revoked_at, 'acceptance_revoked_at')?.toISOString() ?? null,
       currentAcceptanceId: row.current_acceptance_id ? String(row.current_acceptance_id) : null,
       currentAcceptanceResponseId: row.current_acceptance_response_id
         ? String(row.current_acceptance_response_id)
@@ -956,8 +954,8 @@ function mapAcceptance(row: Record<string, unknown>): StructuredResponseAcceptan
     parentPostId: String(row.parent_post_id),
     responseId: String(row.response_id),
     acceptedByUserId: String(row.accepted_by_user_id),
-    acceptedAt: new Date(String(row.accepted_at)),
-    revokedAt: row.revoked_at ? new Date(String(row.revoked_at)) : null,
+    acceptedAt: mapRequiredTimestamp(row.accepted_at, 'accepted_at'),
+    revokedAt: mapOptionalTimestamp(row.revoked_at, 'revoked_at'),
   };
 }
 
@@ -1052,14 +1050,35 @@ function mapCandidate(row: Record<string, unknown>): LibraryCandidateRecord {
       : String(row.explanation),
     acceptanceId: String(row.acceptance_id),
     acceptedByUserId: String(row.accepted_by_user_id),
-    acceptedAt: new Date(String(row.accepted_at)),
+    acceptedAt: mapRequiredTimestamp(row.accepted_at, 'accepted_at'),
     candidateCreatedByUserId: String(row.candidate_created_by_user_id),
     state: String(row.state) as LibraryCandidateRecord['state'],
-    createdAt: new Date(String(row.created_at)),
-    updatedAt: new Date(String(row.updated_at)),
-    invalidatedAt: row.invalidated_at ? new Date(String(row.invalidated_at)) : null,
+    createdAt: mapRequiredTimestamp(row.created_at, 'created_at'),
+    updatedAt: mapRequiredTimestamp(row.updated_at, 'updated_at'),
+    invalidatedAt: mapOptionalTimestamp(row.invalidated_at, 'invalidated_at'),
     invalidationReason: row.invalidation_reason ? String(row.invalidation_reason) : null,
   };
+}
+
+function mapRequiredTimestamp(value: unknown, fieldName: string): Date {
+  const timestamp = mapOptionalTimestamp(value, fieldName);
+  if (!timestamp) {
+    throw new CorrectionsRepositoryConflictError(`Invalid ${fieldName} timestamp`);
+  }
+  return timestamp;
+}
+
+function mapOptionalTimestamp(value: unknown, fieldName: string): Date | null {
+  if (value === null || value === undefined) return null;
+  const timestamp = value instanceof Date
+    ? new Date(value.getTime())
+    : typeof value === 'string'
+      ? new Date(value)
+      : null;
+  if (!timestamp || Number.isNaN(timestamp.getTime())) {
+    throw new CorrectionsRepositoryConflictError(`Invalid ${fieldName} timestamp`);
+  }
+  return timestamp;
 }
 
 function mapContributionEvent(row: Record<string, unknown>): Phase06ContributionEvent {
