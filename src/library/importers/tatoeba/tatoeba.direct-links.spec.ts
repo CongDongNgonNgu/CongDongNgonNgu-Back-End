@@ -59,6 +59,20 @@ describe('Tatoeba direct-link candidate construction', () => {
       sourceSentenceId: '100',
       targetSentenceId: '200',
     });
+    expect(forward.candidates[0].sourceProvenance).toMatchObject({
+      sourceId: 'TATOEBA:LINK:DIRECT:100:200:SOURCE',
+      endpointSentenceId: '100',
+      endpointRole: 'SOURCE',
+      relationIdentity: 'TATOEBA:LINK:DIRECT:100:200',
+      inputPairIdentity: 'TATOEBA:PAIR:100:200',
+      primaryLanguageCode: 'vi',
+      secondaryLanguageCode: 'en',
+    });
+    expect(forward.candidates[0].targetProvenance).toMatchObject({
+      sourceId: 'TATOEBA:LINK:DIRECT:100:200:TARGET',
+      endpointSentenceId: '200',
+      endpointRole: 'TARGET',
+    });
     expect(forward.counts.reciprocalPairsCollapsed).toBe(1);
   });
 
