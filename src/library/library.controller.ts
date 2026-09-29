@@ -19,6 +19,7 @@ import {
   CreateLibraryResourceDto,
   ListInvalidLibrarySourcesDto,
   ListLibraryReviewsDto,
+  IntegrateLibraryCandidateDto,
   ReconcileLibrarySourceDto,
   SearchLibraryResourcesDto,
   SubmitLibraryContributionDto,
@@ -74,6 +75,20 @@ export class LibraryController {
     return success(
       await this.library.getReviewDetail(this.actor(request), resourceId),
       'Library review detail',
+    );
+  }
+
+  @Post('reviews/candidates/:candidateId/integrate')
+  @UseGuards(AccessTokenGuard)
+  async integrateLibraryCandidate(
+    @Param('candidateId', new ParseUUIDPipe({ version: '4' })) candidateId: string,
+    @Body() input: IntegrateLibraryCandidateDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.library.integrateLibraryCandidate(this.actor(request), candidateId, input),
+      'Library candidate integrated for review',
     );
   }
 

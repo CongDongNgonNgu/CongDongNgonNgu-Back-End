@@ -6,6 +6,8 @@ import {
 import type {
   LibraryContributionEventRecord,
   LibraryContributionSubmissionResult,
+  LibraryCandidateIntegrationRepositoryInput,
+  LibraryCandidateIntegrationResult,
   LibraryLicenseRecord,
   LibraryContributionResourceType,
   LibraryReviewAction,
@@ -152,6 +154,9 @@ export interface LibraryRepository {
   submitContribution(
     input: SubmitLibraryContributionRepositoryInput,
   ): Promise<LibraryContributionSubmissionResult>;
+  integrateLibraryCandidate(
+    input: LibraryCandidateIntegrationRepositoryInput,
+  ): Promise<LibraryCandidateIntegrationResult>;
   listReviewAudit(resourceId: string): Promise<LibraryReviewAuditRecord[]>;
   listContributionEvents(resourceId?: string): Promise<LibraryContributionEventRecord[]>;
 }
@@ -161,6 +166,7 @@ export class InMemoryLibraryRepository implements LibraryRepository {
   private readonly resources = new Map<string, LibraryResourceRecord>();
   private readonly reviewAudits = new Map<string, LibraryReviewAuditRecord[]>();
   private readonly contributionEvents = new Map<string, LibraryContributionEventRecord>();
+  private readonly candidateIntegrationLocks = new Map<string, Promise<void>>();
 
   async upsertLicense(
     input: NormalizedLibraryLicenseInput,
@@ -209,6 +215,90 @@ export class InMemoryLibraryRepository implements LibraryRepository {
     };
     this.resources.set(record.id, record);
     return cloneResource(record);
+  }
+
+  async integrateLibraryCandidate(
+    input: LibraryCandidateIntegrationRepositoryInput,
+  ): Promise<LibraryCandidateIntegrationResult> {
+    return this.withCandidateIntegrationLock(input.candidate.id, async () => {
+      const resourceSnapshot = new Map(
+        [...this.resources.entries()].map(([id, resource]) => [id, cloneResource(resource)] as const),
+      );
+      const auditSnapshot = new Map(
+        [...this.reviewAudits.entries()].map(([id, audits]) => [id, audits.map(cloneAudit)] as const),
+      );
+
+      try {
+        validateCandidateIntegrationInput(input);
+        const license = this.requireActiveLicense(input.provenance.licenseKey);
+        if (license.redistributionAllowed !== true) {
+          throw new LibraryRepositoryConflictError(
+            'LIBRARY_LICENSE_REDISTRIBUTION_REQUIRED',
+            'A public Phase 06 candidate requires explicit redistribution permission',
+          );
+        }
+
+        const matches = [...this.resources.values()].filter((resource) => resource.provenance.some(
+          (entry) => entry.sourceType === 'PHASE06_LIBRARY_CANDIDATE'
+            && entry.sourceId === input.candidate.id,
+        ));
+        if (matches.length > 1) {
+          throw new LibraryRepositoryConflictError(
+            'LIBRARY_CANDIDATE_CONFLICT',
+            'The Phase 06 candidate is attached to multiple library resources',
+          );
+        }
+
+        if (matches[0]) {
+          return reconcileCandidateResource(matches[0], input, this.reviewAudits);
+        }
+
+        const resource: LibraryResourceRecord = {
+          id: randomUUID(),
+          resourceType: input.resource.resourceType,
+          primaryLanguageCode: input.resource.primaryLanguageCode,
+          secondaryLanguageCode: input.resource.secondaryLanguageCode,
+          cefrLevel: input.resource.cefrLevel,
+          topics: [...input.resource.topics],
+          createdByUserId: input.candidate.contributorUserId,
+          visibility: input.resource.visibility,
+          moderationState: 'ACTIVE',
+          reviewState: 'DRAFT',
+          createdAt: new Date(input.occurredAt),
+          updatedAt: new Date(input.occurredAt),
+          reviewedByUserId: null,
+          reviewedAt: null,
+          provenanceRevision: 0,
+          details: cloneDetails(input.resource.details),
+          provenance: [],
+        };
+        const provenance = createProvenance(
+          resource.id,
+          input.provenance,
+          license,
+          input.occurredAt,
+        );
+        resource.provenance.push(provenance);
+        resource.provenanceRevision = 1;
+        resource.reviewState = 'COMMUNITY_REVIEW';
+        resource.updatedAt = new Date(input.occurredAt);
+        const audit = createCandidateSubmitAudit(resource.id, input.actorUserId, input.occurredAt);
+        this.resources.set(resource.id, resource);
+        this.reviewAudits.set(resource.id, [audit]);
+        return {
+          resource: cloneResource(resource),
+          provenance: cloneProvenance(provenance),
+          audit: cloneAudit(audit),
+          outcome: 'CREATED',
+        };
+      } catch (error) {
+        this.resources.clear();
+        for (const [id, resource] of resourceSnapshot) this.resources.set(id, resource);
+        this.reviewAudits.clear();
+        for (const [id, audits] of auditSnapshot) this.reviewAudits.set(id, audits);
+        throw error;
+      }
+    });
   }
 
   async findResourceById(id: string): Promise<LibraryResourceRecord | null> {
@@ -545,6 +635,25 @@ export class InMemoryLibraryRepository implements LibraryRepository {
     this.contributionEvents.set(event.id, cloneContributionEvent(event));
   }
 
+  private async withCandidateIntegrationLock<T>(
+    candidateId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.candidateIntegrationLocks.get(candidateId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    this.candidateIntegrationLocks.set(candidateId, current);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.candidateIntegrationLocks.get(candidateId) === current) {
+        this.candidateIntegrationLocks.delete(candidateId);
+      }
+    }
+  }
+
   private requireResource(id: string): LibraryResourceRecord {
     const resource = this.resources.get(id);
     if (!resource) {
@@ -556,7 +665,7 @@ export class InMemoryLibraryRepository implements LibraryRepository {
     return resource;
   }
 
-  private requireActiveLicense(licenseKey: string): void {
+  private requireActiveLicense(licenseKey: string): LibraryLicenseRecord {
     const license = this.licenses.get(licenseKey);
     if (!license) {
       throw new LibraryRepositoryConflictError(
@@ -570,6 +679,7 @@ export class InMemoryLibraryRepository implements LibraryRepository {
         'Library license is disabled',
       );
     }
+    return license;
   }
 
   private requireProvenanceMutationState(
@@ -592,6 +702,158 @@ export class InMemoryLibraryRepository implements LibraryRepository {
       );
     }
   }
+}
+
+function validateCandidateIntegrationInput(
+  input: LibraryCandidateIntegrationRepositoryInput,
+): void {
+  const { candidate, resource, provenance } = input;
+  if (
+    candidate.state !== 'PENDING_REVIEW' ||
+    !candidate.id ||
+    !candidate.sourcePostId ||
+    !candidate.sourceResponseId ||
+    !candidate.acceptanceId ||
+    !candidate.contributorUserId ||
+    candidate.targetLanguageCode !== resource.primaryLanguageCode
+  ) {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_PHASE06_SOURCE_INVALID',
+      'The Phase 06 candidate is not an active coherent source',
+    );
+  }
+  if (resource.visibility !== 'PUBLIC') {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_CANDIDATE_PUBLIC_REQUIRED',
+      'A Phase 06 candidate integration must create a public resource before review',
+    );
+  }
+  if (
+    candidate.responseKind === 'CORRECTION_PROPOSAL'
+      ? !validCandidateText(candidate.correctedText, 20_000) || candidate.answerText !== null
+      : !validCandidateText(candidate.answerText, 20_000) || candidate.correctedText !== null
+  ) {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_PHASE06_SOURCE_INVALID',
+      'The Phase 06 candidate content is invalid',
+    );
+  }
+  if (candidate.responseKind !== 'CORRECTION_PROPOSAL' && candidate.responseKind !== 'QA_ANSWER') {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_PHASE06_SOURCE_INVALID',
+      'The Phase 06 candidate kind is invalid',
+    );
+  }
+  if (!validCandidateText(candidate.sourceText, 20_000) || (
+    candidate.explanation !== null && !validCandidateText(candidate.explanation, 5_000)
+  )) {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_PHASE06_SOURCE_INVALID',
+      'The Phase 06 candidate source text is invalid',
+    );
+  }
+  if (
+    provenance.sourceType !== 'PHASE06_LIBRARY_CANDIDATE' ||
+    provenance.sourceId !== candidate.id ||
+    provenance.sourcePostId !== candidate.sourcePostId ||
+    provenance.sourceResponseId !== candidate.sourceResponseId ||
+    provenance.sourceCandidateId !== candidate.id ||
+    provenance.sourceAcceptanceId !== candidate.acceptanceId ||
+    provenance.originalContributorUserId !== candidate.contributorUserId
+  ) {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_PHASE06_SOURCE_INVALID',
+      'The Phase 06 candidate provenance does not match its source',
+    );
+  }
+}
+
+function validCandidateText(value: string | null, maxLength: number): value is string {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && Array.from(value).length <= maxLength;
+}
+
+function reconcileCandidateResource(
+  resource: LibraryResourceRecord,
+  input: LibraryCandidateIntegrationRepositoryInput,
+  auditsByResource: Map<string, LibraryReviewAuditRecord[]>,
+): LibraryCandidateIntegrationResult {
+  const expectedProvenance = input.provenance;
+  const provenance = resource.provenance.find((entry) => (
+    entry.sourceType === expectedProvenance.sourceType
+      && entry.sourceId === expectedProvenance.sourceId
+  ));
+  if (!provenance || JSON.stringify(toNormalizedProvenance(provenance)) !== JSON.stringify(expectedProvenance)) {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_CANDIDATE_CONFLICT',
+      'The Phase 06 candidate conflicts with existing library provenance',
+    );
+  }
+  if (!sameResourceFacts(resource, input.resource)) {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_CANDIDATE_CONFLICT',
+      'The Phase 06 candidate conflicts with existing library content',
+    );
+  }
+
+  const audits = auditsByResource.get(resource.id) ?? [];
+  let audit = [...audits].reverse().find((entry) => (
+    entry.action === 'SUBMIT'
+      && entry.previousState === 'DRAFT'
+      && entry.newState === 'COMMUNITY_REVIEW'
+  ));
+  if (resource.reviewState === 'DRAFT' || (resource.reviewState === 'COMMUNITY_REVIEW' && !audit)) {
+    resource.reviewState = 'COMMUNITY_REVIEW';
+    resource.reviewedByUserId = null;
+    resource.reviewedAt = null;
+    resource.updatedAt = new Date(input.occurredAt);
+    audit = createCandidateSubmitAudit(resource.id, input.actorUserId, input.occurredAt);
+    audits.push(audit);
+    auditsByResource.set(resource.id, audits);
+  } else if (!audit) {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_CANDIDATE_CONFLICT',
+      'The existing candidate resource has no coherent submission audit',
+    );
+  }
+
+  return {
+    resource: cloneResource(resource),
+    provenance: cloneProvenance(provenance),
+    audit: cloneAudit(audit),
+    outcome: 'RECONCILED',
+  };
+}
+
+function sameResourceFacts(
+  resource: LibraryResourceRecord,
+  input: NormalizedLibraryResourceInput,
+): boolean {
+  return resource.resourceType === input.resourceType
+    && resource.primaryLanguageCode === input.primaryLanguageCode
+    && resource.secondaryLanguageCode === input.secondaryLanguageCode
+    && resource.cefrLevel === input.cefrLevel
+    && resource.visibility === input.visibility
+    && JSON.stringify([...resource.topics].sort()) === JSON.stringify([...input.topics].sort())
+    && JSON.stringify(resource.details) === JSON.stringify(input.details);
+}
+
+function createCandidateSubmitAudit(
+  resourceId: string,
+  actorUserId: string,
+  occurredAt: Date,
+): LibraryReviewAuditRecord {
+  return {
+    id: randomUUID(),
+    resourceId,
+    actorUserId,
+    previousState: 'DRAFT',
+    newState: 'COMMUNITY_REVIEW',
+    action: 'SUBMIT',
+    note: null,
+    createdAt: new Date(occurredAt),
+  };
 }
 
 function compareSearchResources(a: LibraryResourceRecord, b: LibraryResourceRecord): number {

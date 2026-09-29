@@ -5,6 +5,7 @@ import type {
 } from '../community/community.types';
 import type { RoleKey } from '../identity/identity.types';
 import type { Phase06SourceHealthReason } from '../corrections/corrections.source-health';
+import type { LibraryCandidateRecord } from '../corrections/corrections.types';
 
 export const LIBRARY_RESOURCE_TYPES = [
   'VOCABULARY',
@@ -330,6 +331,16 @@ export interface CreateLibraryResourceInput {
   details: unknown;
 }
 
+/**
+ * Reviewer-owned content envelope used when a Phase 06 candidate is sent
+ * through the Library review lifecycle. Source identity and contributor
+ * ownership are always derived from the canonical candidate record.
+ */
+export interface IntegrateLibraryCandidateInput extends CreateLibraryResourceInput {
+  licenseKey: unknown;
+  attribution: unknown;
+}
+
 export interface NormalizedLibraryResourceInput {
   resourceType: LibraryResourceType;
   primaryLanguageCode: string;
@@ -358,6 +369,23 @@ export interface LibraryResourceRecord {
   provenanceRevision: number;
   details: LibraryResourceDetails;
   provenance: LibraryProvenanceRecord[];
+}
+
+export type LibraryCandidateIntegrationOutcome = 'CREATED' | 'RECONCILED';
+
+export interface LibraryCandidateIntegrationResult {
+  resource: LibraryResourceRecord;
+  provenance: LibraryProvenanceRecord;
+  audit: LibraryReviewAuditRecord;
+  outcome: LibraryCandidateIntegrationOutcome;
+}
+
+export interface LibraryCandidateIntegrationRepositoryInput {
+  candidate: LibraryCandidateRecord;
+  resource: NormalizedLibraryResourceInput;
+  provenance: NormalizedLibraryProvenanceInput;
+  actorUserId: string;
+  occurredAt: Date;
 }
 
 export interface LibraryReviewAuditRecord {

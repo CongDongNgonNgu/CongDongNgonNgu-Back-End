@@ -78,6 +78,13 @@ export function normalizeLibraryLicenseInput(
   };
 }
 
+export function normalizeLibraryCandidateId(input: unknown): string {
+  if (typeof input !== 'string' || !UUID_PATTERN.test(input.trim())) {
+    throw invalid('LIBRARY_CANDIDATE_ID_INVALID');
+  }
+  return input.trim().toLowerCase();
+}
+
 export function normalizeLibraryResourceInput(
   input: CreateLibraryResourceInput,
 ): NormalizedLibraryResourceInput {
