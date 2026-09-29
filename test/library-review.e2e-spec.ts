@@ -211,6 +211,91 @@ describe('library reviewer HTTP API', () => {
       .expect(({ body }) => expect(body.error.code).toBe('LIBRARY_REVIEW_CONFLICT'));
   });
 
+  it('integrates an accepted Phase 06 candidate once and leaves it in community review', async () => {
+    const api = request(app.getHttpServer());
+    const owner = await createUser('candidate-integration-owner');
+    const responder = await createUser('candidate-integration-responder');
+    const reviewer = await createUser('candidate-integration-reviewer', ['MODERATOR']);
+    const memberSession = await sessionFor(owner);
+    const reviewerSession = await sessionFor(reviewer);
+    const licenseKey = await registerLicense('HTTP-CANDIDATE', reviewer);
+    const correction = await corrections.createCorrectionRequest(owner.id, {
+      languageCode: 'en',
+      originalText: 'She go home.',
+      correctionIntent: 'GRAMMAR',
+      visibility: 'PUBLIC',
+    });
+    const response = await corrections.createStructuredResponse(correction.post.id, responder.id, {
+      responseKind: 'CORRECTION_PROPOSAL',
+      correctedText: 'She goes home.',
+      explanation: 'Third-person singular agreement.',
+    });
+    await corrections.acceptStructuredResponse(correction.post.id, response.id, owner.id);
+    const candidate = await corrections.nominateStructuredResponseAsLibraryCandidate(response.id, owner.id);
+    const candidateRecord = (await correctionRepository.findLibraryCandidateById(candidate.id))!;
+
+    const payload = {
+      resourceType: 'SENTENCE',
+      primaryLanguageCode: 'en',
+      visibility: 'PUBLIC',
+      details: { text: 'She goes home.', context: 'Third-person singular agreement.' },
+      licenseKey,
+      attribution: 'Phase 06 community candidate',
+    };
+    await api
+      .post('/api/v1/library/reviews/candidates/' + candidate.id + '/integrate')
+      .set('Authorization', 'Bearer ' + memberSession.accessToken)
+      .set('Cookie', memberSession.cookie)
+      .set('x-csrf-token', memberSession.csrfToken)
+      .send(payload)
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('LIBRARY_REVIEW_FORBIDDEN'));
+
+    const first = await api
+      .post('/api/v1/library/reviews/candidates/' + candidate.id + '/integrate')
+      .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
+      .set('Cookie', reviewerSession.cookie)
+      .set('x-csrf-token', reviewerSession.csrfToken)
+      .send(payload)
+      .expect(201);
+    expect(first.body.data).toMatchObject({
+      outcome: 'CREATED',
+      resource: { reviewState: 'COMMUNITY_REVIEW', resourceType: 'SENTENCE' },
+      provenance: {
+        sourceType: 'PHASE06_LIBRARY_CANDIDATE',
+        sourceId: candidate.id,
+        sourcePostId: candidateRecord.sourcePostId,
+        sourceResponseId: candidateRecord.sourceResponseId,
+        sourceCandidateId: candidate.id,
+        sourceAcceptanceId: candidateRecord.acceptanceId,
+      },
+      audit: { action: 'SUBMIT', newState: 'COMMUNITY_REVIEW' },
+    });
+    const resourceId = first.body.data.resource.id as string;
+
+    const retry = await api
+      .post('/api/v1/library/reviews/candidates/' + candidate.id + '/integrate')
+      .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
+      .set('Cookie', reviewerSession.cookie)
+      .set('x-csrf-token', reviewerSession.csrfToken)
+      .send(payload)
+      .expect(201);
+    expect(retry.body.data.outcome).toBe('RECONCILED');
+    expect(retry.body.data.resource.id).toBe(resourceId);
+    expect(retry.body.data.resource.reviewState).toBe('COMMUNITY_REVIEW');
+    await api.get('/api/v1/library/resources/' + resourceId).expect(404);
+
+    await corrections.revokeStructuredResponseAcceptance(correction.post.id, owner.id);
+    await api
+      .post('/api/v1/library/reviews/candidates/' + candidate.id + '/integrate')
+      .set('Authorization', 'Bearer ' + reviewerSession.accessToken)
+      .set('Cookie', reviewerSession.cookie)
+      .set('x-csrf-token', reviewerSession.csrfToken)
+      .send(payload)
+      .expect(404)
+      .expect(({ body }) => expect(body.error.code).toBe('LIBRARY_CANDIDATE_NOT_FOUND'));
+  });
+
   it('fails public reads closed and reconciles an invalidated Phase 06 source', async () => {
     const api = request(app.getHttpServer());
     const owner = await createUser('source-health-owner');

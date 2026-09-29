@@ -36,6 +36,8 @@ import type {
   LearningCollectionDetails,
   LibraryContributionEventRecord,
   LibraryContributionSubmissionResult,
+  LibraryCandidateIntegrationRepositoryInput,
+  LibraryCandidateIntegrationResult,
   LibraryLicenseRecord,
   LibraryProvenanceRecord,
   LibraryResourceDetails,
@@ -172,6 +174,341 @@ export class PostgresLibraryRepository implements LibraryRepository {
       const resource = await this.findResourceById(resourceId);
       if (!resource) throw new LibraryRepositoryConflictError('LIBRARY_RESOURCE_NOT_FOUND', 'Resource insert failed');
       return resource;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw mapPostgresError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async integrateLibraryCandidate(
+    input: LibraryCandidateIntegrationRepositoryInput,
+  ): Promise<LibraryCandidateIntegrationResult> {
+    if (input.resource.visibility !== 'PUBLIC') {
+      throw new LibraryRepositoryConflictError(
+        'LIBRARY_CANDIDATE_PUBLIC_REQUIRED',
+        'A Phase 06 candidate integration must create a public resource before review',
+      );
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        ['PHASE06_LIBRARY_CANDIDATE:' + input.candidate.id],
+      );
+
+      const sourceResult = await client.query(
+        `SELECT
+           candidate.*,
+           target_language.code AS target_language_code,
+           post.post_type AS parent_post_type,
+           post.content AS parent_content,
+           post.visibility AS parent_visibility,
+           post.moderation_state AS parent_moderation_state,
+           response.author_user_id AS response_author_user_id,
+           response.parent_post_id AS response_parent_post_id,
+           response.response_kind AS response_current_kind,
+           response.corrected_text AS response_corrected_text,
+           response.answer_text AS response_answer_text,
+           response.explanation AS response_explanation,
+           response.moderation_state AS response_moderation_state,
+           correction.original_text AS correction_original_text,
+           acceptance.id AS acceptance_row_id,
+           acceptance.parent_post_id AS acceptance_parent_post_id,
+           acceptance.response_id AS acceptance_response_id,
+           acceptance.accepted_by_user_id AS acceptance_accepted_by_user_id,
+           acceptance.accepted_at AS acceptance_accepted_at,
+           acceptance.revoked_at AS acceptance_revoked_at
+         FROM community_library_candidates AS candidate
+         INNER JOIN community_posts AS post
+           ON post.id = candidate.source_post_id
+         INNER JOIN community_structured_responses AS response
+           ON response.id = candidate.source_response_id
+          AND response.parent_post_id = candidate.source_post_id
+         INNER JOIN languages AS target_language
+           ON target_language.id = candidate.target_language_id
+         INNER JOIN community_structured_response_acceptances AS acceptance
+           ON acceptance.id = candidate.acceptance_id
+          AND acceptance.parent_post_id = candidate.source_post_id
+          AND acceptance.response_id = candidate.source_response_id
+          AND acceptance.revoked_at IS NULL
+         LEFT JOIN community_correction_requests AS correction
+           ON correction.post_id = candidate.source_post_id
+         WHERE candidate.id = $1::uuid
+           AND candidate.state = 'PENDING_REVIEW'::phase06_library_candidate_state
+           AND post.visibility = 'PUBLIC'::community_post_visibility
+           AND post.moderation_state = 'ACTIVE'::community_moderation_state
+           AND response.moderation_state = 'ACTIVE'::community_moderation_state
+         FOR UPDATE OF post, response, acceptance, candidate`,
+        [input.candidate.id],
+      );
+      const sourceRow = sourceResult.rows[0] as Record<string, unknown> | undefined;
+      assertCandidateSourceRow(sourceRow, input);
+
+      const licenseResult = await client.query(
+        'SELECT * FROM library_licenses WHERE license_key = $1 FOR SHARE',
+        [input.provenance.licenseKey],
+      );
+      const licenseRow = licenseResult.rows[0] as Record<string, unknown> | undefined;
+      if (!licenseRow) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_LICENSE_UNKNOWN',
+          'The referenced library license was not found',
+        );
+      }
+      const license = mapLicense(licenseRow);
+      if (!license.active) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_LICENSE_DISABLED',
+          'The referenced library license is disabled',
+        );
+      }
+      if (input.resource.visibility === 'PUBLIC' && license.redistributionAllowed !== true) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_LICENSE_REDISTRIBUTION_REQUIRED',
+          'A public Phase 06 candidate requires explicit redistribution permission',
+        );
+      }
+
+      const existingResult = await client.query(
+        `SELECT provenance.resource_id
+         FROM library_resource_provenance AS provenance
+         WHERE provenance.source_type = 'PHASE06_LIBRARY_CANDIDATE'::library_source_type
+           AND provenance.source_id = $1
+         ORDER BY provenance.resource_id ASC
+         FOR UPDATE OF provenance`,
+        [input.candidate.id],
+      );
+      if (existingResult.rows.length > 1) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_CANDIDATE_CONFLICT',
+          'The Phase 06 candidate is attached to multiple library resources',
+        );
+      }
+
+      if (existingResult.rows[0]) {
+        const resourceId = String(existingResult.rows[0].resource_id);
+        await client.query(
+          'SELECT id FROM library_resources WHERE id = $1::uuid FOR UPDATE',
+          [resourceId],
+        );
+        const existingResource = await this.findResourceWithExecutor(client, resourceId);
+        if (!existingResource) {
+          throw new LibraryRepositoryConflictError(
+            'LIBRARY_RESOURCE_NOT_FOUND',
+            'The existing candidate resource was not found',
+          );
+        }
+        assertExistingCandidateResource(existingResource, input);
+        const auditResult = await client.query(
+          `SELECT *
+           FROM library_resource_review_audits
+           WHERE resource_id = $1::uuid
+           ORDER BY created_at ASC, id ASC
+           FOR UPDATE`,
+          [resourceId],
+        );
+        const audits = auditResult.rows.map(mapAudit);
+        let audit = findCandidateSubmitAudit(audits);
+        if (existingResource.reviewState === 'DRAFT' || (
+          existingResource.reviewState === 'COMMUNITY_REVIEW' && !audit
+        )) {
+          await client.query(
+            `UPDATE library_resources
+             SET review_state = 'COMMUNITY_REVIEW'::library_review_state,
+                 reviewed_by_user_id = NULL,
+                 reviewed_at = NULL,
+                 updated_at = $2::timestamptz
+             WHERE id = $1::uuid
+               AND review_state IN ('DRAFT'::library_review_state, 'COMMUNITY_REVIEW'::library_review_state)`,
+            [resourceId, input.occurredAt],
+          );
+          const insertedAudit = await client.query(
+            candidateSubmitAuditInsertSql(),
+            [resourceId, input.actorUserId, input.occurredAt],
+          );
+          audit = mapAudit(insertedAudit.rows[0]);
+        }
+        if (!audit) {
+          throw new LibraryRepositoryConflictError(
+            'LIBRARY_CANDIDATE_CONFLICT',
+            'The existing candidate resource has no coherent submission audit',
+          );
+        }
+        const resource = await this.findResourceWithExecutor(client, resourceId);
+        if (!resource) {
+          throw new LibraryRepositoryConflictError(
+            'LIBRARY_RESOURCE_NOT_FOUND',
+            'The candidate resource was not found after reconciliation',
+          );
+        }
+        const provenance = resource.provenance.find((entry) => (
+          entry.sourceType === 'PHASE06_LIBRARY_CANDIDATE'
+            && entry.sourceId === input.candidate.id
+        ));
+        if (!provenance) {
+          throw new LibraryRepositoryConflictError(
+            'LIBRARY_CANDIDATE_CONFLICT',
+            'The candidate provenance disappeared during reconciliation',
+          );
+        }
+        await client.query('COMMIT');
+        return {
+          resource,
+          provenance,
+          audit,
+          outcome: 'RECONCILED',
+        };
+      }
+
+      const inserted = await client.query(
+        `INSERT INTO library_resources (
+           resource_type,
+           primary_language_id,
+           secondary_language_id,
+           cefr_level,
+           created_by_user_id,
+           visibility,
+           created_at,
+           updated_at
+         )
+         SELECT
+           $1::library_resource_type,
+           primary_language.id,
+           secondary_language.id,
+           $3::community_cefr_level,
+           $4::uuid,
+           $5::community_post_visibility,
+           $6::timestamptz,
+           $6::timestamptz
+         FROM languages AS primary_language
+         LEFT JOIN languages AS secondary_language
+           ON secondary_language.code = $2
+          AND secondary_language.active = true
+         WHERE primary_language.code = $7
+           AND primary_language.active = true
+         RETURNING *`,
+        [
+          input.resource.resourceType,
+          input.resource.secondaryLanguageCode,
+          input.resource.cefrLevel,
+          input.candidate.contributorUserId,
+          input.resource.visibility,
+          input.occurredAt,
+          input.resource.primaryLanguageCode,
+        ],
+      );
+      const resourceRow = inserted.rows[0] as Record<string, unknown> | undefined;
+      if (!resourceRow || (
+        input.resource.secondaryLanguageCode && !resourceRow.secondary_language_id
+      )) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_LANGUAGE_UNAVAILABLE',
+          'One or more library languages are unavailable',
+        );
+      }
+      const resourceId = String(resourceRow.id);
+      for (const topic of input.resource.topics) {
+        await client.query(
+          'INSERT INTO library_resource_topics (resource_id, topic, created_at) VALUES ($1, $2, $3::timestamptz)',
+          [resourceId, topic, input.occurredAt],
+        );
+      }
+      await this.insertDetails(client, resourceId, input.resource.details);
+      const provenanceResult = await client.query(
+        `INSERT INTO library_resource_provenance (
+           resource_id,
+           source_type,
+           source_id,
+           source_url,
+           license_key,
+           attribution,
+           original_author_reference,
+           original_contributor_user_id,
+           import_batch,
+           transformation_history,
+           source_post_id,
+           source_response_id,
+           source_candidate_id,
+           source_acceptance_id,
+           created_at,
+           updated_at
+         )
+         VALUES (
+           $1::uuid,
+           $2::library_source_type,
+           $3,
+           $4,
+           $5,
+           $6,
+           $7,
+           $8::uuid,
+           $9,
+           $10::jsonb,
+           $11::uuid,
+           $12::uuid,
+           $13::uuid,
+           $14::uuid,
+           $15::timestamptz,
+           $15::timestamptz
+         )
+         RETURNING *`,
+        provenanceValues(resourceId, input.provenance, input.occurredAt),
+      );
+      if (!provenanceResult.rows[0]) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_CANDIDATE_CONFLICT',
+          'The candidate provenance could not be created',
+        );
+      }
+      const updated = await client.query(
+        `UPDATE library_resources
+         SET review_state = 'COMMUNITY_REVIEW'::library_review_state,
+             reviewed_by_user_id = NULL,
+             reviewed_at = NULL,
+             updated_at = $2::timestamptz
+         WHERE id = $1::uuid
+           AND review_state = 'DRAFT'::library_review_state
+         RETURNING *`,
+        [resourceId, input.occurredAt],
+      );
+      if (!updated.rows[0]) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_REVIEW_CONFLICT',
+          'The candidate resource changed before submission',
+        );
+      }
+      const auditResult = await client.query(
+        candidateSubmitAuditInsertSql(),
+        [resourceId, input.actorUserId, input.occurredAt],
+      );
+      const audit = mapAudit(auditResult.rows[0]);
+      const resource = await this.findResourceWithExecutor(client, resourceId);
+      if (!resource) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_RESOURCE_NOT_FOUND',
+          'The candidate resource was not found after integration',
+        );
+      }
+      const provenance = resource.provenance.find((entry) => (
+        entry.sourceType === 'PHASE06_LIBRARY_CANDIDATE'
+          && entry.sourceId === input.candidate.id
+      ));
+      if (!provenance) {
+        throw new LibraryRepositoryConflictError(
+          'LIBRARY_CANDIDATE_CONFLICT',
+          'The candidate provenance was not found after integration',
+        );
+      }
+      await client.query('COMMIT');
+      return {
+        resource,
+        provenance,
+        audit,
+        outcome: 'CREATED',
+      };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw mapPostgresError(error);
@@ -1387,6 +1724,138 @@ export class PostgresLibraryRepository implements LibraryRepository {
   }
 }
 
+function assertCandidateSourceRow(
+  row: Record<string, unknown> | undefined,
+  input: LibraryCandidateIntegrationRepositoryInput,
+): void {
+  const candidate = input.candidate;
+  const expectedPostType = candidate.responseKind === 'CORRECTION_PROPOSAL'
+    ? 'CORRECTION_REQUEST'
+    : 'QUESTION';
+  const expectedSourceText = candidate.responseKind === 'CORRECTION_PROPOSAL'
+    ? row?.correction_original_text
+    : row?.parent_content;
+  const valid = Boolean(row)
+    && String(row?.id) === candidate.id
+    && String(row?.state) === 'PENDING_REVIEW'
+    && String(row?.source_post_id) === candidate.sourcePostId
+    && String(row?.source_response_id) === candidate.sourceResponseId
+    && String(row?.contributor_user_id) === candidate.contributorUserId
+    && String(row?.acceptance_id) === candidate.acceptanceId
+    && String(row?.target_language_code) === candidate.targetLanguageCode
+    && String(row?.parent_post_type) === expectedPostType
+    && String(row?.parent_visibility) === 'PUBLIC'
+    && String(row?.parent_moderation_state) === 'ACTIVE'
+    && String(row?.response_parent_post_id) === candidate.sourcePostId
+    && String(row?.response_current_kind) === candidate.responseKind
+    && String(row?.response_moderation_state) === 'ACTIVE'
+    && String(row?.response_author_user_id) === candidate.contributorUserId
+    && String(row?.acceptance_row_id) === candidate.acceptanceId
+    && String(row?.acceptance_parent_post_id) === candidate.sourcePostId
+    && String(row?.acceptance_response_id) === candidate.sourceResponseId
+    && String(row?.acceptance_accepted_by_user_id) === candidate.acceptedByUserId
+    && sameDatabaseDate(row?.acceptance_accepted_at, candidate.acceptedAt)
+    && row?.acceptance_revoked_at === null
+    && nullableDatabaseString(row?.source_text) === candidate.sourceText
+    && nullableDatabaseString(expectedSourceText) === candidate.sourceText
+    && nullableDatabaseString(row?.corrected_text) === candidate.correctedText
+    && nullableDatabaseString(row?.answer_text) === candidate.answerText
+    && nullableDatabaseString(row?.explanation) === candidate.explanation
+    && nullableDatabaseString(row?.response_corrected_text) === candidate.correctedText
+    && nullableDatabaseString(row?.response_answer_text) === candidate.answerText
+    && nullableDatabaseString(row?.response_explanation) === candidate.explanation
+    && input.resource.primaryLanguageCode === candidate.targetLanguageCode
+    && input.provenance.sourceType === 'PHASE06_LIBRARY_CANDIDATE'
+    && input.provenance.sourceId === candidate.id
+    && input.provenance.sourcePostId === candidate.sourcePostId
+    && input.provenance.sourceResponseId === candidate.sourceResponseId
+    && input.provenance.sourceCandidateId === candidate.id
+    && input.provenance.sourceAcceptanceId === candidate.acceptanceId
+    && input.provenance.originalContributorUserId === candidate.contributorUserId;
+  if (!valid) {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_PHASE06_SOURCE_INVALID',
+      'The Phase 06 candidate source changed or is not coherent',
+    );
+  }
+}
+
+function assertExistingCandidateResource(
+  resource: LibraryResourceRecord,
+  input: LibraryCandidateIntegrationRepositoryInput,
+): void {
+  const matching = resource.provenance.filter((entry) => (
+    entry.sourceType === 'PHASE06_LIBRARY_CANDIDATE'
+      && entry.sourceId === input.candidate.id
+  ));
+  if (
+    matching.length !== 1
+    || JSON.stringify(toNormalizedProvenance(matching[0])) !== JSON.stringify(input.provenance)
+    || !samePostgresResourceFacts(resource, input.resource)
+  ) {
+    throw new LibraryRepositoryConflictError(
+      'LIBRARY_CANDIDATE_CONFLICT',
+      'The Phase 06 candidate conflicts with existing library data',
+    );
+  }
+}
+
+function samePostgresResourceFacts(
+  resource: LibraryResourceRecord,
+  input: LibraryCandidateIntegrationRepositoryInput['resource'],
+): boolean {
+  return resource.resourceType === input.resourceType
+    && resource.primaryLanguageCode === input.primaryLanguageCode
+    && resource.secondaryLanguageCode === input.secondaryLanguageCode
+    && resource.cefrLevel === input.cefrLevel
+    && resource.visibility === input.visibility
+    && JSON.stringify([...resource.topics].sort()) === JSON.stringify([...input.topics].sort())
+    && JSON.stringify(resource.details) === JSON.stringify(input.details);
+}
+
+function findCandidateSubmitAudit(
+  audits: readonly LibraryReviewAuditRecord[],
+): LibraryReviewAuditRecord | null {
+  return [...audits].reverse().find((audit) => (
+    audit.action === 'SUBMIT'
+      && audit.previousState === 'DRAFT'
+      && audit.newState === 'COMMUNITY_REVIEW'
+  )) ?? null;
+}
+
+function candidateSubmitAuditInsertSql(): string {
+  return `INSERT INTO library_resource_review_audits (
+    resource_id,
+    actor_user_id,
+    previous_state,
+    new_state,
+    action,
+    note,
+    created_at
+  )
+  VALUES (
+    $1::uuid,
+    $2::uuid,
+    'DRAFT'::library_review_state,
+    'COMMUNITY_REVIEW'::library_review_state,
+    'SUBMIT'::library_review_action,
+    NULL,
+    $3::timestamptz
+  )
+  RETURNING *`;
+}
+
+function nullableDatabaseString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function sameDatabaseDate(value: unknown, expected: Date): boolean {
+  if (value instanceof Date) return value.getTime() === expected.getTime();
+  if (value === null || value === undefined) return false;
+  const parsed = new Date(String(value));
+  return !Number.isNaN(parsed.getTime()) && parsed.getTime() === expected.getTime();
+}
+
 function provenanceSelect(where: string, lock: boolean): string {
   return `SELECT
     provenance.*,
@@ -1712,6 +2181,18 @@ function mapPostgresError(error: unknown): Error {
     return new LibraryRepositoryConflictError(
       'LIBRARY_PROVENANCE_RESOURCE_MOVE',
       'Provenance cannot move between resources',
+    );
+  }
+  if (message.includes('LIBRARY_PHASE06_SOURCE_INVALID')) {
+    return new LibraryRepositoryConflictError(
+      'LIBRARY_PHASE06_SOURCE_INVALID',
+      'The Phase 06 candidate source is invalid or no longer coherent',
+    );
+  }
+  if (message.includes('LIBRARY_SOURCE_REFERENCE_INVALID')) {
+    return new LibraryRepositoryConflictError(
+      'LIBRARY_SOURCE_REFERENCE_INVALID',
+      'The library source reference is invalid',
     );
   }
   const constraint = isPostgresError(error) && 'constraint' in error

@@ -7,6 +7,7 @@ import {
   assertLibraryReviewTransition,
   LibraryValidationError,
   normalizeLibraryLicenseInput,
+  normalizeLibraryCandidateId,
   normalizeLibraryInvalidSourceQueueInput,
   normalizeLibraryReviewQueueInput,
   normalizeLibrarySearchInput,
@@ -59,6 +60,8 @@ import type {
   LibrarySearchInput,
   LibraryReviewAuditRecord,
   LibraryContributionSubmissionResult,
+  LibraryCandidateIntegrationResult,
+  IntegrateLibraryCandidateInput,
   SubmitLibraryContributionInput,
   LibrarySearchCursor,
   NormalizedLibraryLicenseInput,
@@ -136,6 +139,91 @@ export class LibraryService {
         ...normalized,
         createdByUserId: actor.userId,
         createdAt: new Date(),
+      });
+    } catch (error) {
+      throw this.mapRepositoryError(error);
+    }
+  }
+
+  async integrateLibraryCandidate(
+    actor: LibraryActor,
+    candidateIdInput: unknown,
+    input: IntegrateLibraryCandidateInput,
+  ): Promise<LibraryCandidateIntegrationResult> {
+    this.requireReviewer(actor);
+    const candidateId = this.normalize(() => normalizeLibraryCandidateId(candidateIdInput));
+    const candidate = await this.corrections.findLibraryCandidateById(candidateId);
+    if (!candidate) {
+      libraryFailure(
+        'LIBRARY_CANDIDATE_NOT_FOUND',
+        'The Phase 06 library candidate was not found or is no longer eligible',
+        404,
+      );
+    }
+    validateCandidateRecord(candidate);
+    await this.requireActiveLanguages([candidate.targetLanguageCode]);
+    if (this.corrections.inspectLibraryCandidateSource) {
+      const sourceHealth = await this.corrections.inspectLibraryCandidateSource({
+        sourceId: candidate.id,
+        sourcePostId: candidate.sourcePostId,
+        sourceResponseId: candidate.sourceResponseId,
+        sourceCandidateId: candidate.id,
+        sourceAcceptanceId: candidate.acceptanceId,
+      });
+      if (!sourceHealth.valid) {
+        libraryFailure(
+          'LIBRARY_PHASE06_SOURCE_INVALID',
+          'The Phase 06 candidate source is no longer active and coherent',
+          409,
+        );
+      }
+    }
+
+    const normalizedResource = this.normalize(() => normalizeLibraryResourceInput(input));
+    if (normalizedResource.visibility !== 'PUBLIC') {
+      libraryFailure(
+        'LIBRARY_CANDIDATE_PUBLIC_REQUIRED',
+        'A Phase 06 candidate integration must create a public resource before review',
+      );
+    }
+    await this.requireActiveLanguages([
+      normalizedResource.primaryLanguageCode,
+      ...(normalizedResource.secondaryLanguageCode ? [normalizedResource.secondaryLanguageCode] : []),
+    ]);
+    if (normalizedResource.primaryLanguageCode !== candidate.targetLanguageCode) {
+      libraryFailure(
+        'LIBRARY_CANDIDATE_LANGUAGE_MISMATCH',
+        'The resource language must match the canonical Phase 06 candidate language',
+        409,
+      );
+    }
+
+    const provenance = this.normalize(() => normalizeLibraryProvenanceInput({
+      sourceType: 'PHASE06_LIBRARY_CANDIDATE',
+      sourceId: candidate.id,
+      licenseKey: input?.licenseKey,
+      attribution: input?.attribution,
+      originalContributorUserId: candidate.contributorUserId,
+      sourcePostId: candidate.sourcePostId,
+      sourceResponseId: candidate.sourceResponseId,
+      sourceCandidateId: candidate.id,
+      sourceAcceptanceId: candidate.acceptanceId,
+    }));
+    const license = await this.requireActiveLicense(provenance.licenseKey);
+    if (license.redistributionAllowed !== true) {
+      libraryFailure(
+        'LIBRARY_LICENSE_REDISTRIBUTION_REQUIRED',
+        'A Phase 06 candidate requires a redistribution-safe license',
+      );
+    }
+
+    try {
+      return await this.repository.integrateLibraryCandidate({
+        candidate,
+        resource: normalizedResource,
+        provenance,
+        actorUserId: actor.userId,
+        occurredAt: new Date(),
       });
     } catch (error) {
       throw this.mapRepositoryError(error);
@@ -1029,6 +1117,51 @@ export class LibraryService {
     const status = error.code === 'LIBRARY_RESOURCE_NOT_FOUND' ? 404 : 409;
     return new LibraryFailure(error.code, status, error.message);
   }
+}
+
+function validateCandidateRecord(candidate: NonNullable<Awaited<ReturnType<CorrectionsRepository['findLibraryCandidateById']>>>): void {
+  if (!candidate || candidate.state !== 'PENDING_REVIEW') {
+    libraryFailure(
+      'LIBRARY_PHASE06_SOURCE_INVALID',
+      'The Phase 06 candidate is not an active pending candidate',
+      409,
+    );
+  }
+  const required = (value: unknown, maxLength: number): boolean => (
+    typeof value === 'string'
+      && value.trim().length > 0
+      && Array.from(value).length <= maxLength
+  );
+  const validVariant = candidate.responseKind === 'CORRECTION_PROPOSAL'
+    ? required(candidate.correctedText, 20_000) && candidate.answerText === null
+    : candidate.responseKind === 'QA_ANSWER'
+      ? required(candidate.answerText, 20_000) && candidate.correctedText === null
+      : false;
+  if (
+    !isUuid(candidate.id) ||
+    !isUuid(candidate.sourcePostId) ||
+    !isUuid(candidate.sourceResponseId) ||
+    !isUuid(candidate.acceptanceId) ||
+    !isUuid(candidate.contributorUserId) ||
+    !isUuid(candidate.acceptedByUserId) ||
+    !isUuid(candidate.candidateCreatedByUserId) ||
+    typeof candidate.targetLanguageCode !== 'string' ||
+    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/iu.test(candidate.targetLanguageCode) ||
+    !required(candidate.sourceText, 20_000) ||
+    (candidate.explanation !== null && !required(candidate.explanation, 5_000)) ||
+    !validVariant
+  ) {
+    libraryFailure(
+      'LIBRARY_PHASE06_SOURCE_INVALID',
+      'The Phase 06 candidate content or references are invalid',
+      409,
+    );
+  }
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
 }
 
 function toPublicProvenance(record: LibraryProvenanceRecord): LibraryPublicProvenance {

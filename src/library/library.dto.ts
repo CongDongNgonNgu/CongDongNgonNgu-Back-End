@@ -141,6 +141,16 @@ export class CreateLibraryResourceDto {
   details!: Record<string, unknown>;
 }
 
+export class IntegrateLibraryCandidateDto extends CreateLibraryResourceDto {
+  @IsString()
+  @MaxLength(80)
+  licenseKey!: string;
+
+  @IsString()
+  @MaxLength(2_000)
+  attribution!: string;
+}
+
 export class AttachLibraryProvenanceDto {
   @IsString()
   @MaxLength(64)
