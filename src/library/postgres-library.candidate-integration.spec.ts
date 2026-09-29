@@ -93,6 +93,28 @@ describe('PostgresLibraryRepository candidate integration', () => {
     expect(clientQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(client.release).toHaveBeenCalled();
   });
+
+  it('fails closed when the canonical acceptance timestamp genuinely differs', async () => {
+    const candidate = phase06Candidate();
+    const input = integrationInput(candidate);
+    const mismatchedSource = sourceRow(candidate);
+    mismatchedSource.acceptance_accepted_at = new Date(candidate.acceptedAt.getTime() + 1);
+    const clientQuery = jest.fn(async (sql: string) => {
+      if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+      if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
+      if (sql.includes('FROM community_library_candidates AS candidate')) {
+        return { rows: [mismatchedSource] };
+      }
+      throw new Error('Unexpected SQL');
+    });
+    const client = { query: clientQuery, release: jest.fn() };
+    const pool = { connect: jest.fn().mockResolvedValue(client) };
+    const repository = new PostgresLibraryRepository(pool as unknown as Pool);
+
+    await expect(repository.integrateLibraryCandidate(input))
+      .rejects.toThrow('The Phase 06 candidate source changed or is not coherent');
+    expect(clientQuery).toHaveBeenCalledWith('ROLLBACK');
+  });
 });
 
 function integrationInput(candidate: LibraryCandidateRecord): LibraryCandidateIntegrationRepositoryInput {
@@ -246,7 +268,7 @@ function phase06Candidate(): LibraryCandidateRecord {
     explanation: 'Reviewer explanation',
     acceptanceId: uuid(5),
     acceptedByUserId: uuid(7),
-    acceptedAt: new Date('2026-09-21T00:00:00.000Z'),
+    acceptedAt: new Date('2026-09-16T05:49:31.627Z'),
     candidateCreatedByUserId: uuid(8),
     state: 'PENDING_REVIEW',
     createdAt: new Date('2026-09-21T00:00:00.000Z'),
