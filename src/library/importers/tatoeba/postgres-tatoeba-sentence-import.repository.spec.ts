@@ -130,6 +130,12 @@ function concurrentFakePool() {
           resource_id: RESOURCE_ID,
           resource_type: 'SENTENCE',
           review_state: 'COMMUNITY_REVIEW',
+          has_submit_audit: true,
+          review_audit_history: [{
+            previous_state: 'DRAFT',
+            new_state: 'COMMUNITY_REVIEW',
+            action: 'SUBMIT',
+          }],
           provenance_revision: '1',
           project_language: 'vi',
           text_content: command.candidate.text,
@@ -261,6 +267,12 @@ describe('PostgresTatoebaSentenceImportRepository', () => {
         resource_id: RESOURCE_ID,
         resource_type: 'SENTENCE',
         review_state: 'COMMUNITY_REVIEW',
+        has_submit_audit: true,
+        review_audit_history: [{
+          previous_state: 'DRAFT',
+          new_state: 'COMMUNITY_REVIEW',
+          action: 'SUBMIT',
+        }],
         provenance_revision: '1',
         project_language: 'vi',
         text_content: command.candidate.text,
@@ -290,6 +302,196 @@ describe('PostgresTatoebaSentenceImportRepository', () => {
     expect(statements).not.toContain(TATOEBA_SENTENCE_IMPORT_SQL.updateSentence);
     expect(statements).not.toContain(TATOEBA_SENTENCE_IMPORT_SQL.updateProvenance);
     expect(statements).not.toContain(TATOEBA_SENTENCE_IMPORT_SQL.transitionDraft);
+  });
+
+  it('quarantines duplicate logical resources for one source identity before any write', async () => {
+    const query = jest.fn<QueryFn>()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: targetRows() })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [
+        { resource_id: RESOURCE_ID },
+        { resource_id: '00000000-0000-4000-8000-000000000011' },
+      ] })
+      .mockResolvedValueOnce({ rows: [] });
+    const { repository } = repositoryWith(query);
+
+    await expect(repository.importSentence(command)).resolves.toMatchObject({
+      status: 'QUARANTINED',
+      reason: 'TATOEBA_IMPORT_INTEGRITY_CONFLICT',
+      durableResourceCreated: false,
+    });
+    expect(query.mock.calls.some(([sql]) => sql === TATOEBA_SENTENCE_IMPORT_SQL.actorUser)).toBe(false);
+    expect(query.mock.calls.some(([sql]) => String(sql).startsWith('INSERT INTO library_'))).toBe(false);
+    expect(query).toHaveBeenLastCalledWith(TATOEBA_SENTENCE_IMPORT_SQL.rollback);
+  });
+
+  it('quarantines a source identity whose canonical resource state is partial', async () => {
+    const query = jest.fn<QueryFn>()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: targetRows() })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ resource_id: RESOURCE_ID }] })
+      .mockResolvedValueOnce({ rows: actorRows() })
+      .mockResolvedValueOnce({ rows: [{ role_key: 'ADMIN' }] })
+      .mockResolvedValueOnce({ rows: licenseRow('CC_BY_2_0_FR') })
+      .mockResolvedValueOnce({ rows: licenseRow('CC0_1_0') })
+      .mockResolvedValueOnce({ rows: [{ id: RESOURCE_ID }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+    const { repository } = repositoryWith(query);
+
+    await expect(repository.importSentence(command)).resolves.toMatchObject({
+      status: 'QUARANTINED',
+      reason: 'TATOEBA_IMPORT_INTEGRITY_CONFLICT',
+      durableResourceCreated: false,
+    });
+    expect(query.mock.calls.some(([sql]) => sql === TATOEBA_SENTENCE_IMPORT_SQL.updateSentence)).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql === TATOEBA_SENTENCE_IMPORT_SQL.updateProvenance)).toBe(false);
+    expect(query).toHaveBeenLastCalledWith(TATOEBA_SENTENCE_IMPORT_SQL.rollback);
+  });
+
+  it('quarantines an already-reviewed resource whose SUBMIT audit history is missing', async () => {
+    const query = jest.fn<QueryFn>()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: targetRows() })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ resource_id: RESOURCE_ID }] })
+      .mockResolvedValueOnce({ rows: actorRows() })
+      .mockResolvedValueOnce({ rows: [{ role_key: 'ADMIN' }] })
+      .mockResolvedValueOnce({ rows: licenseRow('CC_BY_2_0_FR') })
+      .mockResolvedValueOnce({ rows: licenseRow('CC0_1_0') })
+      .mockResolvedValueOnce({ rows: [{ id: RESOURCE_ID }] })
+      .mockResolvedValueOnce({ rows: [{
+        resource_id: RESOURCE_ID,
+        resource_type: 'SENTENCE',
+        review_state: 'COMMUNITY_REVIEW',
+        has_submit_audit: false,
+        review_audit_history: [],
+        provenance_revision: '1',
+        project_language: 'vi',
+        text_content: command.candidate.text,
+        source_id: command.candidate.sourceIdentity,
+        source_url: command.candidate.sourceUrl,
+        license_key: 'CC_BY_2_0_FR',
+        attribution: command.candidate.attribution,
+        original_author_reference: 'alice',
+        import_batch: command.candidate.importBatch,
+        transformation_history: [{ metadata: { snapshotId: command.candidate.snapshotId } }],
+      }] })
+      .mockResolvedValueOnce({ rows: hydratedRows() })
+      .mockResolvedValueOnce({ rows: [] });
+    const { repository } = repositoryWith(query);
+
+    await expect(repository.importSentence(command)).resolves.toEqual({
+      status: 'QUARANTINED',
+      sourceIdentity: command.candidate.sourceIdentity,
+      reason: 'TATOEBA_IMPORT_INTEGRITY_CONFLICT',
+      durableResourceCreated: false,
+    });
+
+    const statements = query.mock.calls.map(([sql]) => String(sql));
+    expect(statements).not.toContain(TATOEBA_SENTENCE_IMPORT_SQL.insertResource);
+    expect(statements).not.toContain(TATOEBA_SENTENCE_IMPORT_SQL.updateSentence);
+    expect(statements).not.toContain(TATOEBA_SENTENCE_IMPORT_SQL.updateProvenance);
+    expect(statements).not.toContain(TATOEBA_SENTENCE_IMPORT_SQL.insertSubmitAudit);
+    expect(query).toHaveBeenLastCalledWith(TATOEBA_SENTENCE_IMPORT_SQL.rollback);
+  });
+
+  it('fails closed when the current review state does not follow audit history', async () => {
+    const query = jest.fn<QueryFn>()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: targetRows() })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ resource_id: RESOURCE_ID }] })
+      .mockResolvedValueOnce({ rows: actorRows() })
+      .mockResolvedValueOnce({ rows: [{ role_key: 'ADMIN' }] })
+      .mockResolvedValueOnce({ rows: licenseRow('CC_BY_2_0_FR') })
+      .mockResolvedValueOnce({ rows: licenseRow('CC0_1_0') })
+      .mockResolvedValueOnce({ rows: [{ id: RESOURCE_ID }] })
+      .mockResolvedValueOnce({ rows: [{
+        resource_id: RESOURCE_ID,
+        resource_type: 'SENTENCE',
+        review_state: 'COMMUNITY_REVIEW',
+        has_submit_audit: true,
+        review_audit_history: [{
+          previous_state: 'COMMUNITY_REVIEW',
+          new_state: 'COMMUNITY_REVIEW',
+          action: 'SUBMIT',
+        }],
+        provenance_revision: '1',
+        project_language: 'vi',
+        text_content: command.candidate.text,
+        source_id: command.candidate.sourceIdentity,
+        source_url: command.candidate.sourceUrl,
+        license_key: 'CC_BY_2_0_FR',
+        attribution: command.candidate.attribution,
+        original_author_reference: 'alice',
+        import_batch: command.candidate.importBatch,
+        transformation_history: [{ metadata: { snapshotId: command.candidate.snapshotId } }],
+      }] })
+      .mockResolvedValueOnce({ rows: hydratedRows() })
+      .mockResolvedValueOnce({ rows: [] });
+    const { repository } = repositoryWith(query);
+
+    await expect(repository.importSentence(command)).resolves.toMatchObject({
+      status: 'QUARANTINED',
+      reason: 'TATOEBA_IMPORT_INTEGRITY_CONFLICT',
+      durableResourceCreated: false,
+    });
+    expect(query).toHaveBeenLastCalledWith(TATOEBA_SENTENCE_IMPORT_SQL.rollback);
+    expect(query.mock.calls.some(([sql]) => sql === TATOEBA_SENTENCE_IMPORT_SQL.updateSentence)).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql === TATOEBA_SENTENCE_IMPORT_SQL.updateProvenance)).toBe(false);
+  });
+
+  it('does not treat an unknown review state as an idempotent NOOP', async () => {
+    const query = jest.fn<QueryFn>()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: targetRows() })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ resource_id: RESOURCE_ID }] })
+      .mockResolvedValueOnce({ rows: actorRows() })
+      .mockResolvedValueOnce({ rows: [{ role_key: 'ADMIN' }] })
+      .mockResolvedValueOnce({ rows: licenseRow('CC_BY_2_0_FR') })
+      .mockResolvedValueOnce({ rows: licenseRow('CC0_1_0') })
+      .mockResolvedValueOnce({ rows: [{ id: RESOURCE_ID }] })
+      .mockResolvedValueOnce({ rows: [{
+        resource_id: RESOURCE_ID,
+        resource_type: 'SENTENCE',
+        review_state: 'UNKNOWN',
+        has_submit_audit: true,
+        review_audit_history: [],
+        provenance_revision: '1',
+        project_language: 'vi',
+        text_content: command.candidate.text,
+        source_id: command.candidate.sourceIdentity,
+        source_url: command.candidate.sourceUrl,
+        license_key: 'CC_BY_2_0_FR',
+        attribution: command.candidate.attribution,
+        original_author_reference: 'alice',
+        import_batch: command.candidate.importBatch,
+        transformation_history: [{ metadata: { snapshotId: command.candidate.snapshotId } }],
+      }] })
+      .mockResolvedValueOnce({ rows: hydratedRows('UNKNOWN') })
+      .mockResolvedValueOnce({ rows: [] });
+    const { repository } = repositoryWith(query);
+
+    await expect(repository.importSentence(command)).resolves.toMatchObject({
+      status: 'QUARANTINED',
+      reason: 'TATOEBA_IMPORT_INTEGRITY_CONFLICT',
+      durableResourceCreated: false,
+    });
+    expect(query).toHaveBeenLastCalledWith(TATOEBA_SENTENCE_IMPORT_SQL.rollback);
   });
 
   it('rolls back all work and sanitizes an unexpected database error', async () => {
@@ -384,6 +586,12 @@ describe('PostgresTatoebaSentenceImportRepository', () => {
         resource_id: RESOURCE_ID,
         resource_type: 'SENTENCE',
         review_state: 'COMMUNITY_REVIEW',
+        has_submit_audit: true,
+        review_audit_history: [{
+          previous_state: 'DRAFT',
+          new_state: 'COMMUNITY_REVIEW',
+          action: 'SUBMIT',
+        }],
         provenance_revision: '1',
         project_language: 'vi',
         text_content: command.candidate.text,
@@ -430,6 +638,8 @@ describe('PostgresTatoebaSentenceImportRepository', () => {
         resource_id: RESOURCE_ID,
         resource_type: 'SENTENCE',
         review_state: 'DRAFT',
+        has_submit_audit: false,
+        review_audit_history: [],
         provenance_revision: '1',
         project_language: 'vi',
         text_content: command.candidate.text,
@@ -477,6 +687,16 @@ describe('PostgresTatoebaSentenceImportRepository', () => {
         resource_id: RESOURCE_ID,
         resource_type: 'SENTENCE',
         review_state: 'VERIFIED',
+        has_submit_audit: true,
+        review_audit_history: [{
+          previous_state: 'DRAFT',
+          new_state: 'COMMUNITY_REVIEW',
+          action: 'SUBMIT',
+        }, {
+          previous_state: 'COMMUNITY_REVIEW',
+          new_state: 'VERIFIED',
+          action: 'VERIFY',
+        }],
         provenance_revision: '1',
         project_language: 'vi',
         text_content: command.candidate.text,
