@@ -51,6 +51,23 @@ export const TATOEBA_SENTENCE_IMPORT_SQL = {
   resourceState: `SELECT resource.id AS resource_id,
       resource.resource_type::text AS resource_type,
       resource.review_state::text AS review_state,
+      EXISTS (
+        SELECT 1
+        FROM library_resource_review_audits AS submit_audit
+        WHERE submit_audit.resource_id = resource.id
+          AND submit_audit.previous_state = 'DRAFT'::library_review_state
+          AND submit_audit.new_state = 'COMMUNITY_REVIEW'::library_review_state
+          AND submit_audit.action = 'SUBMIT'::library_review_action
+      ) AS has_submit_audit,
+      COALESCE((
+        SELECT json_agg(json_build_object(
+          'previous_state', audit.previous_state::text,
+          'new_state', audit.new_state::text,
+          'action', audit.action::text
+        ) ORDER BY audit.created_at, audit.id)
+        FROM library_resource_review_audits AS audit
+        WHERE audit.resource_id = resource.id
+      ), '[]'::json) AS review_audit_history,
       resource.provenance_revision,
       primary_language.code AS project_language,
       sentence.text_content,
@@ -250,6 +267,9 @@ interface ExistingSentenceState {
   resourceId: string;
   resourceType: string;
   reviewState: string;
+  hasSubmitAudit: boolean;
+  reviewAuditHistory: ReviewAuditHistoryEntry[];
+  reviewAuditHistoryAvailable: boolean;
   provenanceRevision: number;
   projectLanguage: string;
   text: string;
@@ -260,6 +280,12 @@ interface ExistingSentenceState {
   owner: string | null;
   importBatch: string | null;
   snapshotId: string | null;
+}
+
+interface ReviewAuditHistoryEntry {
+  previousState: string;
+  newState: string;
+  action: string;
 }
 
 class TatoebaSentenceImportQuarantine extends Error {
@@ -284,6 +310,60 @@ function nullableStringValue(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
 }
 
+function readReviewAuditHistory(value: unknown): {
+  entries: ReviewAuditHistoryEntry[];
+  available: boolean;
+} {
+  if (value === undefined) {
+    return { entries: [], available: false };
+  }
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch {
+      return { entries: [], available: false };
+    }
+  }
+  if (!Array.isArray(parsed)) {
+    return { entries: [], available: false };
+  }
+  return {
+    entries: parsed.map((entry) => {
+      const row = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
+      return {
+        previousState: stringValue(row.previous_state),
+        newState: stringValue(row.new_state),
+        action: stringValue(row.action),
+      };
+    }),
+    available: true,
+  };
+}
+
+function reviewAuditHistoryConsistent(
+  currentState: string,
+  history: readonly ReviewAuditHistoryEntry[],
+): boolean {
+  let expectedState = 'DRAFT';
+  const validTransitions = new Set([
+    'DRAFT:COMMUNITY_REVIEW:SUBMIT',
+    'COMMUNITY_REVIEW:VERIFIED:VERIFY',
+    'COMMUNITY_REVIEW:REJECTED:REJECT',
+    'VERIFIED:REJECTED:INVALIDATE',
+    'VERIFIED:COMMUNITY_REVIEW:INVALIDATE',
+    'REJECTED:DRAFT:REOPEN',
+  ]);
+  for (const audit of history) {
+    const transition = `${audit.previousState}:${audit.newState}:${audit.action}`;
+    if (audit.previousState !== expectedState || !validTransitions.has(transition)) {
+      return false;
+    }
+    expectedState = audit.newState;
+  }
+  return expectedState === currentState;
+}
+
 function readLicense(row: Record<string, unknown>): TatoebaImportLicenseRecord {
   return {
     licenseKey: stringValue(row.license_key),
@@ -304,10 +384,14 @@ function readExistingState(row: Record<string, unknown>): ExistingSentenceState 
     && lastTransformation.metadata && typeof lastTransformation.metadata === 'object'
     ? lastTransformation.metadata as Record<string, unknown>
     : null;
+  const reviewAuditHistory = readReviewAuditHistory(row.review_audit_history);
   return {
     resourceId: stringValue(row.resource_id),
     resourceType: stringValue(row.resource_type),
     reviewState: stringValue(row.review_state),
+    hasSubmitAudit: row.has_submit_audit === true,
+    reviewAuditHistory: reviewAuditHistory.entries,
+    reviewAuditHistoryAvailable: reviewAuditHistory.available,
     provenanceRevision: Number(row.provenance_revision ?? 0),
     projectLanguage: stringValue(row.project_language),
     text: stringValue(row.text_content),
@@ -599,6 +683,17 @@ export class PostgresTatoebaSentenceImportRepository implements TatoebaSentenceI
   ): Promise<TatoebaSentenceImportOutcome> {
     const { candidate } = command;
     if (existing.resourceType !== 'SENTENCE' || existing.sourceIdentity !== candidate.sourceIdentity) {
+      throw new TatoebaSentenceImportQuarantine(candidate.sourceIdentity, 'TATOEBA_IMPORT_INTEGRITY_CONFLICT');
+    }
+
+    if (!['DRAFT', 'COMMUNITY_REVIEW', 'VERIFIED', 'REJECTED'].includes(existing.reviewState)) {
+      throw new TatoebaSentenceImportQuarantine(candidate.sourceIdentity, 'TATOEBA_IMPORT_INTEGRITY_CONFLICT');
+    }
+    if (
+      !existing.reviewAuditHistoryAvailable
+      || !reviewAuditHistoryConsistent(existing.reviewState, existing.reviewAuditHistory)
+      || (existing.reviewState !== 'DRAFT' && !existing.hasSubmitAudit)
+    ) {
       throw new TatoebaSentenceImportQuarantine(candidate.sourceIdentity, 'TATOEBA_IMPORT_INTEGRITY_CONFLICT');
     }
 
