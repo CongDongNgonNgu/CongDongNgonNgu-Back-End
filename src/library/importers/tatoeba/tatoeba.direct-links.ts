@@ -35,7 +35,11 @@ function provenancePreview(
   sourceId: string,
   targetId: string,
   role: 'SOURCE' | 'TARGET',
+  pairIdentity: string,
+  primaryLanguageCode: TatoebaConfiguredDirection['sourceLanguage'],
+  secondaryLanguageCode: TatoebaConfiguredDirection['targetLanguage'],
 ): TatoebaProvenancePreview {
+  const relationIdentity = directTranslationIdentity(sourceId, targetId);
   return {
     sourceId: translationProvenanceSourceId(sourceId, targetId, role),
     sourceUrl: source.sourceUrl,
@@ -43,6 +47,14 @@ function provenancePreview(
     owner: source.owner,
     attribution: source.attribution,
     endpointSentenceId: source.sentenceId,
+    endpointRole: role,
+    relationIdentity,
+    inputPairIdentity: pairIdentity,
+    primaryLanguageCode,
+    secondaryLanguageCode,
+    importBatch: source.importBatch,
+    snapshotId: source.snapshotId,
+    apiCheckedAt: source.apiCheckedAt,
     transformationNote: null,
   };
 }
@@ -159,8 +171,24 @@ export function buildTatoebaTranslationCandidates(
         targetSentenceId: endpoint.target.sentenceId,
         sourceText: endpoint.source.text,
         translatedText: endpoint.target.text,
-        sourceProvenance: provenancePreview(endpoint.source, endpoint.source.sentenceId, endpoint.target.sentenceId, 'SOURCE'),
-        targetProvenance: provenancePreview(endpoint.target, endpoint.source.sentenceId, endpoint.target.sentenceId, 'TARGET'),
+        sourceProvenance: provenancePreview(
+          endpoint.source,
+          endpoint.source.sentenceId,
+          endpoint.target.sentenceId,
+          'SOURCE',
+          pairId,
+          endpoint.primaryLanguageCode,
+          endpoint.secondaryLanguageCode,
+        ),
+        targetProvenance: provenancePreview(
+          endpoint.target,
+          endpoint.source.sentenceId,
+          endpoint.target.sentenceId,
+          'TARGET',
+          pairId,
+          endpoint.primaryLanguageCode,
+          endpoint.secondaryLanguageCode,
+        ),
       });
     }
   }

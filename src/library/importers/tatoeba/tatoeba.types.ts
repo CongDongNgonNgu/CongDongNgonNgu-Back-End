@@ -116,6 +116,14 @@ export interface TatoebaProvenancePreview {
   owner: string | null;
   attribution: string;
   endpointSentenceId: string;
+  endpointRole: 'SOURCE' | 'TARGET';
+  relationIdentity: string;
+  inputPairIdentity: string;
+  primaryLanguageCode: TatoebaProjectLanguage;
+  secondaryLanguageCode: TatoebaProjectLanguage;
+  importBatch: string;
+  snapshotId: string;
+  apiCheckedAt: string;
   transformationNote: null;
 }
 
