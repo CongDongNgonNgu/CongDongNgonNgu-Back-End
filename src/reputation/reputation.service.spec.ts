@@ -57,6 +57,39 @@ describe('ReputationService', () => {
     await expect(service.getBalance(CONTRIBUTOR_ID, 'community_reputation')).resolves.toBe(0);
   });
 
+  it('blocks repeated server-derived contribution content without writing a reward', async () => {
+    const repository = new InMemoryReputationLedgerRepository();
+    const service = new ReputationService(repository, new ContributionRuleEngine());
+
+    const result = await service.awardContribution({
+      contributorUserId: CONTRIBUTOR_ID,
+      sourceType: 'CORRECTION_ACCEPTED',
+      sourceId: '00000000-0000-4000-8000-000000000004',
+      actorUserId: ACTOR_ID,
+      actorRole: 'MEMBER',
+      sourceVisibility: 'PUBLIC',
+      sourceState: 'ACTIVE',
+      occurredAt: OCCURRED_AT,
+      sourceFingerprint: 'normalized-server-fact',
+      priorContributionFacts: [{
+        contributorUserId: CONTRIBUTOR_ID,
+        actorUserId: ACTOR_ID,
+        sourceType: 'CORRECTION_ACCEPTED',
+        sourceId: SOURCE_ID,
+        sourceFingerprint: 'normalized-server-fact',
+        occurredAt: OCCURRED_AT,
+      }],
+    });
+
+    expect(result).toMatchObject({
+      entry: null,
+      created: false,
+      decision: { eligible: false, code: 'REPEATED_LOW_VALUE_SOURCE' },
+      antiFarming: { allowed: false, ruleVersion: 'community-antifarming-v1' },
+    });
+    await expect(service.getBalance(CONTRIBUTOR_ID, 'community_reputation')).resolves.toBe(0);
+  });
+
   it('reverses an award by appending a compensating entry and preserves history', async () => {
     const repository = new InMemoryReputationLedgerRepository();
     const service = new ReputationService(repository, new ContributionRuleEngine());
