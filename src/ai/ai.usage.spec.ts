@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import {
+  AiUsagePolicyError,
   estimateAiCost,
   InMemoryAiQuotaLedger,
   InMemoryAiRateLimiter,
@@ -77,5 +78,37 @@ describe('estimateAiCost', () => {
       inputCostPerMillionUsd: null,
       outputCostPerMillionUsd: null,
     }, { inputTokens: 12, outputTokens: 6 })).toBeNull();
+  });
+
+  it('fails closed for invalid pricing or token values', () => {
+    expect(() => estimateAiCost({
+      providerId: 'provider',
+      modelId: 'model',
+      supportsStreaming: false,
+      maxInputTokens: 100,
+      maxOutputTokens: 100,
+      inputCostPerMillionUsd: -1,
+      outputCostPerMillionUsd: 2,
+    }, { inputTokens: 12, outputTokens: 6 })).toThrow(AiUsagePolicyError);
+
+    expect(() => estimateAiCost({
+      providerId: 'provider',
+      modelId: 'model',
+      supportsStreaming: false,
+      maxInputTokens: 100,
+      maxOutputTokens: 100,
+      inputCostPerMillionUsd: Number.NaN,
+      outputCostPerMillionUsd: 2,
+    }, { inputTokens: 12, outputTokens: 6 })).toThrow(AiUsagePolicyError);
+
+    expect(() => estimateAiCost({
+      providerId: 'provider',
+      modelId: 'model',
+      supportsStreaming: false,
+      maxInputTokens: 100,
+      maxOutputTokens: 100,
+      inputCostPerMillionUsd: 1,
+      outputCostPerMillionUsd: 2,
+    }, { inputTokens: -1, outputTokens: 6 })).toThrow(AiUsagePolicyError);
   });
 });

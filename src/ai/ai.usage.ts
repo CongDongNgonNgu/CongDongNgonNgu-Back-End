@@ -11,10 +11,16 @@ import type {
   AiUsageRecord,
 } from './ai.types';
 
+export const AI_USAGE_COST_CURRENCY = 'USD' as const;
+export const AI_USAGE_COST_DECIMAL_PLACES = 6;
+
 export class AiUsagePolicyError extends Error {
   readonly name = 'AiUsagePolicyError';
 
-  constructor(readonly code: 'AI_QUOTA_EXCEEDED' | 'AI_POLICY_UNAVAILABLE', message: string) {
+  constructor(
+    readonly code: 'AI_QUOTA_EXCEEDED' | 'AI_POLICY_UNAVAILABLE' | 'AI_COST_UNAVAILABLE',
+    message: string,
+  ) {
     super(message);
   }
 }
@@ -63,11 +69,11 @@ export class InMemoryAiQuotaLedger implements AiQuotaLedger {
   }): AiQuotaReservation {
     if (
       !input.quotaKey ||
-      !Number.isInteger(input.requestedTokens) ||
+      !Number.isSafeInteger(input.requestedTokens) ||
       input.requestedTokens < 0 ||
-      !Number.isInteger(input.maxTokensPerWindow) ||
+      !Number.isSafeInteger(input.maxTokensPerWindow) ||
       input.maxTokensPerWindow < 0 ||
-      !Number.isInteger(input.windowMs) ||
+      !Number.isSafeInteger(input.windowMs) ||
       input.windowMs <= 0
     ) {
       throw new AiUsagePolicyError('AI_POLICY_UNAVAILABLE', 'AI quota policy is invalid');
@@ -96,7 +102,7 @@ export class InMemoryAiQuotaLedger implements AiQuotaLedger {
 
   settle(reservation: AiQuotaReservation, actualTokens: number): void {
     const current = this.reservations.get(reservation.id);
-    if (!current || !Number.isInteger(actualTokens) || actualTokens < 0 || actualTokens > current.reservedTokens) {
+    if (!current || !Number.isSafeInteger(actualTokens) || actualTokens < 0 || actualTokens > current.reservedTokens) {
       throw new AiUsagePolicyError('AI_POLICY_UNAVAILABLE', 'AI quota reservation is invalid');
     }
     const window = this.windows.get(current.windowKey);
@@ -132,6 +138,9 @@ export class InMemoryAiRateLimiter implements AiRateLimiter {
   private readonly counters = new Map<string, { count: number; resetAt: number }>();
 
   consume(key: string, limit: number, windowMs: number, now = Date.now()): boolean {
+    if (!key || !Number.isSafeInteger(limit) || limit < 0 || !Number.isSafeInteger(windowMs) || windowMs <= 0) {
+      return false;
+    }
     const current = this.counters.get(key);
     if (!current || current.resetAt <= now) {
       this.counters.set(key, { count: 1, resetAt: now + windowMs });
@@ -166,9 +175,28 @@ export function estimateAiCost(
   if (capability.inputCostPerMillionUsd === null || capability.outputCostPerMillionUsd === null) {
     return null;
   }
+  if (
+    !Number.isFinite(capability.inputCostPerMillionUsd) ||
+    capability.inputCostPerMillionUsd < 0 ||
+    !Number.isFinite(capability.outputCostPerMillionUsd) ||
+    capability.outputCostPerMillionUsd < 0 ||
+    !Number.isSafeInteger(usage.inputTokens) ||
+    usage.inputTokens < 0 ||
+    !Number.isSafeInteger(usage.outputTokens) ||
+    usage.outputTokens < 0
+  ) {
+    throw new AiUsagePolicyError('AI_COST_UNAVAILABLE', 'AI usage cost is unavailable');
+  }
   const cost = (
     usage.inputTokens * capability.inputCostPerMillionUsd
     + usage.outputTokens * capability.outputCostPerMillionUsd
   ) / 1_000_000;
-  return Number(cost.toFixed(6));
+  if (!Number.isFinite(cost) || cost < 0 || cost > Number.MAX_SAFE_INTEGER) {
+    throw new AiUsagePolicyError('AI_COST_UNAVAILABLE', 'AI usage cost is unavailable');
+  }
+  const rounded = Number(cost.toFixed(AI_USAGE_COST_DECIMAL_PLACES));
+  if (!Number.isFinite(rounded) || rounded < 0) {
+    throw new AiUsagePolicyError('AI_COST_UNAVAILABLE', 'AI usage cost is unavailable');
+  }
+  return rounded;
 }

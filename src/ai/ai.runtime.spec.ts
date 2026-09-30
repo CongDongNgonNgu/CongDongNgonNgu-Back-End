@@ -114,6 +114,42 @@ describe('AiRuntimeService', () => {
     });
   });
 
+  it('sanitizes provider availability details before they reach the runtime caller', async () => {
+    const { runtime } = buildRuntime(
+      new FailClosedAiProviderAdapter('provider-secret-key', 'disabled', 'provider secret details'),
+    );
+
+    try {
+      await runtime.complete(input());
+      throw new Error('Expected runtime completion to fail');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'AI_PROVIDER_UNAVAILABLE',
+        message: 'AI provider is unavailable',
+      });
+      expect((error as Error).message).not.toContain('provider-secret-key');
+    }
+  });
+
+  it('sanitizes provider failure details and keeps them out of usage records', async () => {
+    const provider = new FakeAiProvider([
+      new AiProviderError('UNKNOWN', 'Authorization: Bearer provider-secret-token', false),
+    ]);
+    const { runtime, usage } = buildRuntime(provider);
+
+    try {
+      await runtime.complete(input());
+      throw new Error('Expected runtime completion to fail');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'AI_PROVIDER_ERROR',
+        message: 'AI provider request failed',
+      });
+      expect(JSON.stringify(error)).not.toContain('provider-secret-token');
+      expect(JSON.stringify(usage.records)).not.toContain('provider-secret-token');
+    }
+  });
+
   it('retries a retryable provider error without double-recording successful usage', async () => {
     const provider = new FakeAiProvider([
       new AiProviderError('TIMEOUT', 'Provider timed out', true),
@@ -197,6 +233,38 @@ describe('AiRuntimeService', () => {
     });
   });
 
+  it('fails closed when provider pricing is invalid and does not record success', async () => {
+    const provider = new FakeAiProvider([successResult()]);
+    const invalidPricingCapability = { ...capability, inputCostPerMillionUsd: -1 };
+    const invalidPricingProvider: AiProviderAdapter = {
+      providerId: provider.providerId,
+      state: provider.state,
+      capabilities: [invalidPricingCapability],
+      complete: (request) => provider.complete(request),
+    };
+    const { runtime, usage, quota } = buildRuntime(invalidPricingProvider);
+
+    await expect(runtime.complete(input())).rejects.toMatchObject({
+      code: 'AI_COST_UNAVAILABLE',
+    });
+    expect(usage.records).toHaveLength(1);
+    expect(usage.records[0]).toMatchObject({ status: 'FAILED', errorCode: 'AI_COST_UNAVAILABLE' });
+    expect(quota.getSnapshot('user-09a-001')).toEqual({ usedTokens: 0, reservedTokens: 0 });
+  });
+
+  it('fails closed for an unsupported provider finish reason', async () => {
+    const provider = new FakeAiProvider([{
+      ...successResult(),
+      finishReason: 'unexpected' as never,
+    }]);
+    const { runtime, usage } = buildRuntime(provider);
+
+    await expect(runtime.complete(input())).rejects.toMatchObject({
+      code: 'AI_INVALID_RESPONSE',
+    });
+    expect(usage.records[0]).toMatchObject({ status: 'FAILED', errorCode: 'AI_INVALID_RESPONSE' });
+  });
+
   it('validates structured output before recording successful usage', async () => {
     const provider = new FakeAiProvider([{
       text: '{"kind":"WRITING_CORRECTION"}',
@@ -244,6 +312,16 @@ describe('AiRuntimeService', () => {
     await expect(runtime.complete(undefined as never)).rejects.toMatchObject({
       code: 'AI_REQUEST_INVALID',
     });
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it('rejects an oversized message batch before provider execution', async () => {
+    const provider = new FakeAiProvider([successResult()]);
+    const { runtime } = buildRuntime(provider);
+
+    await expect(runtime.complete(input({
+      messages: Array.from({ length: 65 }, () => ({ role: 'user' as const, content: 'Hello' })),
+    }))).rejects.toMatchObject({ code: 'AI_REQUEST_INVALID' });
     expect(provider.calls).toHaveLength(0);
   });
 });
