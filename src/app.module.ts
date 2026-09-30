@@ -7,6 +7,7 @@ import { CommunityModule } from './community/community.module';
 import { CorrectionsModule } from './corrections/corrections.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { LibraryModule } from './library/library.module';
+import { AiModule } from './ai/ai.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { LibraryModule } from './library/library.module';
     CorrectionsModule,
     ExchangeModule,
     LibraryModule,
+    AiModule,
   ],
 })
 export class AppModule {}

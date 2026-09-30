@@ -78,7 +78,7 @@ export function validateEnvironment(
 
   const aiProvider = readProvider(input.AI_PROVIDER, "AI_PROVIDER");
   const aiApiUrl = aiProvider === "configured"
-    ? readConfiguredUrl(input, "AI_API_URL", "AI_PROVIDER")
+    ? readConfiguredUrl(input, "AI_API_URL", "AI_PROVIDER", environment === "production")
     : undefined;
   const aiApiKey = aiProvider === "configured"
     ? readConfiguredSecret(input, "AI_API_KEY", "AI_PROVIDER")
