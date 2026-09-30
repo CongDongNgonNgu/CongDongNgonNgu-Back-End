@@ -19,6 +19,8 @@ import {
   type AiUsagePolicyResolver,
 } from './ai.types';
 import { AiAvailabilityError, AiProviderRegistry } from './ai.provider';
+import { AiContractError } from './ai.contracts';
+import { AI_STRUCTURED_OUTPUT_KINDS, parseAiStructuredOutput } from './ai.outputs';
 import {
   AiRateLimitError,
   AiUsagePolicyError,
@@ -119,7 +121,13 @@ export class AiRuntimeService {
         attempts += 1;
         try {
           const result = await this.completeWithTimeout(selection.adapter, input);
-          this.validateResult(result, selection.capability, input.maxOutputTokens, reservation.reservedTokens);
+          this.validateResult(
+            result,
+            selection.capability,
+            input.maxOutputTokens,
+            reservation.reservedTokens,
+            input.structuredOutputKind,
+          );
           const estimatedCostUsd = estimateAiCost(selection.capability, result.usage);
           this.quota.settle(reservation, result.usage.totalTokens);
           await this.usage.append({
@@ -200,7 +208,8 @@ export class AiRuntimeService {
       input.estimatedInputTokens > capability.maxInputTokens ||
       !Number.isInteger(input.maxOutputTokens) ||
       input.maxOutputTokens < 1 ||
-      input.maxOutputTokens > capability.maxOutputTokens
+      input.maxOutputTokens > capability.maxOutputTokens ||
+      (input.structuredOutputKind !== undefined && !AI_STRUCTURED_OUTPUT_KINDS.includes(input.structuredOutputKind))
     ) {
       throw new AiRuntimeError('AI_REQUEST_INVALID', 'AI completion request is invalid');
     }
@@ -241,6 +250,7 @@ export class AiRuntimeService {
     capability: AiModelCapability,
     maxOutputTokens: number,
     reservedTokens: number,
+    structuredOutputKind?: import('./ai.outputs').AiStructuredOutputKind,
   ): void {
     const usage = result?.usage;
     if (
@@ -257,6 +267,9 @@ export class AiRuntimeService {
       usage.totalTokens > reservedTokens
     ) {
       throw new AiRuntimeError('AI_INVALID_RESPONSE', 'AI provider returned invalid usage data');
+    }
+    if (structuredOutputKind !== undefined) {
+      parseAiStructuredOutput(structuredOutputKind, result.text);
     }
   }
 
@@ -288,6 +301,9 @@ export class AiRuntimeService {
 
   private normalizeError(error: unknown): AiRuntimeError {
     if (error instanceof AiRuntimeError) return error;
+    if (error instanceof AiContractError) {
+      return new AiRuntimeError('AI_INVALID_RESPONSE', 'AI provider returned invalid structured output');
+    }
     if (error instanceof AiAvailabilityError) {
       return new AiRuntimeError(error.code, error.message);
     }

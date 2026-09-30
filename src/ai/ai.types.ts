@@ -150,6 +150,7 @@ export interface AiCompletionInput extends AiCompletionRequest {
   userId: string;
   feature: string;
   entitlementKey?: string;
+  structuredOutputKind?: import('./ai.outputs').AiStructuredOutputKind;
 }
 
 export interface AiCompletionResponse extends AiCompletionResult {

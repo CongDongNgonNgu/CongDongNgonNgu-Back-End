@@ -212,6 +212,7 @@ describe('AI prompt contracts', () => {
       feature: 'writing_coach',
       modelId: 'test-model',
       maxOutputTokens: 500,
+      structuredOutputKind: 'WRITING_CORRECTION',
     });
     expect(request.messages.map((message) => message.role)).toEqual(['system', 'user']);
     expect(request.estimatedInputTokens).toBeGreaterThan(0);

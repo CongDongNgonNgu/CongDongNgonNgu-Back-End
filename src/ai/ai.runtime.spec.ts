@@ -197,6 +197,22 @@ describe('AiRuntimeService', () => {
     });
   });
 
+  it('validates structured output before recording successful usage', async () => {
+    const provider = new FakeAiProvider([{
+      text: '{"kind":"WRITING_CORRECTION"}',
+      usage: { inputTokens: 12, outputTokens: 6, totalTokens: 18 },
+      finishReason: 'stop',
+    }]);
+    const { runtime, usage, quota } = buildRuntime(provider);
+
+    await expect(runtime.complete(input({
+      structuredOutputKind: 'WRITING_CORRECTION',
+    }))).rejects.toMatchObject({ code: 'AI_INVALID_RESPONSE' });
+    expect(usage.records).toHaveLength(1);
+    expect(usage.records[0]).toMatchObject({ status: 'FAILED', errorCode: 'AI_INVALID_RESPONSE' });
+    expect(quota.getSnapshot('user-09a-001')).toEqual({ usedTokens: 0, reservedTokens: 0 });
+  });
+
   it('converts bounded provider timeouts into a safe runtime error after retries', async () => {
     const { runtime, usage, quota } = buildRuntime(new HangingAiProvider());
 

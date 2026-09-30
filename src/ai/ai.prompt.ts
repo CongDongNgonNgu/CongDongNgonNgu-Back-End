@@ -174,6 +174,7 @@ export function buildAiCompletionInput(input: AiCompletionInputContract): AiComp
     messages: prompt.messages,
     estimatedInputTokens: prompt.estimatedInputTokens,
     maxOutputTokens: input.maxOutputTokens,
+    structuredOutputKind: prompt.outputKind ?? undefined,
   };
 }
 

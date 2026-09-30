@@ -2,10 +2,13 @@ import { AiContractError } from './ai.contracts';
 
 export const AI_OUTPUT_CONTRACT_VERSION = 'ai.output.v1' as const;
 
-export type AiStructuredOutputKind =
-  | 'WRITING_CORRECTION'
-  | 'GRAMMAR_COACHING'
-  | 'QUIZ_MATERIAL';
+export const AI_STRUCTURED_OUTPUT_KINDS = [
+  'WRITING_CORRECTION',
+  'GRAMMAR_COACHING',
+  'QUIZ_MATERIAL',
+] as const;
+
+export type AiStructuredOutputKind = typeof AI_STRUCTURED_OUTPUT_KINDS[number];
 
 export interface AiWritingCorrection {
   readonly originalText: string;
