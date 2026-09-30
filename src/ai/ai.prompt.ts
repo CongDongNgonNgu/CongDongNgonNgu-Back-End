@@ -54,7 +54,7 @@ const MODE_PROMPT_CONTRACTS: Readonly<Record<AiPracticeMode, AiModePromptContrac
   learn_from_content: {
     mode: 'learn_from_content',
     responseFormat: 'JSON',
-    outputKind: 'QUIZ_MATERIAL',
+    outputKind: 'LEARN_FROM_CONTENT',
     requiredCapabilities: ['TEXT_GENERATION', 'STRUCTURED_OUTPUT'],
   },
 };

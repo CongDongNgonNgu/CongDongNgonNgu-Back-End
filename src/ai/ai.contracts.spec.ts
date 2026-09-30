@@ -297,6 +297,30 @@ describe('AI structured output contracts', () => {
       }],
     })).toMatchObject({ kind: 'QUIZ_MATERIAL' });
   });
+
+  it('validates the provenance-aware learning material contract as one structured result', () => {
+    expect(parseAiStructuredOutput('LEARN_FROM_CONTENT', {
+      version: AI_OUTPUT_CONTRACT_VERSION,
+      kind: 'LEARN_FROM_CONTENT',
+      summary: 'Practice from the source.',
+      vocabulary: [{ term: 'hello', meaning: 'a greeting', exampleSentence: 'Hello there.' }],
+      grammarNotes: [{ title: 'Present simple', explanation: 'Use it for routines.', example: 'I study daily.' }],
+      questions: [{ question: 'What is the topic?', answerGuide: 'Name the topic.' }],
+      miniQuiz: [{ question: 'Choose one', options: ['A', 'B'], correctOptionIndex: 0, explanation: 'A is correct.' }],
+      speakingPrompts: [{ prompt: 'Describe the source.', followUp: 'Add one detail.' }],
+    })).toMatchObject({ kind: 'LEARN_FROM_CONTENT', vocabulary: [{ term: 'hello' }] });
+
+    expect(() => parseAiStructuredOutput('LEARN_FROM_CONTENT', {
+      version: AI_OUTPUT_CONTRACT_VERSION,
+      kind: 'LEARN_FROM_CONTENT',
+      summary: 'Practice from the source.',
+      vocabulary: [],
+      grammarNotes: [{ title: 'Present simple', explanation: 'Use it for routines.', example: 'I study daily.' }],
+      questions: [{ question: 'What is the topic?', answerGuide: 'Name the topic.' }],
+      miniQuiz: [{ question: 'Choose one', options: ['A', 'B'], correctOptionIndex: 0, explanation: 'A is correct.' }],
+      speakingPrompts: [{ prompt: 'Describe the source.', followUp: 'Add one detail.' }],
+    })).toThrow('AI structured output is invalid');
+  });
 });
 
 function profileFixture(overrides: Partial<ProfileRecord> = {}): ProfileRecord {

@@ -6,6 +6,7 @@ export const AI_STRUCTURED_OUTPUT_KINDS = [
   'WRITING_CORRECTION',
   'GRAMMAR_COACHING',
   'QUIZ_MATERIAL',
+  'LEARN_FROM_CONTENT',
 ] as const;
 
 export type AiStructuredOutputKind = typeof AI_STRUCTURED_OUTPUT_KINDS[number];
@@ -58,10 +59,44 @@ export interface AiQuizMaterialOutput {
   readonly items: readonly AiQuizItem[];
 }
 
+export interface AiLearningVocabularyItem {
+  readonly term: string;
+  readonly meaning: string;
+  readonly exampleSentence: string;
+}
+
+export interface AiLearningGrammarNote {
+  readonly title: string;
+  readonly explanation: string;
+  readonly example: string;
+}
+
+export interface AiLearningQuestion {
+  readonly question: string;
+  readonly answerGuide: string;
+}
+
+export interface AiLearningSpeakingPrompt {
+  readonly prompt: string;
+  readonly followUp: string;
+}
+
+export interface AiLearnFromContentOutput {
+  readonly version: typeof AI_OUTPUT_CONTRACT_VERSION;
+  readonly kind: 'LEARN_FROM_CONTENT';
+  readonly summary: string;
+  readonly vocabulary: readonly AiLearningVocabularyItem[];
+  readonly grammarNotes: readonly AiLearningGrammarNote[];
+  readonly questions: readonly AiLearningQuestion[];
+  readonly miniQuiz: readonly AiQuizItem[];
+  readonly speakingPrompts: readonly AiLearningSpeakingPrompt[];
+}
+
 export type AiStructuredOutput =
   | AiWritingCorrectionOutput
   | AiGrammarCoachingOutput
-  | AiQuizMaterialOutput;
+  | AiQuizMaterialOutput
+  | AiLearnFromContentOutput;
 
 const MAX_OUTPUT_JSON_LENGTH = 20_000;
 const MAX_SUMMARY_LENGTH = 1_000;
@@ -83,9 +118,85 @@ export function parseAiStructuredOutput(
       return parseGrammarCoaching(parsed);
     case 'QUIZ_MATERIAL':
       return parseQuizMaterial(parsed);
+    case 'LEARN_FROM_CONTENT':
+      return parseLearnFromContent(parsed);
     default:
       throw invalidOutput();
   }
+}
+
+function parseLearnFromContent(value: Record<string, unknown>): AiLearnFromContentOutput {
+  requireExactKeys(value, [
+    'version',
+    'kind',
+    'summary',
+    'vocabulary',
+    'grammarNotes',
+    'questions',
+    'miniQuiz',
+    'speakingPrompts',
+  ]);
+  if (value.version !== AI_OUTPUT_CONTRACT_VERSION || value.kind !== 'LEARN_FROM_CONTENT') {
+    throw invalidOutput();
+  }
+  const vocabulary = readBoundedArray(value.vocabulary, parseLearningVocabularyItem);
+  const grammarNotes = readBoundedArray(value.grammarNotes, parseLearningGrammarNote);
+  const questions = readBoundedArray(value.questions, parseLearningQuestion);
+  const miniQuiz = readBoundedArray(value.miniQuiz, parseQuizItem);
+  const speakingPrompts = readBoundedArray(value.speakingPrompts, parseLearningSpeakingPrompt);
+  return {
+    version: AI_OUTPUT_CONTRACT_VERSION,
+    kind: 'LEARN_FROM_CONTENT',
+    summary: readText(value.summary, MAX_SUMMARY_LENGTH),
+    vocabulary,
+    grammarNotes,
+    questions,
+    miniQuiz,
+    speakingPrompts,
+  };
+}
+
+function parseLearningVocabularyItem(value: unknown): AiLearningVocabularyItem {
+  if (!isRecord(value)) throw invalidOutput();
+  requireExactKeys(value, ['term', 'meaning', 'exampleSentence']);
+  return {
+    term: readText(value.term, MAX_TEXT_LENGTH),
+    meaning: readText(value.meaning, MAX_EXPLANATION_LENGTH),
+    exampleSentence: readText(value.exampleSentence, MAX_TEXT_LENGTH),
+  };
+}
+
+function parseLearningGrammarNote(value: unknown): AiLearningGrammarNote {
+  if (!isRecord(value)) throw invalidOutput();
+  requireExactKeys(value, ['title', 'explanation', 'example']);
+  return {
+    title: readText(value.title, MAX_TEXT_LENGTH),
+    explanation: readText(value.explanation, MAX_EXPLANATION_LENGTH),
+    example: readText(value.example, MAX_TEXT_LENGTH),
+  };
+}
+
+function parseLearningQuestion(value: unknown): AiLearningQuestion {
+  if (!isRecord(value)) throw invalidOutput();
+  requireExactKeys(value, ['question', 'answerGuide']);
+  return {
+    question: readText(value.question, MAX_TEXT_LENGTH),
+    answerGuide: readText(value.answerGuide, MAX_EXPLANATION_LENGTH),
+  };
+}
+
+function parseLearningSpeakingPrompt(value: unknown): AiLearningSpeakingPrompt {
+  if (!isRecord(value)) throw invalidOutput();
+  requireExactKeys(value, ['prompt', 'followUp']);
+  return {
+    prompt: readText(value.prompt, MAX_TEXT_LENGTH),
+    followUp: readText(value.followUp, MAX_TEXT_LENGTH),
+  };
+}
+
+function readBoundedArray<T>(value: unknown, parser: (value: unknown) => T): T[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8) throw invalidOutput();
+  return value.map(parser);
 }
 
 function parseWritingCorrection(value: Record<string, unknown>): AiWritingCorrectionOutput {

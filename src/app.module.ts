@@ -10,6 +10,7 @@ import { LibraryModule } from './library/library.module';
 import { AiModule } from './ai/ai.module';
 import { AiConversationModule } from './ai/ai.conversation.module';
 import { AiCoachingModule } from './ai/ai.coaching.module';
+import { AiLearningModule } from './ai/ai.learning.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { AiCoachingModule } from './ai/ai.coaching.module';
     AiModule,
     AiConversationModule,
     AiCoachingModule,
+    AiLearningModule,
   ],
 })
 export class AppModule {}
