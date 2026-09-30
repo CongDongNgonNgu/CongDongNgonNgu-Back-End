@@ -52,6 +52,7 @@ describe('ContributionRuleEngine', () => {
     ['self-accept', { actorUserId: CONTRIBUTOR_ID, actorRole: 'MEMBER' as const }, 'SELF_REWARD_FORBIDDEN'],
     ['private answer', { actorUserId: ACTOR_ID, actorRole: 'MEMBER' as const, sourceVisibility: 'PRIVATE' as const }, 'SOURCE_NOT_ELIGIBLE'],
     ['unverified resource', { actorUserId: ACTOR_ID, actorRole: 'MEMBER' as const, sourceType: 'RESOURCE_VERIFIED' as const, sourceState: 'ACTIVE' as const }, 'SOURCE_NOT_ELIGIBLE'],
+    ['member verification', { actorUserId: ACTOR_ID, actorRole: 'MEMBER' as const, sourceType: 'RESOURCE_VERIFIED' as const, sourceState: 'VERIFIED' as const }, 'REVIEWER_REQUIRED'],
     ['member review', { actorUserId: ACTOR_ID, actorRole: 'MEMBER' as const, sourceType: 'REVIEW_VERIFICATION' as const, sourceState: 'VERIFIED' as const }, 'REVIEWER_REQUIRED'],
   ] as const)('fails closed for %s', (_name, overrides, code) => {
     const engine = new ContributionRuleEngine();

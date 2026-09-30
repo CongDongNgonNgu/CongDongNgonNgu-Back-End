@@ -57,6 +57,7 @@ export const DEFAULT_CONTRIBUTION_RULES: readonly ContributionRuleDefinition[] =
     requiredSourceState: 'VERIFIED',
     requiresPublicSource: true,
     requiresIndependentActor: true,
+    requiredActorRoles: ['MODERATOR', 'ADMIN'],
   },
   {
     sourceType: 'RESOURCE_VERIFIED',
@@ -67,6 +68,7 @@ export const DEFAULT_CONTRIBUTION_RULES: readonly ContributionRuleDefinition[] =
     requiredSourceState: 'VERIFIED',
     requiresPublicSource: true,
     requiresIndependentActor: true,
+    requiredActorRoles: ['MODERATOR', 'ADMIN'],
   },
   {
     sourceType: 'REVIEW_VERIFICATION',
