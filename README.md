@@ -119,6 +119,18 @@ There are intentionally no course, lesson, classroom,
 assignment, quiz, certificate, job, mentor, AI, commerce, payment, or
 membership routes in this repository.
 
+Phase 11A adds the authenticated membership capability projection:
+
+~~~text
+GET   /membership/capabilities      server-authoritative current access
+~~~
+
+The projection uses versioned membership plan facts and explicit entitlement
+definitions. It falls back to the Free plan without a paid membership row;
+the route does not accept a client-supplied plan, status or expiry claim.
+Payment attempts, provider settlement, webhook fulfillment and pricing are
+later Phase 11 boundaries and are not initialized by this foundation.
+
 ## CI and deployment boundary
 
 CI runs on pull requests and pushes to `main` and checks install, lint, types, unit/e2e tests, build, and dependency audit. Phase 00 configures no deployment workflow; production deployment remains a separate approved task.
