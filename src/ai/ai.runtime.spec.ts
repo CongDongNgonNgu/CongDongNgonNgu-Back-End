@@ -220,4 +220,14 @@ describe('AiRuntimeService', () => {
     }))).rejects.toMatchObject({ code: 'AI_REQUEST_INVALID' });
     expect(provider.calls).toHaveLength(0);
   });
+
+  it('rejects a missing request object with a domain error', async () => {
+    const provider = new FakeAiProvider([successResult()]);
+    const { runtime } = buildRuntime(provider);
+
+    await expect(runtime.complete(undefined as never)).rejects.toMatchObject({
+      code: 'AI_REQUEST_INVALID',
+    });
+    expect(provider.calls).toHaveLength(0);
+  });
 });

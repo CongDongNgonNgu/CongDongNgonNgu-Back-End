@@ -62,7 +62,16 @@ export class AiRuntimeService {
 
   async complete(input: AiCompletionInput): Promise<AiCompletionResponse> {
     this.validateRuntimePolicy();
-    const selection = this.providers.resolve(input.modelId);
+    const modelId = (
+      input &&
+      typeof input === 'object' &&
+      'modelId' in input &&
+      typeof input.modelId === 'string'
+    ) ? input.modelId : undefined;
+    if (!modelId?.trim()) {
+      throw new AiRuntimeError('AI_REQUEST_INVALID', 'AI completion request is invalid');
+    }
+    const selection = this.providers.resolve(modelId);
     this.validateRequest(input, selection.capability);
     const policy = await this.policies.resolve({
       userId: input.userId,
