@@ -74,6 +74,34 @@ function hydratedRows(reviewState = 'COMMUNITY_REVIEW') {
   }];
 }
 
+function rejectedStateRows() {
+  return [{
+    resource_id: RESOURCE_ID,
+    resource_type: 'SENTENCE',
+    review_state: 'REJECTED',
+    has_submit_audit: true,
+    review_audit_history: [{
+      previous_state: 'DRAFT',
+      new_state: 'COMMUNITY_REVIEW',
+      action: 'SUBMIT',
+    }, {
+      previous_state: 'COMMUNITY_REVIEW',
+      new_state: 'REJECTED',
+      action: 'REJECT',
+    }],
+    provenance_revision: '2',
+    project_language: 'vi',
+    text_content: command.candidate.text,
+    source_id: command.candidate.sourceIdentity,
+    source_url: command.candidate.sourceUrl,
+    license_key: 'CC_BY_2_0_FR',
+    attribution: command.candidate.attribution,
+    original_author_reference: 'alice',
+    import_batch: command.candidate.importBatch,
+    transformation_history: [{ metadata: { snapshotId: command.candidate.snapshotId } }],
+  }];
+}
+
 function repositoryWith(query: QueryFn, release = jest.fn()) {
   const client = { query, release } as unknown as PoolClient;
   const pool = { connect: async () => client };
@@ -721,6 +749,75 @@ describe('PostgresTatoebaSentenceImportRepository', () => {
     });
     expect(query.mock.calls.some(([sql]) => sql === TATOEBA_SENTENCE_IMPORT_SQL.updateSentence)).toBe(false);
     expect(query.mock.calls.some(([sql]) => sql === TATOEBA_SENTENCE_IMPORT_SQL.updateProvenance)).toBe(false);
+  });
+
+  it('quarantines changed facts for a REJECTED sentence, rolls back, and deduplicates an exact retry', async () => {
+    const changedCommand: TatoebaSentenceImportCommand = {
+      ...command,
+      candidate: { ...command.candidate, text: 'Changed incoming text' },
+    };
+    let stateReads = 0;
+    const query = jest.fn<QueryFn>().mockImplementation(async (sql, values) => {
+      if (sql === TATOEBA_SENTENCE_IMPORT_SQL.target) return { rows: targetRows() };
+      if (sql === TATOEBA_SENTENCE_IMPORT_SQL.globalIdentityLookup) {
+        return { rows: [{ resource_id: RESOURCE_ID }] };
+      }
+      if (sql === TATOEBA_SENTENCE_IMPORT_SQL.actorUser) return { rows: actorRows() };
+      if (sql === TATOEBA_SENTENCE_IMPORT_SQL.actorRoles) return { rows: [{ role_key: 'ADMIN' }] };
+      if (sql === TATOEBA_SENTENCE_IMPORT_SQL.license) {
+        const key = String(Array.isArray(values) ? values[0] : '');
+        return { rows: licenseRow(key === 'CC0_1_0' ? 'CC0_1_0' : 'CC_BY_2_0_FR') };
+      }
+      if (sql === TATOEBA_SENTENCE_IMPORT_SQL.resourceLock) return { rows: [{ id: RESOURCE_ID }] };
+      if (sql === TATOEBA_SENTENCE_IMPORT_SQL.resourceState) {
+        stateReads += 1;
+        return { rows: rejectedStateRows() };
+      }
+      return { rows: [] };
+    });
+    const { repository } = repositoryWith(query);
+
+    const first = await repository.importSentence(changedCommand);
+    const retry = await repository.importSentence(changedCommand);
+
+    expect(first).toEqual({
+      status: 'QUARANTINED',
+      sourceIdentity: command.candidate.sourceIdentity,
+      reason: 'TATOEBA_IMPORT_REJECTED_NO_REOPEN',
+      durableResourceCreated: false,
+    });
+    expect(retry).toEqual(first);
+    expect(stateReads).toBe(2);
+
+    const statements = query.mock.calls.map(([sql]) => String(sql));
+    const resourceWrites = [
+      TATOEBA_SENTENCE_IMPORT_SQL.insertResource,
+      TATOEBA_SENTENCE_IMPORT_SQL.insertSentence,
+      TATOEBA_SENTENCE_IMPORT_SQL.updateSentence,
+    ];
+    const provenanceWrites = [
+      TATOEBA_SENTENCE_IMPORT_SQL.insertProvenance,
+      TATOEBA_SENTENCE_IMPORT_SQL.updateProvenance,
+    ];
+    const stateWrites = [
+      TATOEBA_SENTENCE_IMPORT_SQL.transitionDraft,
+      TATOEBA_SENTENCE_IMPORT_SQL.transitionVerified,
+      TATOEBA_SENTENCE_IMPORT_SQL.updateResourceLanguage,
+    ];
+    const auditWrites = [
+      TATOEBA_SENTENCE_IMPORT_SQL.insertSubmitAudit,
+      TATOEBA_SENTENCE_IMPORT_SQL.insertInvalidateAudit,
+    ];
+    const countStatements = (candidates: readonly string[]) =>
+      statements.filter((sql) => candidates.includes(sql)).length;
+
+    expect(countStatements(resourceWrites)).toBe(0);
+    expect(countStatements(provenanceWrites)).toBe(0);
+    expect(countStatements(stateWrites)).toBe(0);
+    expect(countStatements(auditWrites)).toBe(0);
+    expect(statements.filter((sql) => sql === TATOEBA_SENTENCE_IMPORT_SQL.commit)).toHaveLength(0);
+    expect(statements.filter((sql) => sql === TATOEBA_SENTENCE_IMPORT_SQL.rollback)).toHaveLength(2);
+    expect(statements.filter((sql) => sql === TATOEBA_SENTENCE_IMPORT_SQL.hydrate)).toHaveLength(0);
   });
 
   it('serializes concurrent same-sentence runs so one creates and the other reconciles to NOOP', async () => {
