@@ -86,4 +86,21 @@ describe('ContributionRuleEngine', () => {
 
     expect(decision).toMatchObject({ eligible: false, code: 'RULE_NOT_FOUND' });
   });
+
+  it('fails closed when an internal event carries an invalid timestamp', () => {
+    const engine = new ContributionRuleEngine();
+
+    const decision = engine.evaluate({
+      contributorUserId: CONTRIBUTOR_ID,
+      sourceType: 'USEFUL_ANSWER_ACCEPTED',
+      sourceId: SOURCE_ID,
+      actorUserId: ACTOR_ID,
+      actorRole: 'MEMBER',
+      sourceVisibility: 'PUBLIC',
+      sourceState: 'ACTIVE',
+      occurredAt: null as never,
+    });
+
+    expect(decision).toMatchObject({ eligible: false, code: 'INVALID_SOURCE' });
+  });
 });

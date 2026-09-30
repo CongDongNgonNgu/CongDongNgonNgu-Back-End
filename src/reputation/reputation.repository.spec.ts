@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import {
   InMemoryReputationLedgerRepository,
   ReputationRepositoryConflictError,
+  type AppendReputationLedgerEntryInput,
 } from './reputation.repository';
 
 const USER_ID = '00000000-0000-4000-8000-000000000001';
@@ -100,7 +101,7 @@ describe('InMemoryReputationLedgerRepository', () => {
   });
 });
 
-function contributionInput() {
+function contributionInput(): AppendReputationLedgerEntryInput {
   return {
     userId: USER_ID,
     system: 'community_reputation' as const,

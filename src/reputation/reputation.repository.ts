@@ -1,13 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
-import { REPUTATION_SYSTEMS, type ReputationLedgerEntry, type ReputationSystem } from './reputation.types';
+import {
+  REPUTATION_SOURCE_TYPES,
+  REPUTATION_SYSTEMS,
+  type ReputationLedgerEntry,
+  type ReputationSourceType,
+  type ReputationSystem,
+} from './reputation.types';
 
 export const REPUTATION_LEDGER_REPOSITORY = 'REPUTATION_LEDGER_REPOSITORY';
 
 export interface AppendReputationLedgerEntryInput {
   userId: string;
   system: ReputationSystem;
-  sourceType: string;
+  sourceType: ReputationSourceType;
   sourceId: string;
   delta: number;
   reason: string;
@@ -67,7 +73,8 @@ export class InMemoryReputationLedgerRepository implements ReputationLedgerRepos
 
   async append(input: AppendReputationLedgerEntryInput): Promise<ReputationLedgerAppendResult> {
     validateInput(input);
-    const existingId = this.entriesByIdempotency.get(input.idempotencyKey);
+    const idempotencyKey = input.idempotencyKey.trim();
+    const existingId = this.entriesByIdempotency.get(idempotencyKey);
     if (existingId) {
       const existing = this.entries.get(existingId);
       if (!existing) throw referenceInvalid();
@@ -90,7 +97,7 @@ export class InMemoryReputationLedgerRepository implements ReputationLedgerRepos
       delta: input.delta,
       reason: input.reason.trim(),
       ruleVersion: input.ruleVersion.trim(),
-      idempotencyKey: input.idempotencyKey.trim(),
+      idempotencyKey,
       reversalOfEntryId: input.reversalOfEntryId,
       createdAt: new Date(input.createdAt),
     };
@@ -287,6 +294,7 @@ function validateInput(input: AppendReputationLedgerEntryInput): void {
     !isUuid(input.userId) ||
     !REPUTATION_SYSTEMS.includes(input.system) ||
     !isUuid(input.sourceId) ||
+    !REPUTATION_SOURCE_TYPES.includes(input.sourceType) ||
     !isBoundedText(input.sourceType, 80) ||
     !Number.isSafeInteger(input.delta) ||
     input.delta === 0 ||
@@ -337,7 +345,7 @@ function mapRow(row: Record<string, unknown>): ReputationLedgerEntry {
     id: String(row.id),
     userId: String(row.user_id),
     system: String(row.system) as ReputationSystem,
-    sourceType: String(row.source_type),
+    sourceType: String(row.source_type) as ReputationSourceType,
     sourceId: String(row.source_id),
     delta: Number(row.delta),
     reason: String(row.reason),

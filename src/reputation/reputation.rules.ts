@@ -1,3 +1,4 @@
+import { Injectable } from '@nestjs/common';
 import type { ReputationSystem } from './reputation.types';
 
 export const CONTRIBUTION_RULE_VERSION = 'community-reputation-v1' as const;
@@ -122,6 +123,7 @@ export type ContributionRuleDecision =
   | EligibleContributionDecision
   | RejectedContributionDecision;
 
+@Injectable()
 export class ContributionRuleEngine {
   private readonly rules: ReadonlyMap<string, ContributionRuleDefinition>;
 
@@ -133,7 +135,9 @@ export class ContributionRuleEngine {
         !Number.isSafeInteger(definition.delta) ||
         definition.delta <= 0 ||
         definition.delta > 100_000 ||
+        typeof definition.ruleVersion !== 'string' ||
         definition.ruleVersion.trim() === '' ||
+        typeof definition.reason !== 'string' ||
         definition.reason.trim() === ''
       ) {
         throw new Error('REPUTATION_RULE_CONFIGURATION_INVALID');
@@ -156,6 +160,7 @@ export class ContributionRuleEngine {
     if (
       !isUuid(input.contributorUserId) ||
       !isUuid(sourceId) ||
+      !(input.occurredAt instanceof Date) ||
       !Number.isFinite(input.occurredAt.getTime())
     ) {
       return rejected('INVALID_SOURCE', sourceType, sourceId, rule?.ruleVersion ?? null);
