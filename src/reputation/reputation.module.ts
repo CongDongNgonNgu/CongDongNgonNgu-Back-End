@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { AuthModule } from '../auth/auth.module';
 import { ProfileModule } from '../profile/profile.module';
 import { LearningProgressController } from './learning-progress.controller';
+import { ReputationProgressController } from './reputation-progress.controller';
 import { LearningXpRuleEngine } from './learning-xp.rules';
 import { LearningXpService } from './learning-xp.service';
 import { GamificationService } from './gamification.service';
@@ -22,7 +23,7 @@ interface ReputationRuntimeConfig {
 
 @Module({
   imports: [AuthModule, ProfileModule],
-  controllers: [LearningProgressController],
+  controllers: [LearningProgressController, ReputationProgressController],
   providers: [
     {
       provide: LearningXpRuleEngine,
