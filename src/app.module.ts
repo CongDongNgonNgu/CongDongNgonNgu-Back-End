@@ -7,6 +7,10 @@ import { CommunityModule } from './community/community.module';
 import { CorrectionsModule } from './corrections/corrections.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { LibraryModule } from './library/library.module';
+import { AiModule } from './ai/ai.module';
+import { AiConversationModule } from './ai/ai.conversation.module';
+import { AiCoachingModule } from './ai/ai.coaching.module';
+import { AiLearningModule } from './ai/ai.learning.module';
 
 @Module({
   imports: [
@@ -18,6 +22,10 @@ import { LibraryModule } from './library/library.module';
     CorrectionsModule,
     ExchangeModule,
     LibraryModule,
+    AiModule,
+    AiConversationModule,
+    AiCoachingModule,
+    AiLearningModule,
   ],
 })
 export class AppModule {}

@@ -51,6 +51,16 @@ describe('production transport security', () => {
       EMAIL_API_URL: 'http://mailer.example.test',
       EMAIL_API_KEY: 'email-key',
     })).toThrow('EMAIL_API_URL must use HTTPS in production');
+
+    expect(() => validateEnvironment({
+      ...base,
+      NODE_ENV: 'production',
+      PUBLIC_APP_URL: 'https://app.example.test',
+      CORS_ALLOWED_ORIGINS: 'https://app.example.test',
+      AI_PROVIDER: 'configured',
+      AI_API_URL: 'http://ai.example.test',
+      AI_API_KEY: 'ai-key',
+    })).toThrow('AI_API_URL must use HTTPS in production');
   });
 });
 
