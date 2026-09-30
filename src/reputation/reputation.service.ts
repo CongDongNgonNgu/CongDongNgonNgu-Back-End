@@ -84,7 +84,7 @@ export class ReputationService {
       sourceId: original.sourceId,
       delta: -original.delta,
       reason: input.reason,
-      ruleVersion: `${original.ruleVersion}:reversal`,
+      ruleVersion: original.ruleVersion,
       idempotencyKey: input.idempotencyKey,
       reversalOfEntryId: original.id,
       createdAt: input.createdAt,
