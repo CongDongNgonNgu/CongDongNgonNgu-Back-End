@@ -35,4 +35,10 @@ describe("foundation API", () => {
       .get("/api/v1/courses")
       .expect(404);
   });
+
+  it("protects the learner progress projection", async () => {
+    await request(app.getHttpServer())
+      .get("/api/v1/learning/progress")
+      .expect(401);
+  });
 });

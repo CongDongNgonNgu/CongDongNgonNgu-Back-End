@@ -1,6 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
+import { AuthModule } from '../auth/auth.module';
+import { ProfileModule } from '../profile/profile.module';
+import { LearningProgressController } from './learning-progress.controller';
+import { LearningXpRuleEngine } from './learning-xp.rules';
+import { LearningXpService } from './learning-xp.service';
 import { ContributionRuleEngine } from './reputation.rules';
 import {
   InMemoryReputationLedgerRepository,
@@ -14,12 +19,19 @@ interface ReputationRuntimeConfig {
 }
 
 @Module({
+  imports: [AuthModule, ProfileModule],
+  controllers: [LearningProgressController],
   providers: [
+    {
+      provide: LearningXpRuleEngine,
+      useFactory: () => new LearningXpRuleEngine(),
+    },
     {
       provide: ContributionRuleEngine,
       useFactory: () => new ContributionRuleEngine(),
     },
     ReputationService,
+    LearningXpService,
     {
       provide: REPUTATION_LEDGER_REPOSITORY,
       inject: [ConfigService],
@@ -38,6 +50,11 @@ interface ReputationRuntimeConfig {
       useExisting: ReputationService,
     },
   ],
-  exports: [REPUTATION_LEDGER_REPOSITORY, REPUTATION_SERVICE, ReputationService],
+  exports: [
+    REPUTATION_LEDGER_REPOSITORY,
+    REPUTATION_SERVICE,
+    ReputationService,
+    LearningXpService,
+  ],
 })
 export class ReputationModule {}
