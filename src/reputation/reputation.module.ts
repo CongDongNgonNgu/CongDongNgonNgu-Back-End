@@ -6,6 +6,8 @@ import { ProfileModule } from '../profile/profile.module';
 import { LearningProgressController } from './learning-progress.controller';
 import { LearningXpRuleEngine } from './learning-xp.rules';
 import { LearningXpService } from './learning-xp.service';
+import { GamificationService } from './gamification.service';
+import { AntiFarmingRuleEngine } from './anti-farming.rules';
 import { ContributionRuleEngine } from './reputation.rules';
 import {
   InMemoryReputationLedgerRepository,
@@ -32,6 +34,8 @@ interface ReputationRuntimeConfig {
     },
     ReputationService,
     LearningXpService,
+    GamificationService,
+    AntiFarmingRuleEngine,
     {
       provide: REPUTATION_LEDGER_REPOSITORY,
       inject: [ConfigService],
@@ -55,6 +59,7 @@ interface ReputationRuntimeConfig {
     REPUTATION_SERVICE,
     ReputationService,
     LearningXpService,
+    GamificationService,
   ],
 })
 export class ReputationModule {}

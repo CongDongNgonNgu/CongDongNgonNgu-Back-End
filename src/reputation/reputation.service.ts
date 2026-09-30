@@ -1,4 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
+import {
+  AntiFarmingRuleEngine,
+  type AntiFarmingDecision,
+} from './anti-farming.rules';
 import { ContributionRuleEngine } from './reputation.rules';
 import type { ContributionRuleDecision, ContributionRuleInput } from './reputation.rules';
 import {
@@ -13,6 +17,7 @@ export const REPUTATION_SERVICE = 'REPUTATION_SERVICE';
 
 export interface ReputationContributionAwardResult {
   decision: ContributionRuleDecision;
+  antiFarming: AntiFarmingDecision;
   entry: ReputationLedgerEntry | null;
   created: boolean;
 }
@@ -41,11 +46,28 @@ export class ReputationService {
     @Inject(REPUTATION_LEDGER_REPOSITORY)
     private readonly repository: ReputationLedgerRepository,
     private readonly contributionRules: ContributionRuleEngine,
+    private readonly antiFarming: AntiFarmingRuleEngine = new AntiFarmingRuleEngine(),
   ) {}
 
   async awardContribution(input: ContributionRuleInput): Promise<ReputationContributionAwardResult> {
     const decision = this.contributionRules.evaluate(input);
-    if (!decision.eligible) return { decision, entry: null, created: false };
+    const antiFarming = this.antiFarming.evaluate(input);
+    if (!decision.eligible) return { decision, antiFarming, entry: null, created: false };
+    if (!antiFarming.allowed) {
+      return {
+        decision: {
+          eligible: false,
+          code: antiFarming.code,
+          sourceType: input.sourceType,
+          sourceId: input.sourceId,
+          ruleVersion: decision.ruleVersion,
+          idempotencyKey: null,
+        },
+        antiFarming,
+        entry: null,
+        created: false,
+      };
+    }
 
     const result = await this.repository.append({
       userId: input.contributorUserId,
@@ -59,7 +81,7 @@ export class ReputationService {
       reversalOfEntryId: null,
       createdAt: input.occurredAt,
     });
-    return { decision, entry: result.entry, created: result.created };
+    return { decision, antiFarming, entry: result.entry, created: result.created };
   }
 
   async reverseEntry(input: ReverseReputationEntryInput): Promise<ReputationLedgerAppendResult> {

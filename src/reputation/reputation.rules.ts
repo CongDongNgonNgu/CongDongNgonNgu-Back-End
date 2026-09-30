@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { ReputationSystem } from './reputation.types';
+import type { ContributionEventFact, ReputationSystem } from './reputation.types';
 
 export const CONTRIBUTION_RULE_VERSION = 'community-reputation-v1' as const;
 
@@ -92,6 +92,10 @@ export interface ContributionRuleInput {
   sourceVisibility: 'PUBLIC' | 'PRIVATE';
   sourceState: ContributionSourceState;
   occurredAt: Date;
+  /** Server-derived, normalized content/source identity for V1 abuse checks. */
+  sourceFingerprint?: string | null;
+  /** Previously observed server facts; never client-controlled flags. */
+  priorContributionFacts?: readonly ContributionEventFact[];
 }
 
 export type ContributionRuleRejectionCode =
@@ -99,7 +103,11 @@ export type ContributionRuleRejectionCode =
   | 'RULE_NOT_FOUND'
   | 'SELF_REWARD_FORBIDDEN'
   | 'SOURCE_NOT_ELIGIBLE'
-  | 'REVIEWER_REQUIRED';
+  | 'REVIEWER_REQUIRED'
+  | 'DUPLICATE_SOURCE_EVENT'
+  | 'REPEATED_LOW_VALUE_SOURCE'
+  | 'COORDINATED_REWARD_PATTERN'
+  | 'ANTI_FARMING_FACTS_INVALID';
 
 export interface EligibleContributionDecision {
   eligible: true;

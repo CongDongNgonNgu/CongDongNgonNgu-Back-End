@@ -19,6 +19,22 @@ export const REPUTATION_SOURCE_TYPES = [
 
 export type ReputationSourceType = typeof REPUTATION_SOURCE_TYPES[number];
 
+/**
+ * Server-derived facts supplied to the anti-farming boundary.
+ *
+ * The fingerprint is optional so existing domain integrations can adopt the
+ * contract incrementally. The ledger remains the source of truth for replay
+ * protection and reversals.
+ */
+export interface ContributionEventFact {
+  contributorUserId: string;
+  actorUserId: string | null;
+  sourceType: ReputationSourceType;
+  sourceId: string;
+  sourceFingerprint?: string | null;
+  occurredAt: Date;
+}
+
 export interface ReputationLedgerEntry {
   id: string;
   userId: string;
