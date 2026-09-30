@@ -65,7 +65,7 @@ export class MembershipAuthorizationService {
     assertUserAndTime(userId, now);
     const subscription = await this.repository.findRelevantSubscription(userId, now);
     const resolved = await this.resolvePlan(subscription, now);
-    const entitlements = resolved.plan.status === 'ACTIVE' && resolved.subscriptionIsActive
+    const entitlements = resolved.plan.status !== 'DRAFT' && resolved.subscriptionIsActive
       ? await this.repository.listEntitlements(resolved.plan.id)
       : [];
 
@@ -117,7 +117,7 @@ export class MembershipAuthorizationService {
     }
 
     const plan = await this.repository.findPlanVersionById(subscription.planVersionId);
-    if (!plan || plan.status !== 'ACTIVE') {
+    if (!plan || plan.status === 'DRAFT') {
       return {
         plan: defaultFreePlan(),
         membershipStatus,

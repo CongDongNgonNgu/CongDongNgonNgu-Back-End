@@ -108,6 +108,22 @@ describe('MembershipAuthorizationService', () => {
     ]);
   });
 
+  it('keeps an active historical subscription on a retired plan version until its own end boundary', async () => {
+    const service = new MembershipAuthorizationService(new InMemoryMembershipRepository({
+      plans: [{ ...communityV1, status: 'RETIRED' }],
+      entitlements: [advancedPractice],
+      subscriptions: [subscription()],
+    }));
+
+    const decision = await service.authorize(USER_ID, 'practice.advanced', NOW);
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      planCode: 'COMMUNITY_MEMBER',
+      planVersion: 1,
+    });
+  });
+
   it('fails closed to Free when a membership is expired at the exact end boundary', async () => {
     const service = new MembershipAuthorizationService(new InMemoryMembershipRepository({
       plans: [communityV1],

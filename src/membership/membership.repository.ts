@@ -66,8 +66,7 @@ export class PostgresMembershipRepository implements MembershipRepository {
               mpv.activated_at, mpv.retired_at
          FROM membership_plan_versions mpv
          JOIN membership_products mp ON mp.id = mpv.product_id
-        WHERE mpv.id = $1::uuid
-          AND mp.status = 'ACTIVE'::membership_product_status`,
+        WHERE mpv.id = $1::uuid`,
       [id],
     );
     return result.rows[0] ? mapPlanRow(result.rows[0]) : null;
