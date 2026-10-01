@@ -6,6 +6,8 @@ import {
 } from '../reputation/reputation.repository';
 import { ReputationService } from '../reputation/reputation.service';
 import { MembershipContributionCreditService } from './membership.contribution-credit';
+import { InMemoryMembershipFulfillmentRepository } from './membership.fulfillment.repository';
+import type { MembershipPlanVersion } from './membership.types';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -14,6 +16,19 @@ const SOURCE_ONE = '44444444-4444-4444-8444-444444444444';
 const SOURCE_TWO = '55555555-5555-4555-8555-555555555555';
 const SOURCE_THREE = '66666666-6666-4666-8666-666666666666';
 const NOW = new Date('2026-09-30T12:00:00.000Z');
+const PLAN_ID = '77777777-7777-4777-8777-777777777777';
+
+const plan: MembershipPlanVersion = {
+  id: PLAN_ID,
+  productCode: 'COMMUNITY_MEMBER',
+  version: 1,
+  status: 'ACTIVE',
+  displayName: 'Community Member',
+  description: 'Membership plan',
+  createdAt: new Date('2026-09-01T00:00:00.000Z'),
+  activatedAt: new Date('2026-09-01T00:00:00.000Z'),
+  retiredAt: null,
+};
 
 function build() {
   const repository = new InMemoryReputationLedgerRepository();
@@ -59,12 +74,14 @@ describe('MembershipContributionCreditService', () => {
       conversion: { reputationPointsPerCredit: 10 },
       eligibleReputationPoints: 22,
       availableCreditUnits: 2,
+      redeemedCreditUnits: 0,
       remainderReputationPoints: 2,
       expirationPolicy: 'NONE_DERIVED_FROM_CURRENT_LEDGER',
       redemption: {
-        mode: 'PROJECTION_ONLY',
-        grantsMembership: false,
+        mode: 'SERVER_AUTHORITATIVE_IDEMPOTENT',
+        grantsMembership: true,
         actsAsPaymentTender: false,
+        period: 'ONE_MONTH_PER_CREDIT_UNIT',
       },
       evaluatedAt: NOW.toISOString(),
     });
@@ -129,6 +146,29 @@ describe('MembershipContributionCreditService', () => {
     );
 
     expect(new Set(projections.map((projection) => JSON.stringify(projection))).size).toBe(1);
+  });
+
+  it('subtracts durable redemptions from the projection without debiting Reputation', async () => {
+    const { repository, reputation } = build();
+    await award(reputation);
+    const fulfillment = new InMemoryMembershipFulfillmentRepository({ plans: [plan], reputationPoints: 10 });
+    const credits = new MembershipContributionCreditService(reputation, fulfillment);
+
+    await fulfillment.redeemContributionCredit({
+      userId: USER_ID,
+      planVersionId: PLAN_ID,
+      creditUnits: 1,
+      idempotencyKeyHash: 'a'.repeat(64),
+      requestHash: 'b'.repeat(64),
+      now: NOW,
+    });
+
+    await expect(credits.getProjection(USER_ID, NOW)).resolves.toMatchObject({
+      eligibleReputationPoints: 10,
+      redeemedCreditUnits: 1,
+      availableCreditUnits: 0,
+    });
+    await expect(repository.getBalance(USER_ID, 'community_reputation')).resolves.toBe(10);
   });
 
   it('fails closed for invalid identities and never accepts a user-supplied balance', async () => {

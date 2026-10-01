@@ -12,6 +12,8 @@ import {
 import { AccessTokenGuard, type AuthenticatedRequest } from '../auth/guards/access-token.guard';
 import { success } from '../common/http/api-response';
 import { MembershipContributionCreditService } from './membership.contribution-credit';
+import { RedeemMembershipCreditDto } from './membership.fulfillment.dto';
+import { MembershipFulfillmentService } from './membership.fulfillment.service';
 import { CreateMembershipOrderDto } from './membership.payment.dto';
 import { MembershipPaymentService } from './membership.payment.service';
 import { MembershipPolicyService } from './membership.policy';
@@ -24,6 +26,7 @@ export class MembershipController {
     private readonly policy: MembershipPolicyService,
     private readonly contributionCredits: MembershipContributionCreditService,
     private readonly payments: MembershipPaymentService,
+    private readonly fulfillment: MembershipFulfillmentService,
   ) {}
 
   @Get('capabilities')
@@ -50,6 +53,27 @@ export class MembershipController {
     return success(
       await this.contributionCredits.getProjection(request.user!.user.id),
       'Contribution membership credit',
+    );
+  }
+
+  @Post('contribution-credit/redemptions')
+  @UseGuards(AccessTokenGuard)
+  async redeemContributionCredit(
+    @Req() request: AuthenticatedRequest,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Body() input: RedeemMembershipCreditDto,
+  ) {
+    return success(
+      await this.fulfillment.redeemContributionCredit(request.user!.user.id, idempotencyKey, input),
+      'Membership contribution credit redemption',
+    );
+  }
+
+  @Post('webhooks/payos')
+  async payOsWebhook(@Body() payload: unknown) {
+    return success(
+      await this.fulfillment.handlePayOsWebhook(payload),
+      'Membership payment webhook',
     );
   }
 

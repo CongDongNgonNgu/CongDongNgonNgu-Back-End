@@ -11,6 +11,20 @@ import {
 import { MembershipController } from './membership.controller';
 import { MembershipContributionCreditService } from './membership.contribution-credit';
 import {
+  InMemoryMembershipFulfillmentRepository,
+  MEMBERSHIP_FULFILLMENT_REPOSITORY,
+  PostgresMembershipFulfillmentRepository,
+} from './membership.fulfillment.repository';
+import {
+  MEMBERSHIP_FULFILLMENT_CLOCK,
+  MembershipFulfillmentService,
+} from './membership.fulfillment.service';
+import {
+  MEMBERSHIP_WEBHOOK_VERIFIER,
+  PayOsMembershipWebhookVerifier,
+  UnavailableMembershipWebhookVerifier,
+} from './membership.webhook';
+import {
   createDisabledMembershipPaymentProvider,
   MEMBERSHIP_PAYMENT_PROVIDER,
 } from './membership.payment-provider';
@@ -36,6 +50,11 @@ interface MembershipRuntimeConfig {
     MembershipPolicyService,
     MembershipContributionCreditService,
     MembershipPaymentService,
+    MembershipFulfillmentService,
+    {
+      provide: MEMBERSHIP_FULFILLMENT_CLOCK,
+      useFactory: () => () => new Date(),
+    },
     {
       provide: MEMBERSHIP_PAYMENT_CLOCK,
       useFactory: () => () => new Date(),
@@ -74,6 +93,29 @@ interface MembershipRuntimeConfig {
         return createDisabledMembershipPaymentProvider(providers?.payment === 'configured');
       },
     },
+    {
+      provide: MEMBERSHIP_FULFILLMENT_REPOSITORY,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const auth = config.get<MembershipRuntimeConfig>('auth');
+        if (auth?.persistence === 'memory') return new InMemoryMembershipFulfillmentRepository();
+        const databaseUrl = config.get<string>('database.url');
+        if (!databaseUrl) {
+          throw new Error('DATABASE_URL is required for Postgres membership fulfillment persistence');
+        }
+        return new PostgresMembershipFulfillmentRepository(new Pool({ connectionString: databaseUrl }));
+      },
+    },
+    {
+      provide: MEMBERSHIP_WEBHOOK_VERIFIER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const providers = config.get<RuntimeConfig['providers']>('providers');
+        const secret = providers?.paymentWebhookSecret;
+        if (providers?.payment === 'configured' && secret) return new PayOsMembershipWebhookVerifier(secret);
+        return new UnavailableMembershipWebhookVerifier();
+      },
+    },
   ],
   exports: [
     MEMBERSHIP_REPOSITORY,
@@ -81,8 +123,11 @@ interface MembershipRuntimeConfig {
     MembershipPolicyService,
     MembershipContributionCreditService,
     MembershipPaymentService,
+    MembershipFulfillmentService,
     MEMBERSHIP_PAYMENT_REPOSITORY,
     MEMBERSHIP_PAYMENT_PROVIDER,
+    MEMBERSHIP_FULFILLMENT_REPOSITORY,
+    MEMBERSHIP_WEBHOOK_VERIFIER,
   ],
 })
 export class MembershipModule {}
