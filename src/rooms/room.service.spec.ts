@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import { InMemoryIdentityRepository } from '../identity/identity.repository';
 import { InMemoryProfileRepository } from '../profile/profile.repository';
 import { InMemoryMediaProvider } from './media-provider';
+import { InMemorySpeakingRoomParticipantRepository } from './room.participant.repository';
 import { InMemorySpeakingRoomRepository } from './room.repository';
 import { SpeakingRoomService } from './room.service';
 
@@ -23,14 +24,16 @@ describe('SpeakingRoomService', () => {
       emailVerifiedAt: new Date(),
     });
     const repository = new InMemorySpeakingRoomRepository();
+    const participants = new InMemorySpeakingRoomParticipantRepository();
     const profiles = new InMemoryProfileRepository();
     const service = new SpeakingRoomService(
       repository,
       profiles,
       identities,
       new InMemoryMediaProvider(),
+      participants,
     );
-    return { service, repository, profiles, identities, host, other };
+    return { service, repository, participants, profiles, identities, host, other };
   }
 
   it('creates public rooms with a bounded projection and no access secret', async () => {
@@ -72,10 +75,14 @@ describe('SpeakingRoomService', () => {
   });
 
   it('derives media role from server-side ownership and replays the same request idempotently', async () => {
-    const { service, repository, profiles, identities, host } = await setup();
+    const { service, repository, participants, profiles, identities, host } = await setup();
     const created = await service.createRoom(host.id, {
       languageCode: 'en',
       topic: 'Host practice',
+    });
+    await service.joinRoom(created.room.id, host.id, {
+      requestId: 'c2d8a0f4-3de4-4b2c-9a5c-9dd9e5c3e3a0',
+      deviceId: 'host-browser',
     });
 
     const first = await service.issueMediaSession(created.room.id, host.id, {
@@ -90,13 +97,17 @@ describe('SpeakingRoomService', () => {
   });
 
   it('fails safely when the configured media provider is disabled', async () => {
-    const { service, repository, profiles, identities, host } = await setup();
+    const { service, repository, participants, profiles, identities, host } = await setup();
     const created = await service.createRoom(host.id, {
       languageCode: 'en',
       topic: 'Disabled adapter',
     });
+    await service.joinRoom(created.room.id, host.id, {
+      requestId: 'b4de7bbf-7ea8-48c0-8fa8-5fc76c12cdb6',
+      deviceId: 'host-browser',
+    });
     const disabled = new (await import('./media-provider')).DisabledMediaProvider();
-    const disabledService = new SpeakingRoomService(repository, profiles, identities, disabled);
+    const disabledService = new SpeakingRoomService(repository, profiles, identities, disabled, participants);
 
     await expect(disabledService.issueMediaSession(created.room.id, host.id, {
       requestId: '7a14f2b7-4dcb-4e78-930c-6fa6b8cf3f95',

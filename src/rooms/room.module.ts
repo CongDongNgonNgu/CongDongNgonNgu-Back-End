@@ -6,9 +6,14 @@ import { IdentityModule } from '../identity/identity.module';
 import { ProfileModule } from '../profile/profile.module';
 import { DisabledMediaProvider, SPEAKING_ROOM_MEDIA_PROVIDER } from './media-provider';
 import { InMemorySpeakingRoomRepository, SPEAKING_ROOM_REPOSITORY } from './room.repository';
+import {
+  InMemorySpeakingRoomParticipantRepository,
+  SPEAKING_ROOM_PARTICIPANT_REPOSITORY,
+} from './room.participant.repository';
 import { SpeakingRoomController } from './room.controller';
 import { SpeakingRoomService } from './room.service';
 import { PostgresSpeakingRoomRepository } from './postgres-room.repository';
+import { PostgresSpeakingRoomParticipantRepository } from './postgres-room-participant.repository';
 
 interface RoomRuntimeConfig {
   persistence: 'postgres' | 'memory';
@@ -36,7 +41,25 @@ interface RoomRuntimeConfig {
         return new PostgresSpeakingRoomRepository(new Pool({ connectionString: databaseUrl }));
       },
     },
+    {
+      provide: SPEAKING_ROOM_PARTICIPANT_REPOSITORY,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const auth = config.get<RoomRuntimeConfig>('auth');
+        if (auth?.persistence === 'memory') return new InMemorySpeakingRoomParticipantRepository();
+        const databaseUrl = config.get<string>('database.url');
+        if (!databaseUrl) {
+          throw new Error('DATABASE_URL is required for Postgres speaking-room participant persistence');
+        }
+        return new PostgresSpeakingRoomParticipantRepository(new Pool({ connectionString: databaseUrl }));
+      },
+    },
   ],
-  exports: [SPEAKING_ROOM_REPOSITORY, SPEAKING_ROOM_MEDIA_PROVIDER, SpeakingRoomService],
+  exports: [
+    SPEAKING_ROOM_REPOSITORY,
+    SPEAKING_ROOM_PARTICIPANT_REPOSITORY,
+    SPEAKING_ROOM_MEDIA_PROVIDER,
+    SpeakingRoomService,
+  ],
 })
 export class SpeakingRoomModule {}

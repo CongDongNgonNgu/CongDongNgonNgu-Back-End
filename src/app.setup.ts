@@ -13,7 +13,7 @@ export function configureApp(app: INestApplication): void {
     origin: origins,
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'X-Room-Access-Token'],
   });
   app.useGlobalPipes(
     new ValidationPipe({

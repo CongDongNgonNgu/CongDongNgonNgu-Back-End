@@ -14,7 +14,14 @@ import { success } from '../common/http/api-response';
 import { AccessTokenGuard, type AuthenticatedRequest } from '../auth/guards/access-token.guard';
 import { SessionService } from '../auth/session/session.service';
 import { OptionalAccessTokenGuard } from '../community/optional-access-token.guard';
-import { CreateSpeakingRoomDto, IssueMediaSessionDto, ListSpeakingRoomsQueryDto } from './room.dto';
+import {
+  CreateSpeakingRoomDto,
+  HeartbeatSpeakingRoomDto,
+  IssueMediaSessionDto,
+  JoinSpeakingRoomDto,
+  LeaveSpeakingRoomDto,
+  ListSpeakingRoomsQueryDto,
+} from './room.dto';
 import { SpeakingRoomService } from './room.service';
 
 @Controller('rooms')
@@ -59,6 +66,64 @@ export class SpeakingRoomController {
     return success(
       await this.rooms.getRoom(roomId, request.user?.user.id ?? null, accessToken),
       'Speaking room',
+    );
+  }
+
+  @Post(':roomId/join')
+  @UseGuards(AccessTokenGuard)
+  async joinRoom(
+    @Param('roomId', new ParseUUIDPipe({ version: '4' })) roomId: string,
+    @Headers('x-room-access-token') accessToken: string | undefined,
+    @Body() input: JoinSpeakingRoomDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.rooms.joinRoom(roomId, request.user!.user.id, input, accessToken),
+      'Joined speaking room',
+    );
+  }
+
+  @Post(':roomId/leave')
+  @UseGuards(AccessTokenGuard)
+  async leaveRoom(
+    @Param('roomId', new ParseUUIDPipe({ version: '4' })) roomId: string,
+    @Headers('x-room-access-token') accessToken: string | undefined,
+    @Body() input: LeaveSpeakingRoomDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.rooms.leaveRoom(roomId, request.user!.user.id, input, accessToken),
+      'Left speaking room',
+    );
+  }
+
+  @Post(':roomId/presence/heartbeat')
+  @UseGuards(AccessTokenGuard)
+  async heartbeat(
+    @Param('roomId', new ParseUUIDPipe({ version: '4' })) roomId: string,
+    @Headers('x-room-access-token') accessToken: string | undefined,
+    @Body() input: HeartbeatSpeakingRoomDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.rooms.heartbeat(roomId, request.user!.user.id, input, accessToken),
+      'Speaking room presence updated',
+    );
+  }
+
+  @Get(':roomId/participants')
+  @UseGuards(AccessTokenGuard)
+  async listParticipants(
+    @Param('roomId', new ParseUUIDPipe({ version: '4' })) roomId: string,
+    @Headers('x-room-access-token') accessToken: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.rooms.listParticipants(roomId, request.user!.user.id, accessToken),
+      'Speaking room participants',
     );
   }
 

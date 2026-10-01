@@ -76,3 +76,40 @@ export class IssueMediaSessionDto {
   @MaxLength(256)
   accessToken?: string;
 }
+
+export class JoinSpeakingRoomDto {
+  @IsUUID('4')
+  requestId!: string;
+
+  @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
+  @IsString()
+  @Length(1, 128)
+  deviceId!: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  participantId?: string | null;
+}
+
+const LEAVE_MODES = ['VOLUNTARY', 'DISCONNECT'] as const;
+
+export class LeaveSpeakingRoomDto {
+  @IsUUID('4')
+  requestId!: string;
+
+  @IsUUID('4')
+  participantId!: string;
+
+  @IsOptional()
+  @Transform(({ value }) => typeof value === 'string' ? value.trim().toUpperCase() : value)
+  @IsIn(LEAVE_MODES)
+  mode?: string;
+}
+
+export class HeartbeatSpeakingRoomDto {
+  @IsUUID('4')
+  requestId!: string;
+
+  @IsUUID('4')
+  participantId!: string;
+}
