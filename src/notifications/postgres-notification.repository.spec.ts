@@ -73,6 +73,29 @@ describe('PostgresNotificationRepository', () => {
     expect(query.mock.calls[0][0]).toContain('ANY($2::uuid[])');
     expect(query.mock.calls[0][1]).toEqual([USER_ID, [NOTIFICATION_ID], NOW]);
   });
+
+  it('replays only later owner-scoped notifications with deterministic ordering', async () => {
+    const intent = buildIntent();
+    const query = jest.fn<QueryFn>()
+      .mockResolvedValueOnce({ rows: [{ created_at: intent.createdAt, id: NOTIFICATION_ID }] })
+      .mockResolvedValueOnce({ rows: [{
+        ...notificationRow(intent),
+        read_status: 'UNREAD',
+        read_at: null,
+        read_updated_at: NOW.toISOString(),
+      }] });
+    const repository = new PostgresNotificationRepository({ query } as unknown as Pool);
+
+    const cursor = await repository.findNotificationCursorForUser(USER_ID, NOTIFICATION_ID);
+    expect(cursor).toEqual({ createdAt: new Date(intent.createdAt), id: NOTIFICATION_ID });
+    const replayed = await repository.listForUserAfter(USER_ID, cursor!, 100);
+
+    expect(replayed).toMatchObject({ hasMore: false, items: expect.any(Array) });
+    expect(replayed.items).toHaveLength(1);
+    expect(query.mock.calls[0][1]).toEqual([NOTIFICATION_ID, USER_ID]);
+    expect(query.mock.calls[1][0]).toContain('ORDER BY n.created_at ASC, n.id ASC');
+    expect(query.mock.calls[1][1]).toEqual([USER_ID, new Date(intent.createdAt), NOTIFICATION_ID, 101]);
+  });
 });
 
 function buildIntent() {

@@ -6,6 +6,7 @@ import { NotificationController } from './notification.controller';
 import { NOTIFICATION_REPOSITORY, InMemoryNotificationRepository } from './notification.repository';
 import { NotificationService } from './notification.service';
 import { PostgresNotificationRepository } from './postgres-notification.repository';
+import { NotificationRealtimeService } from './notification-realtime.service';
 
 interface NotificationRuntimeConfig {
   persistence: 'postgres' | 'memory';
@@ -16,6 +17,7 @@ interface NotificationRuntimeConfig {
   controllers: [NotificationController],
   providers: [
     NotificationService,
+    NotificationRealtimeService,
     {
       provide: NOTIFICATION_REPOSITORY,
       inject: [ConfigService],
@@ -30,6 +32,6 @@ interface NotificationRuntimeConfig {
       },
     },
   ],
-  exports: [NOTIFICATION_REPOSITORY, NotificationService],
+  exports: [NOTIFICATION_REPOSITORY, NotificationService, NotificationRealtimeService],
 })
 export class NotificationModule {}
