@@ -55,6 +55,13 @@ describe('notifications API', () => {
       .expect(({ body }) => expect(body.error).toMatchObject({ code: 'AUTH_UNAUTHORIZED' }));
   });
 
+  it('requires bearer authentication before reading notification preferences', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/notifications/preferences')
+      .expect(401)
+      .expect(({ body }) => expect(body.error).toMatchObject({ code: 'AUTH_UNAUTHORIZED' }));
+  });
+
   it('lists owner notifications, reconciles unread count, and marks one read idempotently', async () => {
     const user = await createUser('notifications-owner@example.com');
     const credentials = await issueAccessToken(user);
@@ -98,6 +105,64 @@ describe('notifications API', () => {
       .set('Authorization', `Bearer ${credentials.accessToken}`)
       .expect(200)
       .expect(({ body }) => expect(body.data).toEqual({ unreadCount: 0 }));
+  });
+
+  it('returns owner-scoped preference matrix, updates optional channels, and protects mandatory notices', async () => {
+    const user = await createUser('notifications-preferences-owner@example.com');
+    const other = await createUser('notifications-preferences-other@example.com');
+    const credentials = await issueAccessToken(user);
+    const otherCredentials = await issueAccessToken(other);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/notifications/preferences')
+      .set('Authorization', `Bearer ${credentials.accessToken}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          success: true,
+          data: { scope: 'own', preferences: expect.any(Array) },
+        });
+        expect(body.data.preferences).toHaveLength(32);
+        expect(body.data.preferences).not.toEqual(expect.arrayContaining([
+          expect.objectContaining({ userId: user.id }),
+        ]));
+        expect(body.data.preferences).toEqual(expect.arrayContaining([
+          expect.objectContaining({ category: 'SECURITY', channel: 'IN_APP', enabled: true, locked: true }),
+          expect.objectContaining({ category: 'COMMUNITY', channel: 'EMAIL', enabled: false, locked: false }),
+        ]));
+      });
+
+    await request(app.getHttpServer())
+      .patch('/api/v1/notifications/preferences')
+      .set('Authorization', `Bearer ${credentials.accessToken}`)
+      .send({
+        preferences: [
+          { category: 'COMMUNITY', channel: 'SSE', enabled: false },
+          { category: 'COMMUNITY', channel: 'EMAIL', enabled: true },
+        ],
+      })
+      .expect(200)
+      .expect(({ body }) => expect(body.data.preferences).toEqual(expect.arrayContaining([
+        expect.objectContaining({ category: 'COMMUNITY', channel: 'SSE', enabled: false }),
+        expect.objectContaining({ category: 'COMMUNITY', channel: 'EMAIL', enabled: true }),
+      ])));
+
+    await request(app.getHttpServer())
+      .get('/api/v1/notifications/preferences')
+      .set('Authorization', `Bearer ${otherCredentials.accessToken}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.preferences).toEqual(expect.arrayContaining([
+        expect.objectContaining({ category: 'COMMUNITY', channel: 'SSE', enabled: true }),
+      ])));
+
+    await request(app.getHttpServer())
+      .patch('/api/v1/notifications/preferences')
+      .set('Authorization', `Bearer ${credentials.accessToken}`)
+      .send({ preferences: [{ category: 'SECURITY', channel: 'IN_APP', enabled: false }] })
+      .expect(422)
+      .expect(({ body }) => expect(body.error).toMatchObject({
+        code: 'NOTIFICATION_MANDATORY_PREFERENCE',
+      }));
   });
 
   it('does not allow another owner to read a notification by id', async () => {
