@@ -4,6 +4,7 @@ import { InMemoryProfileRepository } from '../profile/profile.repository';
 import { InMemoryMediaProvider } from './media-provider';
 import { InMemorySpeakingRoomParticipantRepository } from './room.participant.repository';
 import { InMemorySpeakingRoomRepository } from './room.repository';
+import { InMemorySpeakingRoomInteractionRepository } from './room.interaction.repository';
 import { SpeakingRoomService } from './room.service';
 
 describe('SpeakingRoomService', () => {
@@ -26,14 +27,16 @@ describe('SpeakingRoomService', () => {
     const repository = new InMemorySpeakingRoomRepository();
     const participants = new InMemorySpeakingRoomParticipantRepository();
     const profiles = new InMemoryProfileRepository();
+    const interactions = new InMemorySpeakingRoomInteractionRepository(participants);
     const service = new SpeakingRoomService(
       repository,
       profiles,
       identities,
       new InMemoryMediaProvider(),
       participants,
+      interactions,
     );
-    return { service, repository, participants, profiles, identities, host, other };
+    return { service, repository, participants, interactions, profiles, identities, host, other };
   }
 
   it('creates public rooms with a bounded projection and no access secret', async () => {
@@ -107,7 +110,8 @@ describe('SpeakingRoomService', () => {
       deviceId: 'host-browser',
     });
     const disabled = new (await import('./media-provider')).DisabledMediaProvider();
-    const disabledService = new SpeakingRoomService(repository, profiles, identities, disabled, participants);
+    const interactions = new InMemorySpeakingRoomInteractionRepository(participants);
+    const disabledService = new SpeakingRoomService(repository, profiles, identities, disabled, participants, interactions);
 
     await expect(disabledService.issueMediaSession(created.room.id, host.id, {
       requestId: '7a14f2b7-4dcb-4e78-930c-6fa6b8cf3f95',

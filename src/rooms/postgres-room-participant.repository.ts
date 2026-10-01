@@ -222,6 +222,72 @@ export class PostgresSpeakingRoomParticipantRepository implements SpeakingRoomPa
     return result.rows[0] ? mapParticipant(result.rows[0]) : null;
   }
 
+  async findParticipant(
+    roomId: string,
+    participantId: string,
+    now: Date,
+  ): Promise<SpeakingRoomParticipantRecord | null> {
+    return this.transaction(async (client) => {
+      await this.lockRoom(client, roomId);
+      await reconcileStaleParticipants(client, roomId, now);
+      const result = await client.query(
+        `SELECT * FROM speaking_room_participants
+         WHERE id = $1 AND room_id = $2`,
+        [participantId, roomId],
+      );
+      return result.rows[0] ? mapParticipant(result.rows[0]) : null;
+    });
+  }
+
+  async setParticipantRole(
+    roomId: string,
+    participantId: string,
+    role: SpeakingRoomParticipantRecord['role'],
+    now: Date,
+  ): Promise<SpeakingRoomParticipantRecord> {
+    return this.transaction(async (client) => {
+      await this.lockRoom(client, roomId);
+      await reconcileStaleParticipants(client, roomId, now);
+      const participant = await this.findParticipantForUpdate(client, roomId, participantId);
+      if (!participant) throw new SpeakingRoomParticipantNotFoundError();
+      if (!isActiveState(participant.state)) {
+        throw new SpeakingRoomParticipantConflictError('INVALID_STATE', 'Participant is no longer active');
+      }
+      const result = await client.query(
+        `UPDATE speaking_room_participants
+         SET role = $3::speaking_room_participant_role, updated_at = $4
+         WHERE id = $1 AND room_id = $2
+         RETURNING *`,
+        [participantId, roomId, role, now],
+      );
+      return mapParticipant(result.rows[0]);
+    });
+  }
+
+  async removeParticipant(
+    roomId: string,
+    participantId: string,
+    now: Date,
+  ): Promise<SpeakingRoomParticipantRecord> {
+    return this.transaction(async (client) => {
+      await this.lockRoom(client, roomId);
+      await reconcileStaleParticipants(client, roomId, now);
+      const participant = await this.findParticipantForUpdate(client, roomId, participantId);
+      if (!participant) throw new SpeakingRoomParticipantNotFoundError();
+      if (!isActiveState(participant.state)) return participant;
+      const result = await client.query(
+        `UPDATE speaking_room_participants
+         SET state = 'REMOVED'::speaking_room_participant_state,
+             left_at = COALESCE(left_at, $3),
+             updated_at = $3
+         WHERE id = $1 AND room_id = $2
+         RETURNING *`,
+        [participantId, roomId, now],
+      );
+      return mapParticipant(result.rows[0]);
+    });
+  }
+
   private async lockRoom(client: PoolClient, roomId: string): Promise<void> {
     const result = await client.query('SELECT id FROM speaking_rooms WHERE id = $1 FOR UPDATE', [roomId]);
     if (!result.rows[0]) throw new SpeakingRoomParticipantNotFoundError('Speaking room was not found');
@@ -257,6 +323,20 @@ export class PostgresSpeakingRoomParticipantRepository implements SpeakingRoomPa
        WHERE id = $1 AND room_id = $2 AND user_id = $3
        FOR UPDATE`,
       [participantId, roomId, userId],
+    );
+    return result.rows[0] ? mapParticipant(result.rows[0]) : null;
+  }
+
+  private async findParticipantForUpdate(
+    client: PoolClient,
+    roomId: string,
+    participantId: string,
+  ): Promise<SpeakingRoomParticipantRecord | null> {
+    const result = await client.query(
+      `SELECT * FROM speaking_room_participants
+       WHERE id = $1 AND room_id = $2
+       FOR UPDATE`,
+      [participantId, roomId],
     );
     return result.rows[0] ? mapParticipant(result.rows[0]) : null;
   }

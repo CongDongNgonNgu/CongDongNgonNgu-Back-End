@@ -39,6 +39,17 @@ import {
   normalizeRoomTopic,
   normalizeRoomVisibility,
 } from './room.normalization';
+import {
+  SPEAKING_ROOM_INTERACTION_REPOSITORY,
+  SpeakingRoomInteractionConflictError,
+  SpeakingRoomInteractionNotFoundError,
+  type SpeakingRoomInteractionRepository,
+} from './room.interaction.repository';
+import type {
+  SpeakingRoomChatMessageRecord,
+  SpeakingRoomModerationActionRecord,
+  SpeakingRoomQueueEntryRecord,
+} from './room.interaction.types';
 import { speakingRoomFailure } from './room.errors';
 import type {
   CreateSpeakingRoomDto,
@@ -47,6 +58,12 @@ import type {
   JoinSpeakingRoomDto,
   LeaveSpeakingRoomDto,
   ListSpeakingRoomsQueryDto,
+  SpeakingRoomActionDto,
+  SpeakingRoomChatMessageDto,
+  SpeakingRoomChatQueryDto,
+  SpeakingRoomMuteDto,
+  SpeakingRoomQueueDecisionDto,
+  SpeakingRoomReportDto,
 } from './room.dto';
 import type {
   SpeakingRoomParticipantRole,
@@ -80,6 +97,7 @@ export interface SpeakingRoomParticipantResponse {
   displayName: string;
   role: SpeakingRoomParticipantRecord['role'];
   state: SpeakingRoomParticipantRecord['state'];
+  muted: boolean;
   joinedAt: Date;
   lastSeenAt: Date | null;
   reconnectLeaseUntil: Date | null;
@@ -105,6 +123,57 @@ export interface SpeakingRoomMediaSessionResponse {
   expiresAt: Date;
 }
 
+export interface SpeakingRoomQueueItemResponse {
+  queueEntryId: string | null;
+  participantId: string | null;
+  displayName: string;
+  state: SpeakingRoomQueueEntryRecord['state'];
+  position: number | null;
+  requestedAt: Date;
+}
+
+export interface SpeakingRoomQueueResponse {
+  items: SpeakingRoomQueueItemResponse[];
+  replayed?: boolean;
+}
+
+export interface SpeakingRoomModerationResponse {
+  participant: SpeakingRoomParticipantResponse;
+  action: SpeakingRoomModerationActionRecord['action'];
+  replayed: boolean;
+}
+
+export interface SpeakingRoomBlockResponse {
+  blocked: boolean;
+  replayed: boolean;
+}
+
+export interface SpeakingRoomReportResponse {
+  scope: 'room-report';
+  submitted: true;
+  replayed: boolean;
+}
+
+export interface SpeakingRoomAuditItemResponse {
+  action: SpeakingRoomModerationActionRecord['action'];
+  actorDisplayName: string;
+  targetDisplayName: string;
+  createdAt: Date;
+}
+
+export interface SpeakingRoomChatMessageResponse {
+  id: string;
+  displayName: string;
+  body: string;
+  own: boolean;
+  createdAt: Date;
+}
+
+export interface SpeakingRoomChatResponse {
+  items: SpeakingRoomChatMessageResponse[];
+  nextCursor: string | null;
+}
+
 @Injectable()
 export class SpeakingRoomService {
   constructor(
@@ -114,6 +183,8 @@ export class SpeakingRoomService {
     @Inject(SPEAKING_ROOM_MEDIA_PROVIDER) private readonly mediaProvider: SpeakingRoomMediaProvider,
     @Inject(SPEAKING_ROOM_PARTICIPANT_REPOSITORY)
     private readonly participants: SpeakingRoomParticipantRepository,
+    @Inject(SPEAKING_ROOM_INTERACTION_REPOSITORY)
+    private readonly interactions: SpeakingRoomInteractionRepository,
   ) {}
 
   async createRoom(userId: string, input: CreateSpeakingRoomDto): Promise<CreateSpeakingRoomResponse> {
@@ -277,9 +348,486 @@ export class SpeakingRoomService {
     const room = await this.requireRoom(roomId);
     await this.assertRoomAccess(room, userId, accessToken);
     const records = await this.participants.listParticipants(room.id, new Date());
+    const canModerate = await this.canModerate(room, userId);
     return {
-      participants: await Promise.all(records.map((record) => this.toParticipantResponse(record, userId))),
+      participants: await Promise.all(records.map((record) => this.toParticipantResponse(record, userId, canModerate))),
       counts: await this.participants.countParticipants(room.id, new Date()),
+    };
+  }
+
+  async raiseHandWithRequest(
+    roomId: string,
+    userId: string,
+    requestId: string,
+    accessToken?: string,
+  ): Promise<SpeakingRoomQueueResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    const participant = await this.requireActiveParticipant(room.id, userId);
+    try {
+      const result = await this.interactions.raiseHand({
+        roomId: room.id,
+        userId,
+        participantId: participant.id,
+        requestId,
+        now: new Date(),
+      });
+      return {
+        items: await this.queueItems(room.id, userId, result.entry, result.participant),
+        replayed: result.replayed,
+      };
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  async cancelHand(
+    roomId: string,
+    userId: string,
+    input: SpeakingRoomActionDto,
+    accessToken?: string,
+  ): Promise<SpeakingRoomQueueResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    const participant = await this.requireActiveParticipant(room.id, userId);
+    try {
+      const result = await this.interactions.cancelHand({
+        roomId: room.id,
+        userId,
+        participantId: participant.id,
+        requestId: input.requestId,
+        now: new Date(),
+      });
+      return {
+        items: await this.queueItems(room.id, userId, result.entry, result.participant),
+        replayed: result.replayed,
+      };
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  async listQueue(
+    roomId: string,
+    userId: string,
+    accessToken?: string,
+  ): Promise<SpeakingRoomQueueResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireActiveParticipant(room.id, userId);
+    const entries = await this.interactions.listQueue(room.id, new Date());
+    const canModerate = await this.canModerate(room, userId);
+    return {
+      items: await this.toQueueItems(entries, userId, canModerate),
+    };
+  }
+
+  async decideQueue(
+    roomId: string,
+    userId: string,
+    queueEntryId: string,
+    input: SpeakingRoomQueueDecisionDto,
+    accessToken?: string,
+  ): Promise<{ queueEntry: SpeakingRoomQueueItemResponse; participant: SpeakingRoomParticipantResponse; replayed: boolean }> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireModerator(room, userId);
+    await this.requireActiveParticipant(room.id, userId);
+    try {
+      const result = await this.interactions.decideQueue({
+        roomId: room.id,
+        actorUserId: userId,
+        queueEntryId,
+        requestId: input.requestId,
+        decision: input.decision as 'ACCEPT' | 'DECLINE',
+        now: new Date(),
+      });
+      const canModerate = true;
+      return {
+        queueEntry: await this.toQueueItem(result.entry, result.participant, userId, canModerate, null),
+        participant: await this.toParticipantResponse(result.participant, userId, canModerate),
+        replayed: result.replayed,
+      };
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  async promoteParticipant(
+    roomId: string,
+    userId: string,
+    participantId: string,
+    input: SpeakingRoomActionDto,
+    accessToken?: string,
+  ): Promise<SpeakingRoomModerationResponse> {
+    return this.changeParticipantRole(roomId, userId, participantId, input, 'SPEAKER', accessToken);
+  }
+
+  async demoteParticipant(
+    roomId: string,
+    userId: string,
+    participantId: string,
+    input: SpeakingRoomActionDto,
+    accessToken?: string,
+  ): Promise<SpeakingRoomModerationResponse> {
+    return this.changeParticipantRole(roomId, userId, participantId, input, 'LISTENER', accessToken);
+  }
+
+  async muteParticipant(
+    roomId: string,
+    userId: string,
+    participantId: string,
+    input: SpeakingRoomMuteDto,
+    accessToken?: string,
+  ): Promise<SpeakingRoomModerationResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireModerator(room, userId);
+    await this.requireActiveParticipant(room.id, userId);
+    const durationSeconds = input.durationSeconds ?? 300;
+    try {
+      const result = await this.interactions.moderateParticipant({
+        roomId: room.id,
+        actorUserId: userId,
+        targetParticipantId: participantId,
+        requestId: input.requestId,
+        action: 'MUTE',
+        mutedUntil: new Date(Date.now() + durationSeconds * 1000),
+        reason: null,
+        now: new Date(),
+      });
+      return {
+        participant: await this.toParticipantResponse(result.participant, userId, true),
+        action: result.action.action,
+        replayed: result.replayed,
+      };
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  async unmuteParticipant(
+    roomId: string,
+    userId: string,
+    participantId: string,
+    input: SpeakingRoomActionDto,
+    accessToken?: string,
+  ): Promise<SpeakingRoomModerationResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireModerator(room, userId);
+    await this.requireActiveParticipant(room.id, userId);
+    try {
+      const result = await this.interactions.moderateParticipant({
+        roomId: room.id,
+        actorUserId: userId,
+        targetParticipantId: participantId,
+        requestId: input.requestId,
+        action: 'UNMUTE',
+        mutedUntil: null,
+        reason: null,
+        now: new Date(),
+      });
+      return {
+        participant: await this.toParticipantResponse(result.participant, userId, true),
+        action: result.action.action,
+        replayed: result.replayed,
+      };
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  async removeParticipant(
+    roomId: string,
+    userId: string,
+    participantId: string,
+    input: SpeakingRoomActionDto,
+    accessToken?: string,
+  ): Promise<SpeakingRoomModerationResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireModerator(room, userId);
+    await this.requireActiveParticipant(room.id, userId);
+    try {
+      const result = await this.interactions.moderateParticipant({
+        roomId: room.id,
+        actorUserId: userId,
+        targetParticipantId: participantId,
+        requestId: input.requestId,
+        action: 'REMOVE',
+        mutedUntil: null,
+        reason: null,
+        now: new Date(),
+      });
+      return {
+        participant: await this.toParticipantResponse(result.participant, userId, true),
+        action: result.action.action,
+        replayed: result.replayed,
+      };
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  async blockParticipant(
+    roomId: string,
+    userId: string,
+    participantId: string,
+    input: SpeakingRoomActionDto,
+    accessToken?: string,
+  ): Promise<SpeakingRoomBlockResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireActiveParticipant(room.id, userId);
+    try {
+      return await this.interactions.blockParticipant({
+        roomId: room.id,
+        actorUserId: userId,
+        targetParticipantId: participantId,
+        requestId: input.requestId,
+        action: 'BLOCK',
+        now: new Date(),
+      });
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  async unblockParticipant(
+    roomId: string,
+    userId: string,
+    participantId: string,
+    input: SpeakingRoomActionDto,
+    accessToken?: string,
+  ): Promise<SpeakingRoomBlockResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireActiveParticipant(room.id, userId);
+    try {
+      return await this.interactions.blockParticipant({
+        roomId: room.id,
+        actorUserId: userId,
+        targetParticipantId: participantId,
+        requestId: input.requestId,
+        action: 'UNBLOCK',
+        now: new Date(),
+      });
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  async reportParticipant(
+    roomId: string,
+    userId: string,
+    participantId: string,
+    input: SpeakingRoomReportDto,
+    accessToken?: string,
+  ): Promise<SpeakingRoomReportResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireActiveParticipant(room.id, userId);
+    try {
+      const result = await this.interactions.reportParticipant({
+        roomId: room.id,
+        actorUserId: userId,
+        targetParticipantId: participantId,
+        requestId: input.requestId,
+        category: input.category as import('./room.interaction.types').SpeakingRoomReportCategory,
+        details: normalizeOptionalRoomText(input.details),
+        now: new Date(),
+      });
+      return { scope: 'room-report', submitted: true, replayed: result.replayed };
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  async listModerationAudit(
+    roomId: string,
+    userId: string,
+    accessToken?: string,
+  ): Promise<{ items: SpeakingRoomAuditItemResponse[] }> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireModerator(room, userId);
+    const actions = await this.interactions.listModerationActions(room.id, 100);
+    return { items: await Promise.all(actions.map((action) => this.toAuditItem(action))) };
+  }
+
+  async sendChat(
+    roomId: string,
+    userId: string,
+    input: SpeakingRoomChatMessageDto,
+    accessToken?: string,
+  ): Promise<{ message: SpeakingRoomChatMessageResponse; replayed: boolean }> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    const participant = await this.requireActiveParticipant(room.id, userId);
+    const body = normalizeRoomChatBody(input.content);
+    try {
+      const result = await this.interactions.sendChat({
+        roomId: room.id,
+        userId,
+        participantId: participant.id,
+        requestId: input.requestId,
+        body,
+        now: new Date(),
+      });
+      return { message: await this.toChatMessage(result.message, userId), replayed: result.replayed };
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  async listChat(
+    roomId: string,
+    userId: string,
+    input: SpeakingRoomChatQueryDto = {},
+    accessToken?: string,
+  ): Promise<SpeakingRoomChatResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireActiveParticipant(room.id, userId);
+    const before = input.cursor ? decodeRoomChatCursor(input.cursor) : null;
+    const page = await this.interactions.listChat({
+      roomId: room.id,
+      viewerUserId: userId,
+      limit: input.limit ?? 50,
+      before,
+    });
+    const items = await Promise.all(page.items.map((message) => this.toChatMessage(message, userId)));
+    const last = page.items.at(-1);
+    return {
+      items,
+      nextCursor: page.hasMore && last ? encodeRoomChatCursor({ createdAt: last.createdAt, id: last.id }) : null,
+    };
+  }
+
+  private async changeParticipantRole(
+    roomId: string,
+    userId: string,
+    participantId: string,
+    input: SpeakingRoomActionDto,
+    role: 'SPEAKER' | 'LISTENER',
+    accessToken?: string,
+  ): Promise<SpeakingRoomModerationResponse> {
+    const room = await this.requireRoom(roomId);
+    await this.assertRoomAccess(room, userId, accessToken);
+    await this.requireModerator(room, userId);
+    await this.requireActiveParticipant(room.id, userId);
+    const target = await this.participants.findParticipant(room.id, participantId, new Date());
+    if (!target) return speakingRoomFailure('ROOM_PARTICIPANT_NOT_FOUND', 'Participant was not found', 404);
+    if (target.role === 'HOST' || target.role === 'MODERATOR') {
+      return speakingRoomFailure('ROOM_MODERATION_TARGET_INVALID', 'This participant role cannot be changed', 409);
+    }
+    try {
+      const result = await this.interactions.changeRole({
+        roomId: room.id,
+        actorUserId: userId,
+        targetParticipantId: participantId,
+        requestId: input.requestId,
+        role,
+        now: new Date(),
+      });
+      return {
+        participant: await this.toParticipantResponse(result.participant, userId, true),
+        action: result.action.action,
+        replayed: result.replayed,
+      };
+    } catch (error) {
+      return mapInteractionFailure(error);
+    }
+  }
+
+  private async requireActiveParticipant(
+    roomId: string,
+    userId: string,
+  ): Promise<SpeakingRoomParticipantRecord> {
+    const participant = await this.participants.findActiveParticipant(roomId, userId, new Date());
+    if (!participant) return speakingRoomFailure('ROOM_JOIN_REQUIRED', 'Join the room before using this capability', 409);
+    return participant;
+  }
+
+  private async requireModerator(room: SpeakingRoomRecord, userId: string): Promise<void> {
+    if (!await this.canModerate(room, userId)) {
+      return speakingRoomFailure('ROOM_MODERATION_FORBIDDEN', 'Only the room host or moderator can do this', 403);
+    }
+  }
+
+  private async canModerate(room: SpeakingRoomRecord, userId: string): Promise<boolean> {
+    return room.hostUserId === userId || await this.repository.isModerator(room.id, userId);
+  }
+
+  private async queueItems(
+    roomId: string,
+    userId: string,
+    entry: SpeakingRoomQueueEntryRecord,
+    participant: SpeakingRoomParticipantRecord,
+  ): Promise<SpeakingRoomQueueItemResponse[]> {
+    const entries = await this.interactions.listQueue(roomId, new Date());
+    const position = entries.findIndex((candidate) => candidate.id === entry.id);
+    return [await this.toQueueItem(entry, participant, userId, false, position >= 0 ? position + 1 : null)];
+  }
+
+  private async toQueueItems(
+    entries: SpeakingRoomQueueEntryRecord[],
+    viewerUserId: string,
+    viewerCanModerate: boolean,
+  ): Promise<SpeakingRoomQueueItemResponse[]> {
+    const items: SpeakingRoomQueueItemResponse[] = [];
+    for (const [index, entry] of entries.entries()) {
+      const participant = await this.participants.findParticipant(entry.roomId, entry.participantId, new Date());
+      if (!participant) continue;
+      items.push(await this.toQueueItem(entry, participant, viewerUserId, viewerCanModerate, index + 1));
+    }
+    return items;
+  }
+
+  private async toQueueItem(
+    entry: SpeakingRoomQueueEntryRecord,
+    participant: SpeakingRoomParticipantRecord,
+    viewerUserId: string,
+    viewerCanModerate: boolean,
+    position: number | null,
+  ): Promise<SpeakingRoomQueueItemResponse> {
+    const user = await this.identities.findUserById(participant.userId);
+    const isViewer = participant.userId === viewerUserId;
+    return {
+      queueEntryId: isViewer || viewerCanModerate ? entry.id : null,
+      participantId: isViewer || viewerCanModerate ? participant.id : null,
+      displayName: user?.displayName ?? 'Community member',
+      state: entry.state,
+      position: entry.state === 'WAITING' ? position : null,
+      requestedAt: new Date(entry.createdAt),
+    };
+  }
+
+  private async toAuditItem(action: SpeakingRoomModerationActionRecord): Promise<SpeakingRoomAuditItemResponse> {
+    const [actor, target] = await Promise.all([
+      this.identities.findUserById(action.actorUserId),
+      this.identities.findUserById(action.targetUserId),
+    ]);
+    return {
+      action: action.action,
+      actorDisplayName: actor?.displayName ?? 'Community member',
+      targetDisplayName: target?.displayName ?? 'Community member',
+      createdAt: new Date(action.createdAt),
+    };
+  }
+
+  private async toChatMessage(
+    message: SpeakingRoomChatMessageRecord,
+    viewerUserId: string,
+  ): Promise<SpeakingRoomChatMessageResponse> {
+    const author = await this.identities.findUserById(message.authorUserId);
+    return {
+      id: message.id,
+      displayName: author?.displayName ?? 'Community member',
+      body: message.body,
+      own: message.authorUserId === viewerUserId,
+      createdAt: new Date(message.createdAt),
     };
   }
 
@@ -299,6 +847,9 @@ export class SpeakingRoomService {
     const participant = await this.participants.findActiveParticipant(room.id, userId, new Date());
     if (!participant) {
       return speakingRoomFailure('ROOM_JOIN_REQUIRED', 'Join the room before requesting audio access', 409);
+    }
+    if (await this.interactions.isMuted(room.id, participant.id, new Date())) {
+      return speakingRoomFailure('ROOM_PARTICIPANT_MUTED', 'Audio access is muted by room moderation', 409);
     }
     const role = participant.role;
     const expiresAt = new Date(Math.min(
@@ -376,14 +927,16 @@ export class SpeakingRoomService {
   private async toParticipantResponse(
     participant: SpeakingRoomParticipantRecord,
     viewerUserId: string,
+    viewerCanModerate = false,
   ): Promise<SpeakingRoomParticipantResponse> {
     const user = await this.identities.findUserById(participant.userId);
     const isViewer = participant.userId === viewerUserId;
     return {
-      participantId: isViewer ? participant.id : null,
+      participantId: isViewer || viewerCanModerate ? participant.id : null,
       displayName: user?.displayName ?? 'Community member',
       role: participant.role,
       state: participant.state,
+      muted: await this.interactions.isMuted(participant.roomId, participant.id, new Date()),
       joinedAt: new Date(participant.joinedAt),
       lastSeenAt: isViewer ? new Date(participant.lastSeenAt) : null,
       reconnectLeaseUntil: isViewer && participant.state === 'DISCONNECTED'
@@ -475,4 +1028,60 @@ function mapParticipantFailure(error: unknown): never {
     return speakingRoomFailure('ROOM_PARTICIPANT_STATE_INVALID', 'Participant state cannot be changed', 409);
   }
   throw error;
+}
+
+function mapInteractionFailure(error: unknown): never {
+  if (error instanceof SpeakingRoomInteractionNotFoundError) {
+    return speakingRoomFailure('ROOM_PARTICIPANT_NOT_FOUND', 'Participant was not found', 404);
+  }
+  if (error instanceof SpeakingRoomInteractionConflictError) {
+    if (error.reason === 'RATE_LIMITED') {
+      return speakingRoomFailure('ROOM_CHAT_RATE_LIMITED', 'Room chat rate limit exceeded', 429);
+    }
+    if (error.reason === 'REQUEST_REUSED') {
+      return speakingRoomFailure('ROOM_REQUEST_REUSED', 'Request id was already used', 409);
+    }
+    if (error.reason === 'QUEUE_NOT_WAITING') {
+      return speakingRoomFailure('ROOM_QUEUE_STATE_INVALID', 'The hand raise is no longer pending', 409);
+    }
+    return speakingRoomFailure('ROOM_INTERACTION_STATE_INVALID', 'Room interaction cannot be changed', 409);
+  }
+  throw error;
+}
+
+function normalizeRoomChatBody(value: string): string {
+  const normalized = value.trim().replace(/\r\n?/gu, '\n');
+  if (!normalized || normalized.length > 1_000 || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(normalized)) {
+    return speakingRoomFailure('ROOM_CHAT_INVALID', 'Chat message is invalid');
+  }
+  return normalized;
+}
+
+function normalizeOptionalRoomText(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  if (normalized.length > 1_000 || /[\u0000-\u001F\u007F]/u.test(normalized)) {
+    return speakingRoomFailure('ROOM_REPORT_INVALID', 'Report details are invalid');
+  }
+  return normalized;
+}
+
+function encodeRoomChatCursor(cursor: { createdAt: Date; id: string }): string {
+  return Buffer.from(JSON.stringify({ createdAt: cursor.createdAt.toISOString(), id: cursor.id }), 'utf8')
+    .toString('base64url');
+}
+
+function decodeRoomChatCursor(value: string): { createdAt: Date; id: string } {
+  try {
+    const decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as { createdAt?: unknown; id?: unknown };
+    if (typeof decoded.createdAt !== 'string' || typeof decoded.id !== 'string' || decoded.id.length > 64) {
+      throw new Error('invalid cursor');
+    }
+    const createdAt = new Date(decoded.createdAt);
+    if (Number.isNaN(createdAt.getTime())) throw new Error('invalid cursor');
+    return { createdAt, id: decoded.id };
+  } catch {
+    return speakingRoomFailure('ROOM_CHAT_CURSOR_INVALID', 'Chat cursor is invalid');
+  }
 }

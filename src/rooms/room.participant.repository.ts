@@ -90,6 +90,22 @@ export interface SpeakingRoomParticipantRepository {
     userId: string,
     now: Date,
   ): Promise<SpeakingRoomParticipantRecord | null>;
+  findParticipant(
+    roomId: string,
+    participantId: string,
+    now: Date,
+  ): Promise<SpeakingRoomParticipantRecord | null>;
+  setParticipantRole(
+    roomId: string,
+    participantId: string,
+    role: SpeakingRoomParticipantRole,
+    now: Date,
+  ): Promise<SpeakingRoomParticipantRecord>;
+  removeParticipant(
+    roomId: string,
+    participantId: string,
+    now: Date,
+  ): Promise<SpeakingRoomParticipantRecord>;
 }
 
 interface RecordedAction {
@@ -268,6 +284,55 @@ export class InMemorySpeakingRoomParticipantRepository implements SpeakingRoomPa
         .filter((candidate) => candidate.state === 'PRESENT')
         .sort(compareParticipants)[0];
       return participant ? cloneParticipant(participant) : null;
+    });
+  }
+
+  async findParticipant(
+    roomId: string,
+    participantId: string,
+    now: Date,
+  ): Promise<SpeakingRoomParticipantRecord | null> {
+    return this.exclusive(() => {
+      this.reconcileRoom(roomId, now);
+      const participant = this.participants.get(participantId);
+      return participant && participant.roomId === roomId ? cloneParticipant(participant) : null;
+    });
+  }
+
+  async setParticipantRole(
+    roomId: string,
+    participantId: string,
+    role: SpeakingRoomParticipantRole,
+    now: Date,
+  ): Promise<SpeakingRoomParticipantRecord> {
+    return this.exclusive(() => {
+      this.reconcileRoom(roomId, now);
+      const participant = this.participants.get(participantId);
+      if (!participant || participant.roomId !== roomId) throw new SpeakingRoomParticipantNotFoundError();
+      if (!isActiveState(participant.state)) {
+        throw new SpeakingRoomParticipantConflictError('INVALID_STATE', 'Participant is no longer active');
+      }
+      participant.role = role;
+      participant.updatedAt = new Date(now);
+      return cloneParticipant(participant);
+    });
+  }
+
+  async removeParticipant(
+    roomId: string,
+    participantId: string,
+    now: Date,
+  ): Promise<SpeakingRoomParticipantRecord> {
+    return this.exclusive(() => {
+      this.reconcileRoom(roomId, now);
+      const participant = this.participants.get(participantId);
+      if (!participant || participant.roomId !== roomId) throw new SpeakingRoomParticipantNotFoundError();
+      if (isActiveState(participant.state)) {
+        participant.state = 'REMOVED';
+        participant.leftAt = participant.leftAt ?? new Date(now);
+        participant.updatedAt = new Date(now);
+      }
+      return cloneParticipant(participant);
     });
   }
 
