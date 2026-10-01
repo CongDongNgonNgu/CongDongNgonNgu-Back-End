@@ -338,15 +338,18 @@ export function normalizeNotificationActorProjection(value: unknown): Notificati
     return deepFreeze({ kind: 'USER', displayName, profilePath });
   }
   if (root.kind === 'SYSTEM') {
-    assertExactKeys(root, ['kind'], 'INVALID_ACTOR');
+    assertExactKeys(root, ['kind'], 'INVALID_ACTOR', ['label']);
+    if (root.label !== undefined && root.label !== 'System') throw contractError('INVALID_ACTOR');
     return deepFreeze({ kind: 'SYSTEM', label: 'System' as const });
   }
   if (root.kind === 'PROVIDER') {
-    assertExactKeys(root, ['kind'], 'INVALID_ACTOR');
+    assertExactKeys(root, ['kind'], 'INVALID_ACTOR', ['label']);
+    if (root.label !== undefined && root.label !== 'Service') throw contractError('INVALID_ACTOR');
     return deepFreeze({ kind: 'PROVIDER', label: 'Service' as const });
   }
   if (root.kind === 'DELETED') {
-    assertExactKeys(root, ['kind'], 'INVALID_ACTOR');
+    assertExactKeys(root, ['kind'], 'INVALID_ACTOR', ['label']);
+    if (root.label !== undefined && root.label !== 'Deleted member') throw contractError('INVALID_ACTOR');
     return deepFreeze({ kind: 'DELETED', label: 'Deleted member' as const });
   }
   throw contractError('INVALID_ACTOR');
