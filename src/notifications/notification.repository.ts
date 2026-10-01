@@ -34,6 +34,11 @@ export interface NotificationPage {
   readonly hasMore: boolean;
 }
 
+export interface NotificationReplayPage {
+  readonly items: NotificationRecordWithReadState[];
+  readonly hasMore: boolean;
+}
+
 export type NotificationIntentClaim =
   | { readonly outcome: 'CREATED'; readonly record: NotificationRecord }
   | { readonly outcome: 'REPLAYED'; readonly record: NotificationRecord }
@@ -50,6 +55,12 @@ export interface MarkManyReadResult {
 export interface NotificationRepository {
   claimIntent(intent: NotificationIntent, now?: Date): Promise<NotificationIntentClaim>;
   listForUser(userId: string, query: NotificationListQuery): Promise<NotificationPage>;
+  findNotificationCursorForUser(userId: string, notificationId: string): Promise<NotificationCursor | null>;
+  listForUserAfter(
+    userId: string,
+    after: NotificationCursor,
+    limit: number,
+  ): Promise<NotificationReplayPage>;
   countUnread(userId: string): Promise<number>;
   markRead(userId: string, notificationId: string, now: Date): Promise<NotificationReadState | null>;
   markManyRead(userId: string, notificationIds: readonly string[], now: Date): Promise<MarkManyReadResult>;
@@ -107,6 +118,33 @@ export class InMemoryNotificationRepository implements NotificationRepository {
         readState: cloneReadState(this.readStates.get(record.id)!),
       })),
       hasMore: consumed.length > query.limit,
+    };
+  }
+
+  async findNotificationCursorForUser(userId: string, notificationId: string): Promise<NotificationCursor | null> {
+    const entry = [...this.entriesByDeduplicationKey.values()]
+      .find(({ record }) => record.id === notificationId && record.recipientUserId === userId);
+    return entry
+      ? { createdAt: new Date(entry.record.createdAt), id: entry.record.id }
+      : null;
+  }
+
+  async listForUserAfter(
+    userId: string,
+    after: NotificationCursor,
+    limit: number,
+  ): Promise<NotificationReplayPage> {
+    const consumed = [...this.entriesByDeduplicationKey.values()]
+      .filter(({ record }) => record.recipientUserId === userId)
+      .filter(({ record }) => isAfterCursor(record, after))
+      .sort(compareOldestFirst)
+      .slice(0, limit + 1);
+    return {
+      hasMore: consumed.length > limit,
+      items: consumed.slice(0, limit).map(({ record }) => ({
+        record: cloneRecord(record),
+        readState: cloneReadState(this.readStates.get(record.id)!),
+      })),
     };
   }
 
@@ -180,11 +218,23 @@ function compareNewestFirst(left: StoredNotification, right: StoredNotification)
   return right.record.id.localeCompare(left.record.id);
 }
 
+function compareOldestFirst(left: StoredNotification, right: StoredNotification): number {
+  const byCreatedAt = Date.parse(left.record.createdAt) - Date.parse(right.record.createdAt);
+  if (byCreatedAt !== 0) return byCreatedAt;
+  return left.record.id.localeCompare(right.record.id);
+}
+
 function isBeforeCursor(record: NotificationRecord, cursor: NotificationCursor | undefined): boolean {
   if (!cursor) return true;
   const recordTime = Date.parse(record.createdAt);
   const cursorTime = cursor.createdAt.getTime();
   return recordTime < cursorTime || (recordTime === cursorTime && record.id < cursor.id);
+}
+
+function isAfterCursor(record: NotificationRecord, cursor: NotificationCursor): boolean {
+  const recordTime = Date.parse(record.createdAt);
+  const cursorTime = cursor.createdAt.getTime();
+  return recordTime > cursorTime || (recordTime === cursorTime && record.id > cursor.id);
 }
 
 function cloneRecord(record: NotificationRecord): NotificationRecord {

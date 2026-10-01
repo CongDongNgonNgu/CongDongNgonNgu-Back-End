@@ -2,24 +2,33 @@ import {
   Body,
   Controller,
   Get,
+  Header,
+  Headers,
   Param,
   ParseUUIDPipe,
   Post,
   Query,
   Req,
+  Sse,
   UseGuards,
 } from '@nestjs/common';
+import type { Observable } from 'rxjs';
 import { AccessTokenGuard, type AuthenticatedRequest } from '../auth/guards/access-token.guard';
 import { SessionService } from '../auth/session/session.service';
 import { success } from '../common/http/api-response';
 import { ListNotificationsQueryDto, MarkNotificationsReadDto } from './notification.dto';
 import { NotificationService } from './notification.service';
+import {
+  NotificationRealtimeService,
+  type NotificationRealtimeEvent,
+} from './notification-realtime.service';
 
 @Controller('notifications')
 export class NotificationController {
   constructor(
     private readonly notifications: NotificationService,
     private readonly sessions: SessionService,
+    private readonly realtime: NotificationRealtimeService,
   ) {}
 
   @Get()
@@ -41,6 +50,18 @@ export class NotificationController {
       await this.notifications.unreadCount(request.user!.user.id),
       'Unread notification count',
     );
+  }
+
+  @Sse('stream')
+  @Header('Cache-Control', 'no-cache, no-transform')
+  @Header('Connection', 'keep-alive')
+  @Header('X-Accel-Buffering', 'no')
+  @UseGuards(AccessTokenGuard)
+  stream(
+    @Req() request: AuthenticatedRequest,
+    @Headers('last-event-id') lastEventId?: string,
+  ): Observable<NotificationRealtimeEvent> {
+    return this.realtime.stream(request.user!.user.id, lastEventId);
   }
 
   @Post('read')

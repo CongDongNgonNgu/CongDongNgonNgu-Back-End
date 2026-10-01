@@ -14,10 +14,12 @@ import type {
 import {
   createNotificationRecord,
   type MarkManyReadResult,
+  type NotificationCursor,
   type NotificationIntentClaim,
   type NotificationListQuery,
   type NotificationPage,
   type NotificationRecordWithReadState,
+  type NotificationReplayPage,
   type NotificationRepository,
 } from './notification.repository';
 
@@ -173,6 +175,47 @@ export class PostgresNotificationRepository implements NotificationRepository {
     return {
       items: consumed.slice(0, query.limit).map(mapNotificationWithReadState),
       hasMore: consumed.length > query.limit,
+    };
+  }
+
+  async findNotificationCursorForUser(userId: string, notificationId: string): Promise<NotificationCursor | null> {
+    const result = await this.pool.query<{ created_at: Date | string; id: string }>(
+      `SELECT created_at, id
+         FROM notifications
+        WHERE id = $1::uuid
+          AND recipient_user_id = $2::uuid`,
+      [notificationId, userId],
+    );
+    const row = result.rows[0];
+    return row
+      ? { createdAt: new Date(String(row.created_at)), id: String(row.id) }
+      : null;
+  }
+
+  async listForUserAfter(
+    userId: string,
+    after: NotificationCursor,
+    limit: number,
+  ): Promise<NotificationReplayPage> {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `SELECT ${NOTIFICATION_COLUMNS},
+              rs.status AS read_status,
+              rs.read_at,
+              rs.updated_at AS read_updated_at
+         FROM notifications n
+         INNER JOIN notification_read_states rs ON rs.notification_id = n.id
+        WHERE n.recipient_user_id = $1::uuid
+          AND (
+            n.created_at > $2::timestamptz
+            OR (n.created_at = $2::timestamptz AND n.id > $3::uuid)
+          )
+        ORDER BY n.created_at ASC, n.id ASC
+        LIMIT $4::integer`,
+      [userId, after.createdAt, after.id, limit + 1],
+    );
+    return {
+      hasMore: result.rows.length > limit,
+      items: result.rows.slice(0, limit).map(mapNotificationWithReadState),
     };
   }
 

@@ -47,6 +47,14 @@ describe('notifications API', () => {
     await app.close();
   });
 
+  it('requires bearer authentication before opening the realtime stream', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/notifications/stream')
+      .set('Accept', 'text/event-stream')
+      .expect(401)
+      .expect(({ body }) => expect(body.error).toMatchObject({ code: 'AUTH_UNAUTHORIZED' }));
+  });
+
   it('lists owner notifications, reconciles unread count, and marks one read idempotently', async () => {
     const user = await createUser('notifications-owner@example.com');
     const credentials = await issueAccessToken(user);

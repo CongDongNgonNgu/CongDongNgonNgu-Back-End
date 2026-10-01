@@ -1,9 +1,5 @@
-import { Inject, Injectable } from '@nestjs/common';
-import type {
-  NotificationActorProjection,
-  NotificationIntent,
-  NotificationTargetKind,
-} from './notification.contracts';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import type { NotificationIntent } from './notification.contracts';
 import { NotificationPaginationError, decodeNotificationCursor, encodeNotificationCursor } from './notification.pagination';
 import {
   NOTIFICATION_REPOSITORY,
@@ -11,6 +7,8 @@ import {
   type NotificationRepository,
 } from './notification.repository';
 import { NotificationFailure } from './notification.errors';
+import { toNotificationResponse, type NotificationResponse } from './notification.projection';
+import { NotificationRealtimeService } from './notification-realtime.service';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -21,21 +19,7 @@ export interface ListNotificationsInput {
   readonly cursor?: string;
 }
 
-export interface NotificationResponse {
-  readonly id: string;
-  readonly notificationType: string;
-  readonly category: string;
-  readonly priority: string;
-  readonly actor: NotificationActorProjection;
-  readonly target: {
-    readonly kind: NotificationTargetKind;
-    readonly path: string | null;
-  } | null;
-  readonly variables: Readonly<Record<string, string | number | boolean | null>>;
-  readonly createdAt: string;
-  readonly read: boolean;
-  readonly readAt: string | null;
-}
+export type { NotificationResponse } from './notification.projection';
 
 export interface NotificationListResponse {
   readonly items: NotificationResponse[];
@@ -57,10 +41,15 @@ export interface NotificationReadManyResponse {
 
 @Injectable()
 export class NotificationService {
-  constructor(@Inject(NOTIFICATION_REPOSITORY) private readonly repository: NotificationRepository) {}
+  constructor(
+    @Inject(NOTIFICATION_REPOSITORY) private readonly repository: NotificationRepository,
+    @Optional() private readonly realtime?: NotificationRealtimeService,
+  ) {}
 
   async publish(intent: NotificationIntent, now = new Date()) {
-    return this.repository.claimIntent(intent, now);
+    const claim = await this.repository.claimIntent(intent, now);
+    if (claim.outcome === 'CREATED') this.realtime?.publish(claim.record);
+    return claim;
   }
 
   async list(userId: string, input: ListNotificationsInput = {}): Promise<NotificationListResponse> {
@@ -80,7 +69,7 @@ export class NotificationService {
       this.repository.listForUser(userId, { limit, status, before }),
       this.repository.countUnread(userId),
     ]);
-    const items = page.items.map(({ record, readState }) => toResponse(record, readState.status === 'READ', readState.readAt));
+    const items = page.items.map(({ record, readState }) => toNotificationResponse(record, readState.status === 'READ', readState.readAt));
     const last = items.at(-1);
     return {
       items,
@@ -135,27 +124,6 @@ export class NotificationService {
   }
 }
 
-function toResponse(
-  record: import('./notification.contracts').NotificationRecord,
-  read: boolean,
-  readAt: string | null,
-): NotificationResponse {
-  return {
-    id: record.id,
-    notificationType: record.notificationType,
-    category: record.category,
-    priority: record.priority,
-    actor: cloneJson(record.actor),
-    target: record.target
-      ? { kind: record.target.kind, path: record.target.path }
-      : null,
-    variables: cloneJson(record.variables),
-    createdAt: record.createdAt,
-    read,
-    readAt,
-  };
-}
-
 function normalizeLimit(value: number | undefined): number {
   const limit = value ?? DEFAULT_PAGE_SIZE;
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE) {
@@ -174,8 +142,4 @@ function assertUuid(value: string, code: 'NOTIFICATION_INVALID_OWNER' | 'NOTIFIC
 
 function isUuidV4(value: string): boolean {
   return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
-}
-
-function cloneJson<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
 }
