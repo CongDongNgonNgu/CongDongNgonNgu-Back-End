@@ -10,6 +10,11 @@ import {
 } from './ai.usage';
 import { AiRuntimeService } from './ai.runtime';
 import {
+  AiPostRoomService,
+  AI_POST_ROOM_EXECUTOR,
+  DisabledAiPostRoomExecutor,
+} from './ai.post-room.service';
+import {
   AI_PROVIDER_ADAPTERS,
   AI_QUOTA_LEDGER,
   AI_RATE_LIMITER,
@@ -43,6 +48,8 @@ function createFailClosedAdapters(config: ConfigService): AiProviderAdapter[] {
   imports: [MembershipModule],
   providers: [
     AiRuntimeService,
+    AiPostRoomService,
+    { provide: AI_POST_ROOM_EXECUTOR, useClass: DisabledAiPostRoomExecutor },
     AiProviderRegistry,
     {
       provide: AI_PROVIDER_ADAPTERS,
@@ -55,6 +62,6 @@ function createFailClosedAdapters(config: ConfigService): AiProviderAdapter[] {
     { provide: AI_RATE_LIMITER, useFactory: () => new InMemoryAiRateLimiter() },
     { provide: AI_RUNTIME_POLICY, useValue: DEFAULT_AI_RUNTIME_POLICY },
   ],
-  exports: [AiRuntimeService, AiProviderRegistry],
+  exports: [AiRuntimeService, AiProviderRegistry, AiPostRoomService],
 })
 export class AiModule {}
