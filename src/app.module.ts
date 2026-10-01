@@ -13,6 +13,7 @@ import { AiCoachingModule } from './ai/ai.coaching.module';
 import { AiLearningModule } from './ai/ai.learning.module';
 import { ReputationModule } from './reputation/reputation.module';
 import { MembershipModule } from './membership/membership.module';
+import { NotificationModule } from './notifications/notification.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { MembershipModule } from './membership/membership.module';
     AiLearningModule,
     ReputationModule,
     MembershipModule,
+    NotificationModule,
   ],
 })
 export class AppModule {}
