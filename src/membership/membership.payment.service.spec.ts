@@ -11,7 +11,7 @@ import {
   type MembershipPaymentProvider,
 } from './membership.payment-provider';
 import { MembershipPaymentService } from './membership.payment.service';
-import type { MembershipPlanVersion } from './membership.types';
+import type { MembershipEntitlementDefinition, MembershipPlanVersion } from './membership.types';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -74,16 +74,57 @@ class TestPaymentProvider implements MembershipPaymentProvider {
   }
 }
 
-function createService(provider: MembershipPaymentProvider = new TestPaymentProvider()) {
+function createService(
+  provider: MembershipPaymentProvider = new TestPaymentProvider(),
+  paymentRepository = new InMemoryMembershipPaymentRepository({ catalog: [catalog] }),
+  membershipRepository = new InMemoryMembershipRepository(),
+) {
   return new MembershipPaymentService(
-    new InMemoryMembershipPaymentRepository({ catalog: [catalog] }),
+    paymentRepository,
     provider,
-    new MembershipAuthorizationService(new InMemoryMembershipRepository()),
+    new MembershipAuthorizationService(membershipRepository),
     () => new Date(NOW),
   );
 }
 
 describe('MembershipPaymentService', () => {
+  it('returns a safe server catalog with Free benefits and plan entitlement benefits', async () => {
+    const entitlement: MembershipEntitlementDefinition = {
+      id: '77777777-7777-4777-8777-777777777777',
+      planVersionId: PLAN_ID,
+      featureKey: 'practice.advanced',
+      limit: null,
+      limitUnit: null,
+      parameters: { internalOnly: true },
+    };
+    const service = createService(
+      new TestPaymentProvider(),
+      new InMemoryMembershipPaymentRepository({ catalog: [catalog] }),
+      new InMemoryMembershipRepository({ plans: [plan], entitlements: [entitlement] }),
+    );
+
+    const result = await service.getCatalog();
+
+    expect(result.free).toMatchObject({ productCode: 'FREE', displayName: 'Free' });
+    expect(result.free.benefits).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'community', label: 'Cộng đồng công khai' }),
+    ]));
+    expect(result.plans).toHaveLength(1);
+    expect(result.plans[0]).toMatchObject({
+      planVersionId: PLAN_ID,
+      productCode: 'COMMUNITY_MEMBER',
+      benefits: [{ code: 'advanced-practice', label: 'Luyện tập nâng cao', detail: null }],
+      price: {
+        id: PRICE_ID,
+        amountMinor: '125000',
+        currency: 'VND',
+        periodUnit: 'MONTH',
+        periodCount: 1,
+      },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/internalOnly|provider|webhook|userId/iu);
+  });
+
   it('derives amount and plan snapshot from the server catalog, never the client', async () => {
     const service = createService();
 
