@@ -16,6 +16,15 @@ import {
   type CreateChallengeDefinitionInput,
 } from './challenge.rules';
 import { ChallengeFailure, type ChallengeFailureCode } from './challenge.errors';
+import {
+  CHALLENGE_PUBLIC_STATES,
+  getChallengePublicState,
+  toPublicChallengeSummary,
+  toPublicProgress,
+  type ChallengePublicState,
+  type ChallengePublicProgress,
+  type ChallengePublicSummary,
+} from './challenge.public';
 import type {
   ChallengeActivityType,
   ChallengeProgressProjection,
@@ -25,6 +34,12 @@ import type {
 
 export interface ChallengeListInput {
   readonly status?: ChallengeStatus;
+  readonly languageCode?: string;
+  readonly limit?: number;
+}
+
+export interface ChallengePublicListInput {
+  readonly state?: ChallengePublicState | 'ALL';
   readonly languageCode?: string;
   readonly limit?: number;
 }
@@ -89,11 +104,65 @@ export class ChallengeService {
     return this.repository.listChallenges(query);
   }
 
+  async listPublicChallenges(
+    input: ChallengePublicListInput = {},
+    now = new Date(),
+  ): Promise<ChallengePublicSummary[]> {
+    if (!isValidDate(now)) {
+      throw new ChallengeFailure('CHALLENGE_INVALID_INPUT', 400, 'Challenge time is invalid');
+    }
+    const state = input.state ?? 'ALL';
+    if (state !== 'ALL' && !CHALLENGE_PUBLIC_STATES.includes(state)) {
+      throw new ChallengeFailure('CHALLENGE_INVALID_INPUT', 400, 'Challenge state is invalid');
+    }
+    const limit = input.limit ?? 20;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+      throw new ChallengeFailure('CHALLENGE_INVALID_INPUT', 400, 'Challenge page size is invalid');
+    }
+    const languageCode = input.languageCode?.trim().toLowerCase();
+    if (languageCode !== undefined && !/^[a-z]{2,35}$/u.test(languageCode)) {
+      throw new ChallengeFailure('CHALLENGE_INVALID_INPUT', 400, 'Challenge language is invalid');
+    }
+
+    const candidates = await this.repository.listChallenges({
+      status: state === 'CANCELLED' ? 'CANCELLED' : 'ACTIVE',
+      languageCode,
+      limit: 50,
+    });
+    const publicChallenges = candidates
+      .filter((challenge) => {
+        const derivedState = getChallengePublicState(challenge, now);
+        return state === 'ALL'
+          ? derivedState === 'ACTIVE' || derivedState === 'UPCOMING'
+          : derivedState === state;
+      })
+      .slice(0, limit);
+
+    return Promise.all(publicChallenges.map(async (challenge) => toPublicChallengeSummary(
+      challenge,
+      await this.repository.getParticipantCount(challenge.id),
+      now,
+    )));
+  }
+
   async getChallenge(challengeId: string): Promise<ChallengeRecord> {
     assertUuid(challengeId);
     const challenge = await this.repository.findChallengeById(challengeId);
     if (!challenge) throw new ChallengeFailure('CHALLENGE_NOT_FOUND', 404, 'Challenge is not available');
     return challenge;
+  }
+
+  async getPublicChallenge(challengeId: string, now = new Date()): Promise<ChallengePublicSummary> {
+    assertUuid(challengeId);
+    if (!isValidDate(now)) {
+      throw new ChallengeFailure('CHALLENGE_INVALID_INPUT', 400, 'Challenge time is invalid');
+    }
+    const challenge = await this.requirePublicChallenge(challengeId);
+    return toPublicChallengeSummary(
+      challenge,
+      await this.repository.getParticipantCount(challenge.id),
+      now,
+    );
   }
 
   async joinChallenge(challengeId: string, userId: string, now = new Date()) {
@@ -187,6 +256,17 @@ export class ChallengeService {
     return projection;
   }
 
+  async getViewerProgress(
+    challengeId: string,
+    userId: string,
+  ): Promise<ChallengePublicProgress | null> {
+    assertUuid(challengeId);
+    await this.requireActiveUser(userId, 'CHALLENGE_ACTOR_INVALID');
+    await this.requirePublicChallenge(challengeId);
+    const projection = await this.repository.getProgress(challengeId, userId);
+    return projection ? toPublicProgress(projection) : null;
+  }
+
   private normalizeDefinition(input: CreateChallengeDefinitionInput) {
     try {
       return normalizeChallengeDefinition(input);
@@ -198,6 +278,14 @@ export class ChallengeService {
   private async requireChallenge(challengeId: string): Promise<ChallengeRecord> {
     const challenge = await this.repository.findChallengeById(challengeId);
     if (!challenge) throw new ChallengeFailure('CHALLENGE_NOT_FOUND', 404, 'Challenge is not available');
+    return challenge;
+  }
+
+  private async requirePublicChallenge(challengeId: string): Promise<ChallengeRecord> {
+    const challenge = await this.requireChallenge(challengeId);
+    if (challenge.status === 'DRAFT') {
+      throw new ChallengeFailure('CHALLENGE_NOT_FOUND', 404, 'Challenge is not available');
+    }
     return challenge;
   }
 
