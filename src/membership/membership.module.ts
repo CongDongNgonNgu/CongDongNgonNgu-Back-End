@@ -2,12 +2,15 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { AuthModule } from '../auth/auth.module';
+import { ReputationModule } from '../reputation/reputation.module';
 import {
   InMemoryMembershipRepository,
   MEMBERSHIP_REPOSITORY,
   PostgresMembershipRepository,
 } from './membership.repository';
 import { MembershipController } from './membership.controller';
+import { MembershipContributionCreditService } from './membership.contribution-credit';
+import { MembershipPolicyService } from './membership.policy';
 import { MembershipAuthorizationService } from './membership.service';
 
 interface MembershipRuntimeConfig {
@@ -15,10 +18,12 @@ interface MembershipRuntimeConfig {
 }
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, ReputationModule],
   controllers: [MembershipController],
   providers: [
     MembershipAuthorizationService,
+    MembershipPolicyService,
+    MembershipContributionCreditService,
     {
       provide: MEMBERSHIP_REPOSITORY,
       inject: [ConfigService],
@@ -33,6 +38,11 @@ interface MembershipRuntimeConfig {
       },
     },
   ],
-  exports: [MEMBERSHIP_REPOSITORY, MembershipAuthorizationService],
+  exports: [
+    MEMBERSHIP_REPOSITORY,
+    MembershipAuthorizationService,
+    MembershipPolicyService,
+    MembershipContributionCreditService,
+  ],
 })
 export class MembershipModule {}

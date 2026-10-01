@@ -170,6 +170,7 @@ export function buildAiCompletionInput(input: AiCompletionInputContract): AiComp
     requestId,
     userId,
     feature,
+    entitlementKey: 'ai.practice',
     modelId,
     messages: prompt.messages,
     estimatedInputTokens: prompt.estimatedInputTokens,
