@@ -1,8 +1,9 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { MembershipModule } from '../membership/membership.module';
+import { MembershipPolicyService } from '../membership/membership.policy';
 import { FailClosedAiProviderAdapter, AiProviderRegistry } from './ai.provider';
 import {
-  FailClosedAiUsagePolicyResolver,
   InMemoryAiQuotaLedger,
   InMemoryAiRateLimiter,
   InMemoryAiUsageLedger,
@@ -39,6 +40,7 @@ function createFailClosedAdapters(config: ConfigService): AiProviderAdapter[] {
 }
 
 @Module({
+  imports: [MembershipModule],
   providers: [
     AiRuntimeService,
     AiProviderRegistry,
@@ -48,7 +50,7 @@ function createFailClosedAdapters(config: ConfigService): AiProviderAdapter[] {
       useFactory: createFailClosedAdapters,
     },
     { provide: AI_USAGE_LEDGER, useFactory: () => new InMemoryAiUsageLedger() },
-    { provide: AI_USAGE_POLICY_RESOLVER, useFactory: () => new FailClosedAiUsagePolicyResolver() },
+    { provide: AI_USAGE_POLICY_RESOLVER, useExisting: MembershipPolicyService },
     { provide: AI_QUOTA_LEDGER, useFactory: () => new InMemoryAiQuotaLedger() },
     { provide: AI_RATE_LIMITER, useFactory: () => new InMemoryAiRateLimiter() },
     { provide: AI_RUNTIME_POLICY, useValue: DEFAULT_AI_RUNTIME_POLICY },

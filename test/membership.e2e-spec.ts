@@ -50,6 +50,38 @@ describe('membership capability API', () => {
         });
         expect(body.data.evaluatedAt).toEqual(expect.any(String));
       });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/membership/policy?planCode=COMMUNITY_MEMBER')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toMatchObject({
+          version: 'membership-policy-v1',
+          tier: 'FREE',
+          plan: { productCode: 'FREE', version: 1 },
+        });
+        expect(body.data.capabilities).toEqual(expect.arrayContaining([
+          expect.objectContaining({ featureKey: 'community.public', decision: 'GRANTED' }),
+          expect.objectContaining({ featureKey: 'library.public', decision: 'GRANTED' }),
+          expect.objectContaining({ featureKey: 'exchange.basic', decision: 'GRANTED' }),
+          expect.objectContaining({ featureKey: 'ai.practice', decision: 'GRANTED', limit: 20_000 }),
+          expect.objectContaining({ featureKey: 'practice.advanced', decision: 'DENIED' }),
+        ]));
+      });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/membership/contribution-credit?userId=another-user')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toMatchObject({
+          contractVersion: 'membership-contribution-credit-v1',
+          type: 'MEMBERSHIP_ELIGIBILITY_CREDIT',
+          availableCreditUnits: 0,
+          redemption: { grantsMembership: false, actsAsPaymentTender: false },
+        });
+      });
   });
 });
 
