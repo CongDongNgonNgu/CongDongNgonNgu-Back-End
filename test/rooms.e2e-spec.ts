@@ -156,6 +156,142 @@ describe('speaking room presence API', () => {
       })
       .expect(201);
   });
+
+  it('enforces host moderation, deterministic queue replay, room safety and bounded chat projections', async () => {
+    const host = await createUser(identity, 'rooms-api-13c-host@example.test', '13C Host');
+    const listener = await createUser(identity, 'rooms-api-13c-listener@example.test', '13C Listener');
+    const hostToken = await accessFor(sessions, host);
+    const listenerToken = await accessFor(sessions, listener);
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/rooms')
+      .set('Authorization', 'Bearer ' + hostToken)
+      .send({ languageCode: 'en', topic: 'Queue and moderation', capacity: 4 })
+      .expect(201);
+    const roomId = created.body.data.room.id as string;
+
+    const hostJoin = await request(app.getHttpServer())
+      .post('/api/v1/rooms/' + roomId + '/join')
+      .set('Authorization', 'Bearer ' + hostToken)
+      .send({
+        requestId: '00000000-0000-4000-8000-000000000401',
+        deviceId: '13c-host-browser',
+      })
+      .expect(201);
+    const listenerJoin = await request(app.getHttpServer())
+      .post('/api/v1/rooms/' + roomId + '/join')
+      .set('Authorization', 'Bearer ' + listenerToken)
+      .send({
+        requestId: '00000000-0000-4000-8000-000000000402',
+        deviceId: '13c-listener-browser',
+      })
+      .expect(201);
+    const listenerParticipantId = listenerJoin.body.data.participant.participantId as string;
+
+    const raisePayload = {
+      requestId: '00000000-0000-4000-8000-000000000403',
+    };
+    const [raised, replayed] = await Promise.all([
+      request(app.getHttpServer())
+        .post('/api/v1/rooms/' + roomId + '/queue/raise-hand')
+        .set('Authorization', 'Bearer ' + listenerToken)
+        .send(raisePayload),
+      request(app.getHttpServer())
+        .post('/api/v1/rooms/' + roomId + '/queue/raise-hand')
+        .set('Authorization', 'Bearer ' + listenerToken)
+        .send(raisePayload),
+    ]);
+    expect(raised.status).toBe(201);
+    expect(replayed.status).toBe(201);
+    expect(raised.body.data.items[0].queueEntryId).toBe(replayed.body.data.items[0].queueEntryId);
+
+    const queue = await request(app.getHttpServer())
+      .get('/api/v1/rooms/' + roomId + '/queue')
+      .set('Authorization', 'Bearer ' + hostToken)
+      .expect(200);
+    const queueEntryId = queue.body.data.items[0].queueEntryId as string;
+    expect(queue.body.data.items[0].participantId).toBe(listenerParticipantId);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/rooms/' + roomId + '/queue/' + queueEntryId + '/decision')
+      .set('Authorization', 'Bearer ' + listenerToken)
+      .send({
+        requestId: '00000000-0000-4000-8000-000000000404',
+        decision: 'ACCEPT',
+      })
+      .expect(403);
+
+    const accepted = await request(app.getHttpServer())
+      .post('/api/v1/rooms/' + roomId + '/queue/' + queueEntryId + '/decision')
+      .set('Authorization', 'Bearer ' + hostToken)
+      .send({
+        requestId: '00000000-0000-4000-8000-000000000405',
+        decision: 'ACCEPT',
+      })
+      .expect(201);
+    expect(accepted.body.data.participant.role).toBe('SPEAKER');
+
+    await request(app.getHttpServer())
+      .post('/api/v1/rooms/' + roomId + '/participants/' + listenerParticipantId + '/mute')
+      .set('Authorization', 'Bearer ' + listenerToken)
+      .send({ requestId: '00000000-0000-4000-8000-000000000406' })
+      .expect(403);
+
+    const muted = await request(app.getHttpServer())
+      .post('/api/v1/rooms/' + roomId + '/participants/' + listenerParticipantId + '/mute')
+      .set('Authorization', 'Bearer ' + hostToken)
+      .send({ requestId: '00000000-0000-4000-8000-000000000407', durationSeconds: 120 })
+      .expect(201);
+    expect(muted.body.data.participant.muted).toBe(true);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/rooms/' + roomId + '/chat')
+      .set('Authorization', 'Bearer ' + listenerToken)
+      .send({
+        requestId: '00000000-0000-4000-8000-000000000408',
+        content: '<script>chat text</script>',
+      })
+      .expect(201);
+    const chat = await request(app.getHttpServer())
+      .get('/api/v1/rooms/' + roomId + '/chat')
+      .set('Authorization', 'Bearer ' + hostToken)
+      .expect(200);
+    expect(chat.body.data.items[0]).toMatchObject({
+      displayName: '13C Listener',
+      body: '<script>chat text</script>',
+      own: false,
+    });
+    expect(chat.body.data.items[0].authorUserId).toBeUndefined();
+
+    await request(app.getHttpServer())
+      .post('/api/v1/rooms/' + roomId + '/participants/' + listenerParticipantId + '/block')
+      .set('Authorization', 'Bearer ' + hostToken)
+      .send({ requestId: '00000000-0000-4000-8000-000000000409' })
+      .expect(201);
+    expect((await request(app.getHttpServer())
+      .get('/api/v1/rooms/' + roomId + '/chat')
+      .set('Authorization', 'Bearer ' + hostToken)
+      .expect(200)).body.data.items).toHaveLength(0);
+
+    const report = await request(app.getHttpServer())
+      .post('/api/v1/rooms/' + roomId + '/participants/' + listenerParticipantId + '/report')
+      .set('Authorization', 'Bearer ' + hostToken)
+      .send({
+        requestId: '00000000-0000-4000-8000-000000000410',
+        category: 'SAFETY_CONCERN',
+        details: 'bounded test report',
+      })
+      .expect(201);
+    expect(report.body.data).toMatchObject({ scope: 'room-report', submitted: true });
+    expect(report.body.data.duplicate).toBeUndefined();
+
+    const audit = await request(app.getHttpServer())
+      .get('/api/v1/rooms/' + roomId + '/moderation/audit')
+      .set('Authorization', 'Bearer ' + hostToken)
+      .expect(200);
+    expect(audit.body.data.items.map((item: { action: string }) => item.action))
+      .toEqual(expect.arrayContaining(['ACCEPT_QUEUE', 'MUTE', 'BLOCK', 'REPORT']));
+    expect(JSON.stringify(audit.body.data)).not.toContain('bounded test report');
+  });
 });
 
 async function createUser(identity: IdentityRepository, email: string, displayName: string) {

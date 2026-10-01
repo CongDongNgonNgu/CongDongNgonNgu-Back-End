@@ -58,3 +58,33 @@ describe('Phase 13B participant migration contract', () => {
     expect(sql).not.toMatch(/DROP TABLE IF EXISTS (users|languages|notifications|membership_|reputation_|speaking_rooms)/iu);
   });
 });
+
+describe('Phase 13C queue, moderation and chat migration contract', () => {
+  it('persists deterministic queue state, moderation audit, room-scoped safety and bounded plain-text chat', () => {
+    const sql = readFileSync(resolve(migrations, '0020_phase13_room_queue_moderation_chat.sql'), 'utf8');
+
+    expect(sql).toContain('CREATE TYPE speaking_room_queue_state AS ENUM');
+    expect(sql).toContain('CREATE TYPE speaking_room_queue_action AS ENUM');
+    expect(sql).toContain('CREATE TYPE speaking_room_moderation_action AS ENUM');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS speaking_room_queue_entries');
+    expect(sql).toContain('speaking_room_queue_waiting_participant_idx');
+    expect(sql).toContain('PRIMARY KEY (room_id, user_id, request_id)');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS speaking_room_moderation_actions');
+    expect(sql).toContain('UNIQUE (room_id, actor_user_id, request_id)');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS speaking_room_participant_moderation_state');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS speaking_room_participant_blocks');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS speaking_room_reports');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS speaking_room_chat_messages');
+    expect(sql).toContain('speaking_room_chat_body_check');
+    expect(sql).not.toMatch(/recording|transcript|provider_secret|api_key|raw_payload/iu);
+  });
+
+  it('has a scoped rollback and leaves accepted earlier migration files untouched', () => {
+    const sql = readFileSync(resolve(migrations, '0020_phase13_room_queue_moderation_chat.down.sql'), 'utf8');
+
+    expect(sql).toContain('DROP TABLE IF EXISTS speaking_room_chat_messages');
+    expect(sql).toContain('DROP TABLE IF EXISTS speaking_room_queue_entries');
+    expect(sql).toContain('DROP TYPE IF EXISTS speaking_room_queue_state');
+    expect(sql).not.toMatch(/DROP TABLE IF EXISTS (users|languages|notifications|membership_|reputation_|speaking_rooms|speaking_room_participants)/iu);
+  });
+});
