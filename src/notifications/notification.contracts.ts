@@ -481,6 +481,14 @@ export function validateNotificationIntent(value: unknown): NotificationIntent {
   });
 }
 
+export function serializeNotificationIntent(intent: NotificationIntent): string {
+  return stableStringify(validateNotificationIntent(intent));
+}
+
+export function hashNotificationIntent(intent: NotificationIntent): string {
+  return sha256(serializeNotificationIntent(intent));
+}
+
 export type NotificationIntentClaim =
   | { readonly outcome: 'CREATED'; readonly intent: NotificationIntent }
   | { readonly outcome: 'REPLAYED'; readonly intent: NotificationIntent }
