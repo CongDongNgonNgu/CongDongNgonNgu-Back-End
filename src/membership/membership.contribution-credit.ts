@@ -1,5 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ReputationService } from '../reputation/reputation.service';
+import {
+  MEMBERSHIP_FULFILLMENT_REPOSITORY,
+  type MembershipFulfillmentRepository,
+} from './membership.fulfillment.repository';
 
 export const CONTRIBUTION_CREDIT_CONTRACT_VERSION = 'membership-contribution-credit-v1' as const;
 export const CONTRIBUTION_CREDIT_RULE_VERSION = 'membership-credit-v1' as const;
@@ -26,26 +30,33 @@ export interface MembershipContributionCreditProjection {
     reputationPointsPerCredit: typeof REPUTATION_POINTS_PER_MEMBERSHIP_CREDIT;
   };
   eligibleReputationPoints: number;
+  redeemedCreditUnits: number;
   availableCreditUnits: number;
   remainderReputationPoints: number;
   expirationPolicy: 'NONE_DERIVED_FROM_CURRENT_LEDGER';
   redemption: {
-    mode: 'PROJECTION_ONLY';
-    grantsMembership: false;
+    mode: 'SERVER_AUTHORITATIVE_IDEMPOTENT';
+    grantsMembership: true;
     actsAsPaymentTender: false;
+    period: 'ONE_MONTH_PER_CREDIT_UNIT';
   };
   evaluatedAt: string;
 }
 
 /**
- * Contribution credit is a non-monetary, server-derived eligibility
- * projection. It does not debit Reputation, create a wallet, or grant a
- * membership period. A later lifecycle boundary must explicitly consume an
- * idempotent redemption fact before membership can be granted.
+ * Contribution credit remains a non-monetary, server-derived projection.
+ * Redemption records consume eligibility units without debiting or rewriting
+ * the append-only Reputation ledger; the fulfillment boundary grants only the
+ * explicit one-month-per-unit membership period.
  */
 @Injectable()
 export class MembershipContributionCreditService {
-  constructor(private readonly reputation: ReputationService) {}
+  constructor(
+    private readonly reputation: ReputationService,
+    @Optional()
+    @Inject(MEMBERSHIP_FULFILLMENT_REPOSITORY)
+    private readonly fulfillment?: MembershipFulfillmentRepository,
+  ) {}
 
   async getProjection(
     userId: string,
@@ -54,9 +65,13 @@ export class MembershipContributionCreditService {
     assertUserAndTime(userId, now);
     const balance = await this.reputation.getBalance(userId, 'community_reputation');
     const eligibleReputationPoints = Math.max(0, Math.trunc(balance));
-    const availableCreditUnits = Math.floor(
+    const derivedCreditUnits = Math.floor(
       eligibleReputationPoints / REPUTATION_POINTS_PER_MEMBERSHIP_CREDIT,
     );
+    const redeemedCreditUnits = this.fulfillment
+      ? await this.fulfillment.getRedeemedContributionCreditUnits(userId)
+      : 0;
+    const availableCreditUnits = Math.max(0, derivedCreditUnits - redeemedCreditUnits);
 
     return {
       contractVersion: CONTRIBUTION_CREDIT_CONTRACT_VERSION,
@@ -67,13 +82,15 @@ export class MembershipContributionCreditService {
         reputationPointsPerCredit: REPUTATION_POINTS_PER_MEMBERSHIP_CREDIT,
       },
       eligibleReputationPoints,
+      redeemedCreditUnits,
       availableCreditUnits,
       remainderReputationPoints: eligibleReputationPoints % REPUTATION_POINTS_PER_MEMBERSHIP_CREDIT,
       expirationPolicy: 'NONE_DERIVED_FROM_CURRENT_LEDGER',
       redemption: {
-        mode: 'PROJECTION_ONLY',
-        grantsMembership: false,
+        mode: 'SERVER_AUTHORITATIVE_IDEMPOTENT',
+        grantsMembership: true,
         actsAsPaymentTender: false,
+        period: 'ONE_MONTH_PER_CREDIT_UNIT',
       },
       evaluatedAt: now.toISOString(),
     };

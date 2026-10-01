@@ -79,9 +79,32 @@ describe('membership capability API', () => {
           contractVersion: 'membership-contribution-credit-v1',
           type: 'MEMBERSHIP_ELIGIBILITY_CREDIT',
           availableCreditUnits: 0,
-          redemption: { grantsMembership: false, actsAsPaymentTender: false },
+          redemption: {
+            mode: 'SERVER_AUTHORITATIVE_IDEMPOTENT',
+            grantsMembership: true,
+            actsAsPaymentTender: false,
+            period: 'ONE_MONTH_PER_CREDIT_UNIT',
+          },
         });
       });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/membership/contribution-credit/redemptions')
+      .set('Authorization', 'Bearer ' + accessToken)
+      .set('Idempotency-Key', 'credit-api-001')
+      .send({ planVersionId: '33333333-3333-4333-8333-333333333333', creditUnits: 1 })
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/membership/contribution-credit/redemptions')
+      .set('Idempotency-Key', 'credit-api-002')
+      .send({ planVersionId: '33333333-3333-4333-8333-333333333333', creditUnits: 1 })
+      .expect(401);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/membership/webhooks/payos')
+      .send({})
+      .expect(503);
   });
 });
 
