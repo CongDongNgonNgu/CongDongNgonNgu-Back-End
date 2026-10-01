@@ -14,6 +14,7 @@ import { AiLearningModule } from './ai/ai.learning.module';
 import { ReputationModule } from './reputation/reputation.module';
 import { MembershipModule } from './membership/membership.module';
 import { NotificationModule } from './notifications/notification.module';
+import { SpeakingRoomModule } from './rooms/room.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { NotificationModule } from './notifications/notification.module';
     ReputationModule,
     MembershipModule,
     NotificationModule,
+    SpeakingRoomModule,
   ],
 })
 export class AppModule {}
