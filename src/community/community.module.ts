@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { AuthModule } from '../auth/auth.module';
 import { IdentityModule } from '../identity/identity.module';
 import { ProfileModule } from '../profile/profile.module';
+import { NotificationModule } from '../notifications/notification.module';
 import { CommunityController } from './community.controller';
 import { CommunityRateLimiter } from './community.rate-limiter';
 import { COMMUNITY_REPOSITORY } from './community.repository';
@@ -17,7 +18,7 @@ interface CommunityRuntimeConfig {
 }
 
 @Module({
-  imports: [AuthModule, IdentityModule, ProfileModule],
+  imports: [AuthModule, IdentityModule, ProfileModule, NotificationModule],
   controllers: [CommunityController],
   providers: [
     CommunityService,

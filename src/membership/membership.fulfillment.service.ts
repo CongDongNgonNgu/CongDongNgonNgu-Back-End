@@ -20,11 +20,17 @@ import {
   type MembershipWebhookProcessingResult,
   type RedeemMembershipCreditInput,
 } from './membership.fulfillment.types';
+import { PAYOS_PROVIDER_CODE } from './membership.fulfillment.types';
 import {
   MEMBERSHIP_WEBHOOK_VERIFIER,
   MembershipWebhookValidationError,
   type MembershipWebhookVerifier,
 } from './membership.webhook';
+import {
+  createNotificationDomainEvent,
+  NOTIFICATION_DOMAIN_EVENT_SINK,
+  type NotificationDomainEventSink,
+} from '../notifications/notification-event-integration';
 
 export const MEMBERSHIP_FULFILLMENT_CLOCK = 'MEMBERSHIP_FULFILLMENT_CLOCK';
 
@@ -60,6 +66,8 @@ export class MembershipFulfillmentService {
     @Optional()
     @Inject(MEMBERSHIP_FULFILLMENT_CLOCK)
     private readonly clock: () => Date = () => new Date(),
+    @Optional() @Inject(NOTIFICATION_DOMAIN_EVENT_SINK)
+    private readonly notificationEvents?: NotificationDomainEventSink,
   ) {}
 
   async handlePayOsWebhook(payload: unknown): Promise<MembershipWebhookResponse> {
@@ -89,6 +97,7 @@ export class MembershipFulfillmentService {
         };
       }
     }
+    await this.publishFulfillmentNotifications(result, recorded.settlementId);
     return {
       accepted: result.outcome === 'FULFILLED' ||
         result.outcome === 'REPLAYED' ||
@@ -134,6 +143,11 @@ export class MembershipFulfillmentService {
     };
     try {
       const result = await this.repository.redeemContributionCredit(request);
+      await this.publishMembershipActivatedNotification(
+        result.subscription,
+        'MEMBERSHIP',
+        result.subscription.id,
+      );
       return {
         created: result.created,
         creditUnits: result.creditUnits,
@@ -161,6 +175,64 @@ export class MembershipFulfillmentService {
       });
     }
     return new Date(now);
+  }
+
+  private async publishFulfillmentNotifications(
+    result: MembershipWebhookProcessingResult,
+    settlementId: string | null,
+  ): Promise<void> {
+    if (!this.notificationEvents || !result.subscription) return;
+    if (result.outcome !== 'FULFILLED' && result.outcome !== 'REPLAYED') return;
+    await this.publishMembershipActivatedNotification(
+      result.subscription,
+      PAYOS_PROVIDER_CODE.toUpperCase(),
+      result.subscription.id,
+    );
+    if (settlementId) {
+      await this.notificationEvents.publish(createNotificationDomainEvent({
+        eventId: settlementId,
+        eventType: 'membership.payment.fulfilled',
+        aggregateType: 'MEMBERSHIP_SUBSCRIPTION',
+        aggregateId: result.subscription.id,
+        actor: { kind: 'PROVIDER', code: PAYOS_PROVIDER_CODE.toUpperCase() },
+        recipientUserId: result.subscription.userId,
+        occurredAt: result.subscription.createdAt,
+        idempotencyKey: `membership.payment.fulfilled:${settlementId}:v1`,
+        target: {
+          kind: 'MEMBERSHIP_SUBSCRIPTION',
+          id: result.subscription.id,
+          path: '/membership',
+        },
+        variables: { paymentState: 'FULFILLED' },
+      }));
+    }
+  }
+
+  private async publishMembershipActivatedNotification(
+    subscription: NonNullable<MembershipWebhookProcessingResult['subscription']>,
+    actorCode: string,
+    eventId: string,
+  ): Promise<void> {
+    if (!this.notificationEvents) return;
+    const actor = actorCode === PAYOS_PROVIDER_CODE.toUpperCase()
+      ? { kind: 'PROVIDER' as const, code: actorCode }
+      : { kind: 'SYSTEM' as const, code: actorCode };
+    await this.notificationEvents.publish(createNotificationDomainEvent({
+      eventId,
+      eventType: 'membership.subscription.activated',
+      aggregateType: 'MEMBERSHIP_SUBSCRIPTION',
+      aggregateId: subscription.id,
+      actor,
+      recipientUserId: subscription.userId,
+      occurredAt: subscription.createdAt,
+      idempotencyKey: `membership.subscription.activated:${subscription.id}:v1`,
+      target: {
+        kind: 'MEMBERSHIP_SUBSCRIPTION',
+        id: subscription.id,
+        path: '/membership',
+      },
+      variables: { membershipState: 'ACTIVE' },
+    }));
   }
 
   private mapWebhookValidationError(error: unknown): Error {

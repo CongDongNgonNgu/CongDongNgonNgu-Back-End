@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import {
   AntiFarmingRuleEngine,
   type AntiFarmingDecision,
@@ -12,6 +12,12 @@ import {
   type ReputationLedgerAppendResult,
 } from './reputation.repository';
 import type { ReputationLedgerEntry, ReputationSystem } from './reputation.types';
+import {
+  createNotificationDomainEvent,
+  NOTIFICATION_DOMAIN_EVENT_SINK,
+  type NotificationDomainEventSink,
+} from '../notifications/notification-event-integration';
+import { deriveContributorLevel } from './gamification.rules';
 
 export const REPUTATION_SERVICE = 'REPUTATION_SERVICE';
 
@@ -47,6 +53,8 @@ export class ReputationService {
     private readonly repository: ReputationLedgerRepository,
     private readonly contributionRules: ContributionRuleEngine,
     private readonly antiFarming: AntiFarmingRuleEngine = new AntiFarmingRuleEngine(),
+    @Optional() @Inject(NOTIFICATION_DOMAIN_EVENT_SINK)
+    private readonly notificationEvents?: NotificationDomainEventSink,
   ) {}
 
   async awardContribution(input: ContributionRuleInput): Promise<ReputationContributionAwardResult> {
@@ -69,6 +77,9 @@ export class ReputationService {
       };
     }
 
+    const previousBalance = this.notificationEvents
+      ? await this.repository.getBalance(input.contributorUserId, 'community_reputation')
+      : null;
     const result = await this.repository.append({
       userId: input.contributorUserId,
       system: decision.system,
@@ -81,6 +92,9 @@ export class ReputationService {
       reversalOfEntryId: null,
       createdAt: input.occurredAt,
     });
+    if (result.created && previousBalance !== null) {
+      await this.publishMilestoneNotification(input, result.entry, previousBalance);
+    }
     return { decision, antiFarming, entry: result.entry, created: result.created };
   }
 
@@ -119,5 +133,39 @@ export class ReputationService {
 
   listLedger(query: ReputationLedgerListQuery): Promise<ReputationLedgerEntry[]> {
     return this.repository.listByUser(query);
+  }
+
+  private async publishMilestoneNotification(
+    input: ContributionRuleInput,
+    entry: ReputationLedgerEntry,
+    previousBalance: number,
+  ): Promise<void> {
+    if (!this.notificationEvents || entry.delta <= 0) return;
+    const currentBalance = await this.repository.getBalance(input.contributorUserId, 'community_reputation');
+    const previousLevel = deriveContributorLevel(previousBalance);
+    const currentLevel = deriveContributorLevel(currentBalance);
+    if (previousLevel.id === currentLevel.id) return;
+    await this.notificationEvents.publish(createNotificationDomainEvent({
+      eventId: entry.id,
+      eventType: 'reputation.milestone.achieved',
+      aggregateType: 'REPUTATION_MILESTONE',
+      aggregateId: entry.id,
+      actor: input.actorUserId
+        ? { kind: 'USER', userId: input.actorUserId }
+        : { kind: 'SYSTEM', code: 'REPUTATION' },
+      recipientUserId: input.contributorUserId,
+      occurredAt: entry.createdAt,
+      idempotencyKey: `reputation.milestone.achieved:${entry.id}:v1`,
+      target: {
+        kind: 'REPUTATION_MILESTONE',
+        id: entry.id,
+        path: '/profile',
+      },
+      variables: {
+        level: currentLevel.id,
+        milestone: currentLevel.title,
+        reputation: currentLevel.minReputation,
+      },
+    }));
   }
 }

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { IDENTITY_REPOSITORY } from '../identity/identity.module';
 import type { IdentityRepository } from '../identity/identity.repository';
 import type { UserRecord } from '../identity/identity.types';
@@ -55,6 +55,11 @@ import type {
   UpdatePostDto,
 } from './community.dto';
 import { CommunityRateLimiter } from './community.rate-limiter';
+import {
+  createNotificationDomainEvent,
+  NOTIFICATION_DOMAIN_EVENT_SINK,
+  type NotificationDomainEventSink,
+} from '../notifications/notification-event-integration';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -146,6 +151,8 @@ export class CommunityService {
     @Inject(PROFILE_REPOSITORY) private readonly profiles: ProfileRepository,
     @Inject(IDENTITY_REPOSITORY) private readonly identities: IdentityRepository,
     private readonly rateLimiter: CommunityRateLimiter,
+    @Optional() @Inject(NOTIFICATION_DOMAIN_EVENT_SINK)
+    private readonly notificationEvents?: NotificationDomainEventSink,
   ) {}
 
   async createPost(userId: string, input: CreatePostDto): Promise<CommunityPostResponse> {
@@ -275,12 +282,13 @@ export class CommunityService {
     input: CreateCommentDto,
   ): Promise<CommunityCommentResponse> {
     await this.requireActiveUser(userId);
-    await this.requireReadablePost(postId, userId);
+    const post = await this.requireReadablePost(postId, userId);
     const content = this.normalize(() => normalizeCommunityContent(
       input.content,
       MAX_COMMENT_CONTENT_LENGTH,
     ));
     let parentCommentId: string | null = null;
+    let parentComment: CommunityCommentRecord | null = null;
     let depth: 0 | 1 = 0;
     if (input.parentCommentId) {
       const parent = await this.repository.findCommentById(input.parentCommentId);
@@ -302,6 +310,7 @@ export class CommunityService {
         );
       }
       parentCommentId = parent.id;
+      parentComment = parent;
       depth = 1;
     }
     this.consumeRate('comment', userId, { limit: 60, windowMs: 15 * 60 * 1000 });
@@ -313,6 +322,7 @@ export class CommunityService {
       content,
       createdAt: new Date(),
     });
+    await this.publishCommentNotification(post, comment, parentComment, userId);
     return this.toCommentResponseOrThrow(comment);
   }
 
@@ -557,6 +567,36 @@ export class CommunityService {
       post.moderationState === 'ACTIVE' &&
       (post.visibility === 'PUBLIC' || post.authorUserId === viewerUserId),
     );
+  }
+
+  private async publishCommentNotification(
+    post: CommunityPostRecord,
+    comment: CommunityCommentRecord,
+    parentComment: CommunityCommentRecord | null,
+    actorUserId: string,
+  ): Promise<void> {
+    const recipientUserId = parentComment?.authorUserId ?? post.authorUserId;
+    if (recipientUserId === actorUserId || !this.notificationEvents) return;
+    const recipient = await this.identities.findUserById(recipientUserId);
+    if (!isActiveUser(recipient)) return;
+    await this.notificationEvents.publish(createNotificationDomainEvent({
+      eventId: comment.id,
+      eventType: 'community.comment.created',
+      aggregateType: 'COMMUNITY_COMMENT',
+      aggregateId: comment.id,
+      actor: { kind: 'USER', userId: actorUserId },
+      recipientUserId,
+      occurredAt: comment.createdAt,
+      idempotencyKey: `community.comment.created:${comment.id}:v1`,
+      target: {
+        kind: 'COMMUNITY_POST',
+        id: post.id,
+        path: `/community/posts/${post.id}`,
+      },
+      variables: {
+        commentKind: parentComment ? 'REPLY' : 'COMMENT',
+      },
+    }));
   }
 
   private async normalizePostInput(

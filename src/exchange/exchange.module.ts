@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { AuthModule } from '../auth/auth.module';
 import { IdentityModule } from '../identity/identity.module';
 import { ProfileModule } from '../profile/profile.module';
+import { NotificationModule } from '../notifications/notification.module';
 import {
   EXCHANGE_PREFERENCE_REPOSITORY,
   InMemoryExchangePreferenceRepository,
@@ -12,7 +13,11 @@ import {
   EXCHANGE_CONNECTION_REPOSITORY,
   InMemoryExchangeConnectionRepository,
 } from './exchange-connection.repository';
-import { NoopExchangeConnectionEventSink, EXCHANGE_CONNECTION_EVENT_SINK } from './exchange-connection.events';
+import {
+  NotificationExchangeConnectionEventSink,
+  EXCHANGE_CONNECTION_EVENT_SINK,
+} from './exchange-connection.events';
+import { NOTIFICATION_DOMAIN_EVENT_SINK } from '../notifications/notification-event-integration';
 import { ExchangeController } from './exchange.controller';
 import {
   EXCHANGE_SAFETY_GATE,
@@ -29,7 +34,7 @@ interface ExchangeRuntimeConfig {
 }
 
 @Module({
-  imports: [AuthModule, IdentityModule, ProfileModule],
+  imports: [AuthModule, IdentityModule, ProfileModule, NotificationModule],
   controllers: [ExchangeController],
   providers: [
     ExchangeService,
@@ -80,7 +85,10 @@ interface ExchangeRuntimeConfig {
     },
     {
       provide: EXCHANGE_CONNECTION_EVENT_SINK,
-      useClass: NoopExchangeConnectionEventSink,
+      inject: [NOTIFICATION_DOMAIN_EVENT_SINK],
+      useFactory: (notifications: import('../notifications/notification-event-integration').NotificationDomainEventSink) => (
+        new NotificationExchangeConnectionEventSink(notifications)
+      ),
     },
   ],
   exports: [EXCHANGE_PREFERENCE_REPOSITORY, EXCHANGE_CONNECTION_REPOSITORY, ExchangeService],

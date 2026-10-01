@@ -7,6 +7,7 @@ import { COMMUNITY_REPOSITORY } from '../community/community.repository';
 import type { CommunityRepository } from '../community/community.repository';
 import { IdentityModule } from '../identity/identity.module';
 import { ProfileModule } from '../profile/profile.module';
+import { NotificationModule } from '../notifications/notification.module';
 import { CorrectionsController } from './corrections.controller';
 import { CORRECTIONS_REPOSITORY } from './corrections.repository';
 import { InMemoryCorrectionsRepository } from './corrections.repository';
@@ -18,7 +19,7 @@ interface CorrectionsRuntimeConfig {
 }
 
 @Module({
-  imports: [AuthModule, CommunityModule, IdentityModule, ProfileModule],
+  imports: [AuthModule, CommunityModule, IdentityModule, ProfileModule, NotificationModule],
   controllers: [CorrectionsController],
   providers: [
     CorrectionsService,

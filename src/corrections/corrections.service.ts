@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { IDENTITY_REPOSITORY } from '../identity/identity.module';
 import type { IdentityRepository } from '../identity/identity.repository';
 import type { UserRecord } from '../identity/identity.types';
@@ -47,7 +47,13 @@ import type {
   LibraryCandidateRecord,
   StructuredResponseKind,
   StructuredResponseRecord,
+  StructuredResponseAcceptanceRecord,
 } from './corrections.types';
+import {
+  createNotificationDomainEvent,
+  NOTIFICATION_DOMAIN_EVENT_SINK,
+  type NotificationDomainEventSink,
+} from '../notifications/notification-event-integration';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -150,6 +156,8 @@ export class CorrectionsService {
     @Inject(PROFILE_REPOSITORY) private readonly profiles: ProfileRepository,
     @Inject(IDENTITY_REPOSITORY) private readonly identities: IdentityRepository,
     private readonly rateLimiter: CommunityRateLimiter,
+    @Optional() @Inject(NOTIFICATION_DOMAIN_EVENT_SINK)
+    private readonly notificationEvents?: NotificationDomainEventSink,
   ) {}
 
   async createCorrectionRequest(
@@ -525,12 +533,13 @@ export class CorrectionsService {
     }
     this.consumeRate('structured-response-acceptance', userId, { limit: 60, windowMs: 15 * 60 * 1000 });
     try {
-      await this.repository.setStructuredResponseAcceptance({
+      const acceptance = await this.repository.setStructuredResponseAcceptance({
         parentPostId,
         responseId,
         acceptedByUserId: userId,
         acceptedAt: new Date(),
       });
+      await this.publishAcceptanceNotification(parent, response, acceptance);
     } catch (error) {
       if (error instanceof CorrectionsRepositoryConflictError) {
         return correctionsFailure(
@@ -729,6 +738,32 @@ export class CorrectionsService {
         interaction.libraryCandidateState === null,
       ),
     };
+  }
+
+  private async publishAcceptanceNotification(
+    parent: CommunityPostResponse,
+    response: StructuredResponseRecord,
+    acceptance: StructuredResponseAcceptanceRecord,
+  ): Promise<void> {
+    if (!this.notificationEvents || response.authorUserId === acceptance.acceptedByUserId) return;
+    await this.notificationEvents.publish(createNotificationDomainEvent({
+      eventId: acceptance.id,
+      eventType: 'community.response.accepted',
+      aggregateType: 'CORRECTION_RESPONSE',
+      aggregateId: response.id,
+      actor: { kind: 'USER', userId: acceptance.acceptedByUserId },
+      recipientUserId: response.authorUserId,
+      occurredAt: acceptance.acceptedAt,
+      idempotencyKey: `community.response.accepted:${acceptance.id}:v1`,
+      target: {
+        kind: 'CORRECTION_RESPONSE',
+        id: response.id,
+        path: `/community/posts/${parent.id}`,
+      },
+      variables: {
+        responseKind: response.responseKind,
+      },
+    }));
   }
 
   private async requireActiveStructuredResponse(

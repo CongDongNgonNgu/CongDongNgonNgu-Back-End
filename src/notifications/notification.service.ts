@@ -7,6 +7,7 @@ import {
   type NotificationRepository,
 } from './notification.repository';
 import { NotificationFailure } from './notification.errors';
+import { NotificationPreferenceService } from './notification-preference.service';
 import { toNotificationResponse, type NotificationResponse } from './notification.projection';
 import { NotificationRealtimeService } from './notification-realtime.service';
 
@@ -44,11 +45,14 @@ export class NotificationService {
   constructor(
     @Inject(NOTIFICATION_REPOSITORY) private readonly repository: NotificationRepository,
     @Optional() private readonly realtime?: NotificationRealtimeService,
+    @Optional() private readonly preferences?: NotificationPreferenceService,
   ) {}
 
   async publish(intent: NotificationIntent, now = new Date()) {
     const claim = await this.repository.claimIntent(intent, now);
-    if (claim.outcome === 'CREATED') this.realtime?.publish(claim.record);
+    if (claim.outcome === 'CREATED' && this.realtime && await this.isRealtimeEnabled(intent)) {
+      this.realtime.publish(claim.record);
+    }
     return claim;
   }
 
@@ -121,6 +125,15 @@ export class NotificationService {
       updatedCount: result.updatedCount,
       unreadCount: await this.repository.countUnread(userId),
     };
+  }
+
+  private async isRealtimeEnabled(intent: NotificationIntent): Promise<boolean> {
+    if (!this.preferences) return true;
+    return this.preferences.isChannelEnabled(intent.recipient.userId, {
+      category: intent.category,
+      channel: 'SSE',
+      notificationType: intent.notificationType,
+    });
   }
 }
 
