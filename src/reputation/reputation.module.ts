@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { AuthModule } from '../auth/auth.module';
 import { ProfileModule } from '../profile/profile.module';
+import { NotificationModule } from '../notifications/notification.module';
 import { LearningProgressController } from './learning-progress.controller';
 import { ReputationProgressController } from './reputation-progress.controller';
 import { LearningXpRuleEngine } from './learning-xp.rules';
@@ -22,7 +23,7 @@ interface ReputationRuntimeConfig {
 }
 
 @Module({
-  imports: [AuthModule, ProfileModule],
+  imports: [AuthModule, ProfileModule, NotificationModule],
   controllers: [LearningProgressController, ReputationProgressController],
   providers: [
     {

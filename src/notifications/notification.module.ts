@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { AuthModule } from '../auth/auth.module';
+import { IdentityModule } from '../identity/identity.module';
 import { NotificationController } from './notification.controller';
 import { NOTIFICATION_REPOSITORY, InMemoryNotificationRepository } from './notification.repository';
 import { NotificationService } from './notification.service';
@@ -13,18 +14,27 @@ import {
 } from './notification-preference.repository';
 import { NotificationPreferenceService } from './notification-preference.service';
 import { PostgresNotificationPreferenceRepository } from './postgres-notification-preference.repository';
+import {
+  NOTIFICATION_DOMAIN_EVENT_SINK,
+  NotificationDomainEventIntegrationService,
+} from './notification-event-integration';
 
 interface NotificationRuntimeConfig {
   persistence: 'postgres' | 'memory';
 }
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, IdentityModule],
   controllers: [NotificationController],
   providers: [
     NotificationService,
     NotificationRealtimeService,
     NotificationPreferenceService,
+    NotificationDomainEventIntegrationService,
+    {
+      provide: NOTIFICATION_DOMAIN_EVENT_SINK,
+      useExisting: NotificationDomainEventIntegrationService,
+    },
     {
       provide: NOTIFICATION_REPOSITORY,
       inject: [ConfigService],
@@ -56,6 +66,7 @@ interface NotificationRuntimeConfig {
     NOTIFICATION_REPOSITORY,
     NotificationService,
     NotificationRealtimeService,
+    NOTIFICATION_DOMAIN_EVENT_SINK,
     NOTIFICATION_PREFERENCE_REPOSITORY,
     NotificationPreferenceService,
   ],

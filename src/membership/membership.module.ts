@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { AuthModule } from '../auth/auth.module';
 import { ReputationModule } from '../reputation/reputation.module';
+import { NotificationModule } from '../notifications/notification.module';
 import {
   InMemoryMembershipRepository,
   MEMBERSHIP_REPOSITORY,
@@ -43,7 +44,7 @@ interface MembershipRuntimeConfig {
 }
 
 @Module({
-  imports: [AuthModule, ReputationModule],
+  imports: [AuthModule, ReputationModule, NotificationModule],
   controllers: [MembershipController],
   providers: [
     MembershipAuthorizationService,

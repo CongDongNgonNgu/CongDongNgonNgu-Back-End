@@ -747,7 +747,7 @@ export class ExchangeService {
       actorUserId,
       targetUserId,
       requesterUserId: result.requesterUserId ?? result.record?.requesterId ?? actorUserId,
-      occurredAt: new Date().toISOString(),
+      occurredAt: result.record?.createdAt.toISOString() ?? new Date().toISOString(),
     };
     await this.connectionEvents.publish(event);
   }
