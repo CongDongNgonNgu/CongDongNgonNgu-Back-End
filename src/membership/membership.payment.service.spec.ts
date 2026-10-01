@@ -97,10 +97,18 @@ describe('MembershipPaymentService', () => {
       limitUnit: null,
       parameters: { internalOnly: true },
     };
+    const invalidAiEntitlement: MembershipEntitlementDefinition = {
+      id: '88888888-8888-4888-8888-888888888888',
+      planVersionId: PLAN_ID,
+      featureKey: 'ai.practice',
+      limit: null,
+      limitUnit: null,
+      parameters: {},
+    };
     const service = createService(
       new TestPaymentProvider(),
       new InMemoryMembershipPaymentRepository({ catalog: [catalog] }),
-      new InMemoryMembershipRepository({ plans: [plan], entitlements: [entitlement] }),
+      new InMemoryMembershipRepository({ plans: [plan], entitlements: [entitlement, invalidAiEntitlement] }),
     );
 
     const result = await service.getCatalog();
@@ -122,6 +130,9 @@ describe('MembershipPaymentService', () => {
         periodCount: 1,
       },
     });
+    expect(result.plans[0].benefits).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'ai-practice' }),
+    ]));
     expect(JSON.stringify(result)).not.toMatch(/internalOnly|provider|webhook|userId/iu);
   });
 

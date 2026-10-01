@@ -68,6 +68,13 @@ export function toPublicMembershipBenefit(input: {
   const definition = MEMBERSHIP_PUBLIC_BENEFIT_DEFINITIONS[input.featureKey];
   if (!definition || input.decision !== 'GRANTED') return null;
 
+  if (input.featureKey === 'ai.practice' && (
+    input.limit === null
+    || !Number.isSafeInteger(input.limit)
+    || input.limit <= 0
+    || input.limitUnit !== 'tokens_per_day'
+  )) return null;
+
   const detail = input.featureKey === 'ai.practice'
     && input.limit !== null
     && Number.isSafeInteger(input.limit)
