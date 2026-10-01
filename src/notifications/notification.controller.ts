@@ -5,6 +5,7 @@ import {
   Header,
   Headers,
   Param,
+  Patch,
   ParseUUIDPipe,
   Post,
   Query,
@@ -17,6 +18,8 @@ import { AccessTokenGuard, type AuthenticatedRequest } from '../auth/guards/acce
 import { SessionService } from '../auth/session/session.service';
 import { success } from '../common/http/api-response';
 import { ListNotificationsQueryDto, MarkNotificationsReadDto } from './notification.dto';
+import { UpdateNotificationPreferencesDto } from './notification-preference.dto';
+import { NotificationPreferenceService } from './notification-preference.service';
 import { NotificationService } from './notification.service';
 import {
   NotificationRealtimeService,
@@ -27,6 +30,7 @@ import {
 export class NotificationController {
   constructor(
     private readonly notifications: NotificationService,
+    private readonly preferences: NotificationPreferenceService,
     private readonly sessions: SessionService,
     private readonly realtime: NotificationRealtimeService,
   ) {}
@@ -49,6 +53,28 @@ export class NotificationController {
     return success(
       await this.notifications.unreadCount(request.user!.user.id),
       'Unread notification count',
+    );
+  }
+
+  @Get('preferences')
+  @UseGuards(AccessTokenGuard)
+  async preferencesForOwner(@Req() request: AuthenticatedRequest) {
+    return success(
+      await this.preferences.get(request.user!.user.id),
+      'Notification preferences',
+    );
+  }
+
+  @Patch('preferences')
+  @UseGuards(AccessTokenGuard)
+  async updatePreferences(
+    @Req() request: AuthenticatedRequest,
+    @Body() input: UpdateNotificationPreferencesDto,
+  ) {
+    this.sessions.assertCsrfForCookie(request);
+    return success(
+      await this.preferences.update(request.user!.user.id, input.preferences),
+      'Notification preferences updated',
     );
   }
 

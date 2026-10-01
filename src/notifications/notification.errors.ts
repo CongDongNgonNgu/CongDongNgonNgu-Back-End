@@ -7,7 +7,9 @@ export type NotificationFailureCode =
   | 'NOTIFICATION_INVALID_STREAM_CURSOR'
   | 'NOTIFICATION_STREAM_LIMIT'
   | 'NOTIFICATION_INVALID_IDS'
-  | 'NOTIFICATION_NOT_FOUND';
+  | 'NOTIFICATION_NOT_FOUND'
+  | 'NOTIFICATION_INVALID_PREFERENCES'
+  | 'NOTIFICATION_MANDATORY_PREFERENCE';
 
 export class NotificationFailure extends HttpException {
   constructor(

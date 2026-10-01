@@ -7,6 +7,12 @@ import { NOTIFICATION_REPOSITORY, InMemoryNotificationRepository } from './notif
 import { NotificationService } from './notification.service';
 import { PostgresNotificationRepository } from './postgres-notification.repository';
 import { NotificationRealtimeService } from './notification-realtime.service';
+import {
+  NOTIFICATION_PREFERENCE_REPOSITORY,
+  InMemoryNotificationPreferenceRepository,
+} from './notification-preference.repository';
+import { NotificationPreferenceService } from './notification-preference.service';
+import { PostgresNotificationPreferenceRepository } from './postgres-notification-preference.repository';
 
 interface NotificationRuntimeConfig {
   persistence: 'postgres' | 'memory';
@@ -18,6 +24,7 @@ interface NotificationRuntimeConfig {
   providers: [
     NotificationService,
     NotificationRealtimeService,
+    NotificationPreferenceService,
     {
       provide: NOTIFICATION_REPOSITORY,
       inject: [ConfigService],
@@ -31,7 +38,26 @@ interface NotificationRuntimeConfig {
         return new PostgresNotificationRepository(new Pool({ connectionString: databaseUrl }));
       },
     },
+    {
+      provide: NOTIFICATION_PREFERENCE_REPOSITORY,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const auth = config.get<NotificationRuntimeConfig>('auth');
+        if (auth?.persistence === 'memory') return new InMemoryNotificationPreferenceRepository();
+        const databaseUrl = config.get<string>('database.url');
+        if (!databaseUrl) {
+          throw new Error('DATABASE_URL is required for Postgres notification preference persistence');
+        }
+        return new PostgresNotificationPreferenceRepository(new Pool({ connectionString: databaseUrl }));
+      },
+    },
   ],
-  exports: [NOTIFICATION_REPOSITORY, NotificationService, NotificationRealtimeService],
+  exports: [
+    NOTIFICATION_REPOSITORY,
+    NotificationService,
+    NotificationRealtimeService,
+    NOTIFICATION_PREFERENCE_REPOSITORY,
+    NotificationPreferenceService,
+  ],
 })
 export class NotificationModule {}
