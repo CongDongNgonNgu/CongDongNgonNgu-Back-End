@@ -104,7 +104,7 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return {
       items: consumed.slice(0, query.limit).map(({ record }) => ({
         record: cloneRecord(record),
-        readState: cloneReadState(this.readStates.get(record.id)! ),
+        readState: cloneReadState(this.readStates.get(record.id)!),
       })),
       hasMore: consumed.length > query.limit,
     };

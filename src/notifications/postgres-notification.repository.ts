@@ -163,7 +163,7 @@ export class PostgresNotificationRepository implements NotificationRepository {
          FROM notifications n
          INNER JOIN notification_read_states rs ON rs.notification_id = n.id
         WHERE n.recipient_user_id = $1::uuid
-          AND ($2 = 'ALL' OR rs.status = 'UNREAD')
+          AND ($2::text = 'ALL' OR rs.status = 'UNREAD')
           ${cursorClause}
         ORDER BY n.created_at DESC, n.id DESC
         LIMIT ${limitParameter}::integer`,
