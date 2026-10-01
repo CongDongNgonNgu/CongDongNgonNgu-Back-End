@@ -15,6 +15,7 @@ import { ReputationModule } from './reputation/reputation.module';
 import { MembershipModule } from './membership/membership.module';
 import { NotificationModule } from './notifications/notification.module';
 import { SpeakingRoomModule } from './rooms/room.module';
+import { ChallengeModule } from './challenges/challenge.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { SpeakingRoomModule } from './rooms/room.module';
     MembershipModule,
     NotificationModule,
     SpeakingRoomModule,
+    ChallengeModule,
   ],
 })
 export class AppModule {}
