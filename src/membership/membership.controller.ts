@@ -29,6 +29,14 @@ export class MembershipController {
     private readonly fulfillment: MembershipFulfillmentService,
   ) {}
 
+  @Get('catalog')
+  async catalog() {
+    return success(
+      await this.payments.getCatalog(),
+      'Membership catalog',
+    );
+  }
+
   @Get('capabilities')
   @UseGuards(AccessTokenGuard)
   async capabilities(@Req() request: AuthenticatedRequest) {

@@ -6,6 +6,40 @@ const PLAN_ID = '33333333-3333-4333-8333-333333333333';
 const PRICE_ID = '44444444-4444-4444-8444-444444444444';
 
 describe('PostgresMembershipPaymentRepository', () => {
+  it('lists only currently purchasable catalog entries in deterministic order', async () => {
+    const query = jest.fn(async (_sql: string) => ({
+      rows: [
+        {
+          plan_version_id: PLAN_ID,
+          product_code: 'COMMUNITY_MEMBER',
+          product_status: 'ACTIVE',
+          plan_version: 1,
+          plan_status: 'ACTIVE',
+          plan_display_name: 'Community Member',
+          price_id: PRICE_ID,
+          price_code: 'MONTHLY',
+          price_status: 'ACTIVE',
+          amount_minor: '125000',
+          currency: 'VND',
+          period_unit: 'MONTH',
+          period_count: 1,
+          available_from: '2026-09-01T00:00:00.000Z',
+          available_until: null,
+          price_created_at: '2026-09-01T00:00:00.000Z',
+        },
+      ],
+    }));
+    const repository = new PostgresMembershipPaymentRepository({ query } as unknown as Pool);
+
+    const result = await repository.listPurchasableCatalogEntries(new Date('2026-10-01T00:00:00.000Z'));
+
+    expect(result).toHaveLength(1);
+    expect(result[0].price.amountMinor).toBe(125000n);
+    expect(String(query.mock.calls[0][0])).toContain("mp.status = 'ACTIVE'::membership_product_status");
+    expect(String(query.mock.calls[0][0])).toContain('ORDER BY mp.product_code ASC');
+    expect(String(query.mock.calls[0][0])).not.toMatch(/secret|webhook|raw_payload/iu);
+  });
+
   it('maps only an active server catalog price and keeps monetary facts as bigint', async () => {
     const query = jest.fn(async (_sql: string) => ({
       rows: [{

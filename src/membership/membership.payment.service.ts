@@ -10,6 +10,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { MembershipAuthorizationService } from './membership.service';
+import { getFreePublicMembershipBenefits } from './membership.policy';
 import {
   MEMBERSHIP_PAYMENT_REPOSITORY,
   MembershipPaymentRepositoryError,
@@ -32,6 +33,7 @@ import {
   type MembershipCheckoutOrderResponse,
   type MembershipPaymentAttempt,
   type MembershipPaymentAttemptResponse,
+  type MembershipCatalogResponse,
 } from './membership.payment.types';
 
 export const MEMBERSHIP_PAYMENT_CLOCK = 'MEMBERSHIP_PAYMENT_CLOCK';
@@ -55,6 +57,40 @@ export class MembershipPaymentService {
     @Inject(MEMBERSHIP_PAYMENT_CLOCK)
     private readonly clock: () => Date = () => new Date(),
   ) {}
+
+  async getCatalog(now = this.currentTime()): Promise<MembershipCatalogResponse> {
+    const entries = await this.repository.listPurchasableCatalogEntries(now);
+    const plans = await Promise.all(entries
+      .filter((entry) => entry.productCode !== 'FREE')
+      .map(async (entry) => ({
+        planVersionId: entry.planVersionId,
+        productCode: entry.productCode,
+        planVersion: entry.planVersion,
+        displayName: entry.planDisplayName,
+        description: entry.planDescription?.trim() || `Gói ${entry.planDisplayName} theo cấu hình hiện hành.`,
+        benefits: await this.memberships.listPublicPlanBenefits(entry.planVersionId),
+        price: {
+          id: entry.price.id,
+          code: entry.price.code,
+          amountMinor: serializeMinorAmount(entry.price.amountMinor),
+          currency: entry.price.currency,
+          periodUnit: entry.price.periodUnit,
+          periodCount: entry.price.periodCount,
+        },
+      })));
+
+    return {
+      free: {
+        productCode: 'FREE',
+        planVersion: 1,
+        displayName: 'Free',
+        description: 'Bắt đầu học và kết nối cộng đồng mà không cần gói trả phí.',
+        benefits: getFreePublicMembershipBenefits(),
+      },
+      plans,
+      evaluatedAt: now.toISOString(),
+    };
+  }
 
   async createOrder(
     userId: string,

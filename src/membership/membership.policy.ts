@@ -2,7 +2,9 @@ import { Injectable } from '@nestjs/common';
 import type { AiUsagePolicy, AiUsagePolicyResolver } from '../ai/ai.types';
 import {
   DEFAULT_FREE_PRODUCT_CODE,
+  toPublicMembershipBenefit,
   type MembershipCapabilityProjection,
+  type MembershipPublicBenefit,
 } from './membership.types';
 import { MembershipAuthorizationService } from './membership.service';
 
@@ -64,6 +66,17 @@ export const MEMBERSHIP_POLICY_MATRIX: readonly MembershipPolicyDefinition[] = O
     member: 'PLAN_ENTITLEMENT',
   },
 ]);
+
+export function getFreePublicMembershipBenefits(): MembershipPublicBenefit[] {
+  return MEMBERSHIP_POLICY_MATRIX
+    .map((definition) => toPublicMembershipBenefit({
+      featureKey: definition.featureKey,
+      decision: definition.free.decision,
+      limit: definition.free.limit,
+      limitUnit: definition.free.limitUnit,
+    }))
+    .filter((benefit): benefit is MembershipPublicBenefit => benefit !== null);
+}
 
 export type MembershipPolicyTier = 'FREE' | 'MEMBER';
 

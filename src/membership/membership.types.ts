@@ -45,6 +45,47 @@ export interface MembershipPlanVersion {
   retiredAt: Date | null;
 }
 
+export interface MembershipPublicBenefit {
+  code: string;
+  label: string;
+  detail: string | null;
+}
+
+const MEMBERSHIP_PUBLIC_BENEFIT_DEFINITIONS: Readonly<Record<string, { code: string; label: string }>> = Object.freeze({
+  'community.public': { code: 'community', label: 'Cộng đồng công khai' },
+  'library.public': { code: 'library', label: 'Thư viện công khai' },
+  'exchange.basic': { code: 'exchange', label: 'Trao đổi cơ bản' },
+  'ai.practice': { code: 'ai-practice', label: 'Luyện tập AI' },
+  'practice.advanced': { code: 'advanced-practice', label: 'Luyện tập nâng cao' },
+});
+
+export function toPublicMembershipBenefit(input: {
+  featureKey: string;
+  decision: MembershipCapabilityDecision;
+  limit: number | null;
+  limitUnit: string | null;
+}): MembershipPublicBenefit | null {
+  const definition = MEMBERSHIP_PUBLIC_BENEFIT_DEFINITIONS[input.featureKey];
+  if (!definition || input.decision !== 'GRANTED') return null;
+
+  if (input.featureKey === 'ai.practice' && (
+    input.limit === null
+    || !Number.isSafeInteger(input.limit)
+    || input.limit <= 0
+    || input.limitUnit !== 'tokens_per_day'
+  )) return null;
+
+  const detail = input.featureKey === 'ai.practice'
+    && input.limit !== null
+    && Number.isSafeInteger(input.limit)
+    && input.limit > 0
+    && input.limitUnit === 'tokens_per_day'
+    ? `Tối đa ${input.limit.toLocaleString('vi-VN')} token/ngày`
+    : null;
+
+  return { ...definition, detail };
+}
+
 export interface MembershipEntitlementDefinition {
   id: string;
   planVersionId: string;

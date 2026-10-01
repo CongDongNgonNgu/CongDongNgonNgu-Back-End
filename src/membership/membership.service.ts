@@ -7,9 +7,11 @@ import {
   type MembershipAuthorizationDecision,
   type MembershipCapability,
   type MembershipCapabilityProjection,
+  type MembershipPublicBenefit,
   type MembershipPlanVersion,
   type MembershipProjectionStatus,
   type MembershipSubscription,
+  toPublicMembershipBenefit,
 } from './membership.types';
 import { MEMBERSHIP_REPOSITORY, type MembershipRepository } from './membership.repository';
 import { Inject } from '@nestjs/common';
@@ -86,6 +88,22 @@ export class MembershipAuthorizationService {
         .map(toCapability),
       evaluatedAt: now.toISOString(),
     };
+  }
+
+  async listPublicPlanBenefits(planVersionId: string): Promise<MembershipPublicBenefit[]> {
+    if (!isUuid(planVersionId)) return [];
+    const plan = await this.repository.findPlanVersionById(planVersionId);
+    if (!plan || plan.status !== 'ACTIVE') return [];
+    const entitlements = await this.repository.listEntitlements(plan.id);
+    return entitlements
+      .sort((left, right) => left.featureKey.localeCompare(right.featureKey))
+      .map((entitlement) => toPublicMembershipBenefit({
+        featureKey: entitlement.featureKey,
+        decision: 'GRANTED',
+        limit: entitlement.limit,
+        limitUnit: entitlement.limitUnit,
+      }))
+      .filter((benefit): benefit is MembershipPublicBenefit => benefit !== null);
   }
 
   private async resolvePlan(

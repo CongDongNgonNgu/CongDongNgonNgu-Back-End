@@ -1,4 +1,7 @@
-import { isUuid } from './membership.types';
+import {
+  isUuid,
+  type MembershipPublicBenefit,
+} from './membership.types';
 
 export const MEMBERSHIP_PAYMENT_CURRENCY = 'VND' as const;
 export type MembershipPaymentCurrency = typeof MEMBERSHIP_PAYMENT_CURRENCY;
@@ -51,7 +54,37 @@ export interface MembershipPaymentCatalogEntry {
   planVersion: number;
   planStatus: 'DRAFT' | 'ACTIVE' | 'RETIRED';
   planDisplayName: string;
+  planDescription?: string;
   price: MembershipPlanPrice;
+}
+
+export interface MembershipCatalogPlanResponse {
+  planVersionId: string;
+  productCode: string;
+  planVersion: number;
+  displayName: string;
+  description: string;
+  benefits: MembershipPublicBenefit[];
+  price: {
+    id: string;
+    code: string;
+    amountMinor: string;
+    currency: MembershipPaymentCurrency;
+    periodUnit: MembershipPricePeriodUnit;
+    periodCount: number;
+  };
+}
+
+export interface MembershipCatalogResponse {
+  free: {
+    productCode: 'FREE';
+    planVersion: 1;
+    displayName: string;
+    description: string;
+    benefits: MembershipPublicBenefit[];
+  };
+  plans: MembershipCatalogPlanResponse[];
+  evaluatedAt: string;
 }
 
 export interface MembershipCheckoutOrder {

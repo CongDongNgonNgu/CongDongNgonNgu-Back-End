@@ -52,6 +52,7 @@ export interface CreateMembershipAttemptResult {
 }
 
 export interface MembershipPaymentRepository {
+  listPurchasableCatalogEntries(now: Date): Promise<MembershipPaymentCatalogEntry[]>;
   findPurchasableCatalogEntry(
     planVersionId: string,
     priceId: string,
@@ -107,6 +108,14 @@ export class InMemoryMembershipPaymentRepository implements MembershipPaymentRep
 
   constructor(seed: InMemoryMembershipPaymentRepositorySeed = {}) {
     this.catalog = (seed.catalog ?? []).map(clonePaymentCatalogEntry);
+  }
+
+  async listPurchasableCatalogEntries(now: Date): Promise<MembershipPaymentCatalogEntry[]> {
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) return [];
+    return this.catalog
+      .filter((entry) => isCatalogEntryPurchasable(entry, now))
+      .sort(compareCatalogEntries)
+      .map(clonePaymentCatalogEntry);
   }
 
   async findPurchasableCatalogEntry(
@@ -312,6 +321,41 @@ export class InMemoryMembershipPaymentRepository implements MembershipPaymentRep
 export class PostgresMembershipPaymentRepository implements MembershipPaymentRepository {
   constructor(private readonly pool: Pool) {}
 
+  async listPurchasableCatalogEntries(now: Date): Promise<MembershipPaymentCatalogEntry[]> {
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) return [];
+    const result = await this.pool.query(
+      `SELECT mpv.id AS plan_version_id,
+              mp.product_code,
+              mp.status AS product_status,
+              mpv.version AS plan_version,
+              mpv.status AS plan_status,
+              mpv.display_name AS plan_display_name,
+              mpv.description AS plan_description,
+              mpp.id AS price_id,
+              mpp.price_code,
+              mpp.status AS price_status,
+              mpp.amount_minor,
+              mpp.currency,
+              mpp.period_unit,
+              mpp.period_count,
+              mpp.available_from,
+              mpp.available_until,
+              mpp.created_at AS price_created_at
+         FROM membership_plan_prices mpp
+         JOIN membership_plan_versions mpv ON mpv.id = mpp.plan_version_id
+         JOIN membership_products mp ON mp.id = mpv.product_id
+        WHERE mp.product_code <> 'FREE'
+          AND mp.status = 'ACTIVE'::membership_product_status
+          AND mpv.status = 'ACTIVE'::membership_plan_version_status
+          AND mpp.status = 'ACTIVE'::membership_price_status
+          AND mpp.available_from <= $1::timestamptz
+          AND (mpp.available_until IS NULL OR mpp.available_until > $1::timestamptz)
+        ORDER BY mp.product_code ASC, mpv.version DESC, mpp.price_code ASC, mpp.id ASC`,
+      [now],
+    );
+    return result.rows.map(mapCatalogRow);
+  }
+
   async findPurchasableCatalogEntry(
     planVersionId: string,
     priceId: string,
@@ -324,7 +368,8 @@ export class PostgresMembershipPaymentRepository implements MembershipPaymentRep
               mp.status AS product_status,
               mpv.version AS plan_version,
               mpv.status AS plan_status,
-              mpv.display_name AS plan_display_name,
+               mpv.display_name AS plan_display_name,
+               mpv.description AS plan_description,
               mpp.id AS price_id,
               mpp.price_code,
               mpp.status AS price_status,
@@ -698,6 +743,7 @@ async function queryCatalog(
             mpv.version AS plan_version,
             mpv.status AS plan_status,
             mpv.display_name AS plan_display_name,
+            mpv.description AS plan_description,
             mpp.id AS price_id,
             mpp.price_code,
             mpp.status AS price_status,
@@ -748,6 +794,7 @@ function mapCatalogRow(row: Record<string, unknown>): MembershipPaymentCatalogEn
     planVersion: Number(row.plan_version),
     planStatus: String(row.plan_status) as MembershipPaymentCatalogEntry['planStatus'],
     planDisplayName: String(row.plan_display_name),
+    planDescription: row.plan_description ? String(row.plan_description) : undefined,
     price,
   };
   if (!isCatalogEntryShapeValid(result)) throw referenceInvalid();
@@ -810,6 +857,15 @@ function isCatalogEntryPurchasable(entry: MembershipPaymentCatalogEntry, now: Da
     (!entry.price.availableUntil || entry.price.availableUntil.getTime() > now.getTime()) &&
     isCatalogEntryShapeValid(entry)
   );
+}
+
+function compareCatalogEntries(left: MembershipPaymentCatalogEntry, right: MembershipPaymentCatalogEntry): number {
+  const byProduct = left.productCode.localeCompare(right.productCode);
+  if (byProduct !== 0) return byProduct;
+  const byVersion = right.planVersion - left.planVersion;
+  if (byVersion !== 0) return byVersion;
+  const byPrice = left.price.code.localeCompare(right.price.code);
+  return byPrice !== 0 ? byPrice : left.price.id.localeCompare(right.price.id);
 }
 
 function isCatalogEntryShapeValid(entry: MembershipPaymentCatalogEntry): boolean {

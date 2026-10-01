@@ -99,6 +99,25 @@ describe('membership checkout/payment API', () => {
     await app.close();
   });
 
+  it('exposes a public server catalog without payment or persistence internals', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/membership/catalog')
+      .expect(200);
+
+    expect(response.body.data).toMatchObject({
+      free: {
+        productCode: 'FREE',
+        displayName: 'Free',
+      },
+      plans: [{
+        planVersionId: PLAN_ID,
+        price: { id: PRICE_ID, amountMinor: '125000', currency: 'VND' },
+      }],
+    });
+    expect(response.body.data.plans[0].price).not.toHaveProperty('availableFrom');
+    expect(JSON.stringify(response.body.data)).not.toMatch(/provider|webhook|userId|raw_payload/iu);
+  });
+
   it('rejects unauthenticated access and client-controlled trusted fields', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/membership/orders')
