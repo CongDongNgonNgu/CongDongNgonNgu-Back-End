@@ -126,6 +126,11 @@ export interface LibraryRepository {
   listLicenses(): Promise<LibraryLicenseRecord[]>;
   createResource(input: CreateLibraryResourceRepositoryInput): Promise<LibraryResourceRecord>;
   findResourceById(id: string): Promise<LibraryResourceRecord | null>;
+  setModerationState(
+    id: string,
+    moderationState: LibraryResourceRecord['moderationState'],
+    now: Date,
+  ): Promise<LibraryResourceRecord | null>;
   searchPublicResources(input: LibrarySearchRepositoryInput): Promise<LibrarySearchRepositoryPage>;
   listReviewQueue(input: LibraryReviewQueueRepositoryInput): Promise<LibraryReviewQueueRepositoryPage>;
   // The service scans this deterministic Phase 06-backed superset and applies
@@ -304,6 +309,18 @@ export class InMemoryLibraryRepository implements LibraryRepository {
   async findResourceById(id: string): Promise<LibraryResourceRecord | null> {
     const record = this.resources.get(id);
     return record ? cloneResource(record) : null;
+  }
+
+  async setModerationState(
+    id: string,
+    moderationState: LibraryResourceRecord['moderationState'],
+    now: Date,
+  ): Promise<LibraryResourceRecord | null> {
+    const record = this.resources.get(id);
+    if (!record) return null;
+    record.moderationState = moderationState;
+    record.updatedAt = new Date(now);
+    return cloneResource(record);
   }
 
   async searchPublicResources(

@@ -343,6 +343,25 @@ export class PostgresCommunityRepository implements CommunityRepository {
     return this.findCommentById(id);
   }
 
+  async setCommentModerationState(
+    id: string,
+    moderationState: CommunityModerationState,
+    now: Date,
+  ): Promise<CommunityCommentRecord | null> {
+    const result = await this.pool.query(
+      `UPDATE community_comments
+       SET moderation_state = $2::community_moderation_state,
+           deleted_at = CASE WHEN $2::community_moderation_state = 'DELETED'::community_moderation_state
+                             THEN COALESCE(deleted_at, $3)
+                             ELSE deleted_at END,
+           updated_at = $3
+       WHERE id = $1
+       RETURNING *`,
+      [id, moderationState, now],
+    );
+    return result.rows[0] ? mapComment(result.rows[0]) : null;
+  }
+
   async listCommentThreads(
     query: CommunityCommentListQuery,
   ): Promise<CommunityListResult<CommunityCommentThreadRecord>> {

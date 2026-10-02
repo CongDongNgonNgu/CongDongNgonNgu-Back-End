@@ -116,6 +116,11 @@ export interface CommunityRepository {
   findCommentById(id: string): Promise<CommunityCommentRecord | null>;
   updateComment(id: string, input: UpdateCommunityCommentInput): Promise<CommunityCommentRecord | null>;
   softDeleteComment(id: string, deletedByUserId: string, now: Date): Promise<CommunityCommentRecord | null>;
+  setCommentModerationState(
+    id: string,
+    moderationState: CommunityModerationState,
+    now: Date,
+  ): Promise<CommunityCommentRecord | null>;
   listCommentThreads(
     query: CommunityCommentListQuery,
   ): Promise<CommunityListResult<CommunityCommentThreadRecord>>;
@@ -315,6 +320,19 @@ export class InMemoryCommunityRepository implements CommunityRepository {
       comment.deletedByUserId = deletedByUserId;
       comment.updatedAt = new Date(now);
     }
+    return cloneComment(comment);
+  }
+
+  async setCommentModerationState(
+    id: string,
+    moderationState: CommunityModerationState,
+    now: Date,
+  ): Promise<CommunityCommentRecord | null> {
+    const comment = this.comments.get(id);
+    if (!comment) return null;
+    comment.moderationState = moderationState;
+    if (moderationState === 'DELETED') comment.deletedAt = new Date(now);
+    comment.updatedAt = new Date(now);
     return cloneComment(comment);
   }
 
