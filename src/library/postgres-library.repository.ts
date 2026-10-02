@@ -521,6 +521,22 @@ export class PostgresLibraryRepository implements LibraryRepository {
     return this.findResourceWithExecutor(this.pool, id);
   }
 
+  async setModerationState(
+    id: string,
+    moderationState: LibraryResourceRecord['moderationState'],
+    now: Date,
+  ): Promise<LibraryResourceRecord | null> {
+    const result = await this.pool.query(
+      `UPDATE library_resources
+       SET moderation_state = $2::community_moderation_state,
+           updated_at = $3
+       WHERE id = $1
+       RETURNING id`,
+      [id, moderationState, now],
+    );
+    return result.rows[0] ? this.findResourceById(id) : null;
+  }
+
   async searchPublicResources(
     input: LibrarySearchRepositoryInput,
   ): Promise<LibrarySearchRepositoryPage> {
