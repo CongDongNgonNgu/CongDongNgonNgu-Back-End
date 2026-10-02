@@ -20,6 +20,14 @@ export type AdminModerationContentTarget =
 export type AdminModerationContentAction = 'HIDE' | 'REMOVE' | 'RESTORE';
 export type AdminModerationUserAction = 'WARN' | 'SUSPEND' | 'RESTORE';
 
+export const ADMIN_MODERATION_CONTENT_TARGETS = [
+  'COMMUNITY_POST',
+  'COMMUNITY_COMMENT',
+  'LIBRARY_RESOURCE',
+] as const;
+export const ADMIN_MODERATION_CONTENT_ACTIONS = ['HIDE', 'REMOVE', 'RESTORE'] as const;
+export const ADMIN_MODERATION_USER_ACTIONS = ['WARN', 'SUSPEND', 'RESTORE'] as const;
+
 export interface AdminModerationActor {
   userId: string;
   roles: readonly RoleKey[];
@@ -75,6 +83,12 @@ export class AdminModerationActionService {
     input: ModerateContentInput,
   ): Promise<AdminModerationActionResult> {
     this.assertCapability(actor, 'MODERATE_CONTENT');
+    if (!ADMIN_MODERATION_CONTENT_TARGETS.includes(input.targetType)) {
+      return adminModerationFailure('ADMIN_MODERATION_INPUT_INVALID', 'Content target type is not supported', 400);
+    }
+    if (!ADMIN_MODERATION_CONTENT_ACTIONS.includes(input.action)) {
+      return adminModerationFailure('ADMIN_MODERATION_INPUT_INVALID', 'Content action is not supported', 400);
+    }
     const reason = normalizeReason(input.reason);
     const nextState = moderationStateForAction(input.action);
     const now = new Date();
@@ -120,6 +134,9 @@ export class AdminModerationActionService {
     input: ModerateUserInput,
   ): Promise<AdminModerationActionResult> {
     this.assertCapability(actor, 'MANAGE_USERS');
+    if (!ADMIN_MODERATION_USER_ACTIONS.includes(input.action)) {
+      return adminModerationFailure('ADMIN_MODERATION_INPUT_INVALID', 'User action is not supported', 400);
+    }
     const reason = normalizeReason(input.reason);
     const current = await this.identities.findUserById(input.targetUserId);
     if (!current) return adminModerationFailure('ADMIN_MODERATION_TARGET_NOT_FOUND', 'User target is not available', 404);

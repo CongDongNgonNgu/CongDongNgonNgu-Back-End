@@ -26,6 +26,26 @@ export interface UpdateUserInput {
   emailVerifiedAt?: Date | null;
 }
 
+export interface IdentityUserListQuery {
+  search?: string;
+  status?: UserStatus;
+  role?: RoleKey;
+  limit: number;
+  offset: number;
+}
+
+export interface IdentityUserListResult {
+  items: UserRecord[];
+  total: number;
+}
+
+export interface IdentityAdminRepository {
+  listUsers(query: IdentityUserListQuery): Promise<IdentityUserListResult>;
+  countUsers(filters?: { status?: UserStatus; role?: RoleKey }): Promise<number>;
+  countActiveAdministrators(): Promise<number>;
+  replaceUserRoles(id: string, roles: readonly RoleKey[]): Promise<UserRecord | null>;
+}
+
 export interface CreateProviderAccountInput {
   userId: string;
   provider: OAuthProviderName;
@@ -82,6 +102,10 @@ export interface IdentityRepository {
   findUserByEmail(email: string): Promise<UserRecord | null>;
   createUser(input: CreateUserInput): Promise<UserRecord>;
   updateUser(id: string, input: UpdateUserInput): Promise<UserRecord | null>;
+  listUsers?: IdentityAdminRepository['listUsers'];
+  countUsers?: IdentityAdminRepository['countUsers'];
+  countActiveAdministrators?: IdentityAdminRepository['countActiveAdministrators'];
+  replaceUserRoles?: IdentityAdminRepository['replaceUserRoles'];
 
   findProviderAccount(provider: OAuthProviderName, providerSubject: string): Promise<ProviderAccountRecord | null>;
   createProviderAccount(input: CreateProviderAccountInput): Promise<ProviderAccountRecord>;
@@ -156,6 +180,50 @@ export class InMemoryIdentityRepository implements IdentityRepository {
     if (input.passwordHash !== undefined) user.passwordHash = input.passwordHash;
     if (input.status !== undefined) user.status = input.status;
     if (input.emailVerifiedAt !== undefined) user.emailVerifiedAt = input.emailVerifiedAt;
+    user.updatedAt = new Date();
+    return cloneUser(user);
+  }
+
+  async listUsers(query: IdentityUserListQuery): Promise<IdentityUserListResult> {
+    const search = query.search?.trim().toLowerCase();
+    const filtered = [...this.users.values()]
+      .filter((user) => (
+        (!search || user.email.includes(search) || user.displayName.toLowerCase().includes(search)) &&
+        (!query.status || user.status === query.status) &&
+        (!query.role || user.roles.includes(query.role))
+      ))
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime() || right.id.localeCompare(left.id));
+    return {
+      total: filtered.length,
+      items: filtered.slice(query.offset, query.offset + query.limit).map(cloneUser),
+    };
+  }
+
+  async countUsers(filters: { status?: UserStatus; role?: RoleKey } = {}): Promise<number> {
+    return [...this.users.values()].filter((user) => (
+      (!filters.status || user.status === filters.status) &&
+      (!filters.role || user.roles.includes(filters.role))
+    )).length;
+  }
+
+  async countActiveAdministrators(): Promise<number> {
+    return this.countUsers({ status: 'ACTIVE', role: 'ADMIN' });
+  }
+
+  async replaceUserRoles(id: string, roles: readonly RoleKey[]): Promise<UserRecord | null> {
+    const user = this.users.get(id);
+    if (!user) return null;
+    const nextRoles = [...new Set(roles)];
+    if (nextRoles.length === 0) throw new RepositoryConflictError('A user must retain at least one role');
+    if (
+      user.status === 'ACTIVE' &&
+      user.roles.includes('ADMIN') &&
+      !nextRoles.includes('ADMIN') &&
+      await this.countActiveAdministrators() <= 1
+    ) {
+      throw new RepositoryConflictError('The last active administrator cannot be removed');
+    }
+    user.roles = nextRoles;
     user.updatedAt = new Date();
     return cloneUser(user);
   }

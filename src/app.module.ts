@@ -17,6 +17,7 @@ import { NotificationModule } from './notifications/notification.module';
 import { SpeakingRoomModule } from './rooms/room.module';
 import { ChallengeModule } from './challenges/challenge.module';
 import { EventModule } from './events/event.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { EventModule } from './events/event.module';
     SpeakingRoomModule,
     ChallengeModule,
     EventModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

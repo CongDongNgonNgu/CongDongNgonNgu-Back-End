@@ -1,4 +1,5 @@
-export type UserStatus = 'ACTIVE' | 'VERIFICATION_PENDING' | 'DISABLED';
+export const USER_STATUSES = ['ACTIVE', 'VERIFICATION_PENDING', 'DISABLED'] as const;
+export type UserStatus = typeof USER_STATUSES[number];
 export type RoleKey = 'USER' | 'CONTRIBUTOR' | 'EXPERT' | 'MEMBER' | 'MODERATOR' | 'ADMIN';
 export type OAuthProviderName = 'google' | 'facebook' | 'zalo' | 'apple';
 export type AuthTokenPurpose = 'EMAIL_VERIFICATION' | 'PASSWORD_RESET';
