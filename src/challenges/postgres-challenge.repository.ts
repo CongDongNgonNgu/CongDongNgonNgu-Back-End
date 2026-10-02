@@ -174,6 +174,19 @@ export class PostgresChallengeRepository implements ChallengeRepository {
     return result.rows[0] ? mapParticipationRow(result.rows[0]) : null;
   }
 
+  async findProgressEvent(
+    challengeId: string,
+    userId: string,
+    idempotencyKey: string,
+  ): Promise<ChallengeProgressEventRecord | null> {
+    const result = await this.pool.query(
+      `SELECT * FROM challenge_progress_events
+        WHERE challenge_id = $1 AND user_id = $2 AND idempotency_key = $3`,
+      [challengeId, userId, idempotencyKey],
+    );
+    return result.rows[0] ? mapProgressEventRow(result.rows[0]) : null;
+  }
+
   async appendProgress(input: AppendChallengeProgressInput): Promise<AppendChallengeProgressResult> {
     const client = await this.pool.connect();
     try {
@@ -188,6 +201,24 @@ export class PostgresChallengeRepository implements ChallengeRepository {
       );
       const participation = participationResult.rows[0];
       if (!participation) throw new ChallengeRepositoryNotFoundError('Challenge participation does not exist');
+
+      const existingResult = await client.query(
+        `SELECT * FROM challenge_progress_events
+          WHERE challenge_id = $1 AND user_id = $2 AND idempotency_key = $3`,
+        [input.challengeId, input.userId, input.idempotencyKey],
+      );
+      const existing = existingResult.rows[0];
+      if (existing) {
+        if (existing.fingerprint !== input.fingerprint) {
+          throw new ChallengeProgressReplayConflictError();
+        }
+        await client.query('COMMIT');
+        return {
+          event: mapProgressEventRow(existing),
+          participation: mapParticipationRow(participation),
+          replayed: true,
+        };
+      }
       if (participation.status === 'COMPLETED') {
         throw new ChallengeRepositoryConflictError('Challenge is already complete');
       }

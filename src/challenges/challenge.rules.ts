@@ -65,6 +65,11 @@ export type ChallengeProgressDecision =
       reason: string;
     };
 
+export interface ChallengeProgressIdentity {
+  idempotencyKey: string;
+  fingerprint: string;
+}
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const LANGUAGE_CODE_PATTERN = /^[a-z]{2,35}$/u;
 const SAFE_RULE_VERSION_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,63}$/u;
@@ -135,17 +140,44 @@ export function normalizeChallengeDefinition(
   };
 }
 
+export function createChallengeProgressIdentity(
+  input: ChallengeActivityInput,
+): ChallengeProgressIdentity | null {
+  if (
+    !UUID_PATTERN.test(input.challenge.id) ||
+    !UUID_PATTERN.test(input.userId) ||
+    !isValidDate(input.occurredAt) ||
+    !CHALLENGE_ACTIVITY_TYPES.includes(input.activityType) ||
+    !SOURCE_ID_PATTERN.test(input.sourceId) ||
+    !isBoundedPositiveInteger(input.units, MAX_CHALLENGE_ACTIVITY_UNITS)
+  ) {
+    return null;
+  }
+
+  const idempotencyKey = [
+    'challenge',
+    input.challenge.id,
+    input.activityType,
+    input.sourceId,
+  ].join(':');
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify({
+      challengeId: input.challenge.id,
+      userId: input.userId,
+      activityType: input.activityType,
+      sourceId: input.sourceId,
+      units: input.units,
+      occurredAt: input.occurredAt.toISOString(),
+      ruleVersion: input.challenge.ruleVersion,
+    }))
+    .digest('hex');
+  return { idempotencyKey, fingerprint };
+}
+
 export class ChallengeRuleEngine {
   evaluateProgress(input: ChallengeActivityInput, now = new Date()): ChallengeProgressDecision {
-    if (
-      !UUID_PATTERN.test(input.challenge.id) ||
-      !UUID_PATTERN.test(input.userId) ||
-      !isValidDate(input.occurredAt) ||
-      !isValidDate(now) ||
-      !CHALLENGE_ACTIVITY_TYPES.includes(input.activityType) ||
-      !SOURCE_ID_PATTERN.test(input.sourceId) ||
-      !isBoundedPositiveInteger(input.units, MAX_CHALLENGE_ACTIVITY_UNITS)
-    ) {
+    const identity = createChallengeProgressIdentity(input);
+    if (!identity || !isValidDate(now)) {
       return {
         eligible: false,
         code: 'CHALLENGE_ACTIVITY_INVALID',
@@ -184,23 +216,6 @@ export class ChallengeRuleEngine {
       };
     }
 
-    const idempotencyKey = [
-      'challenge',
-      input.challenge.id,
-      input.activityType,
-      input.sourceId,
-    ].join(':');
-    const fingerprint = createHash('sha256')
-      .update(JSON.stringify({
-        challengeId: input.challenge.id,
-        userId: input.userId,
-        activityType: input.activityType,
-        sourceId: input.sourceId,
-        units: input.units,
-        occurredAt: input.occurredAt.toISOString(),
-        ruleVersion: input.challenge.ruleVersion,
-      }))
-      .digest('hex');
     return {
       eligible: true,
       userId: input.userId,
@@ -209,8 +224,7 @@ export class ChallengeRuleEngine {
       units: input.units,
       occurredAt: new Date(input.occurredAt),
       ruleVersion: input.challenge.ruleVersion,
-      idempotencyKey,
-      fingerprint,
+      ...identity,
     };
   }
 }

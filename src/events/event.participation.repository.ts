@@ -85,7 +85,7 @@ export interface EventParticipationRepository {
   upsertReminderIntents(
     inputs: readonly EventReminderIntentInput[],
   ): Promise<EventReminderIntent[]>;
-  cancelReminderIntents(eventId: string, userId?: string): Promise<void>;
+  cancelReminderIntents(eventId: string, userId?: string, now?: Date): Promise<void>;
   listReminderIntents(
     eventId: string,
     userId?: string,
@@ -311,13 +311,13 @@ export class InMemoryEventParticipationRepository
     }));
   }
 
-  async cancelReminderIntents(eventId: string, userId?: string): Promise<void> {
+  async cancelReminderIntents(eventId: string, userId?: string, now = new Date()): Promise<void> {
     await this.exclusive(() => {
       for (const reminder of this.reminders.values()) {
         if (reminder.eventId !== eventId || (userId && reminder.userId !== userId)) continue;
         reminder.status = 'CANCELLED';
         reminder.suppressionReason = 'REGISTRATION_CANCELLED';
-        reminder.updatedAt = new Date();
+        reminder.updatedAt = new Date(now);
       }
     });
   }

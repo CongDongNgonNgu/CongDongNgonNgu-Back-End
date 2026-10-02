@@ -12,6 +12,7 @@ import {
 } from './challenge.repository';
 import {
   ChallengeRuleEngine,
+  createChallengeProgressIdentity,
   normalizeChallengeDefinition,
   type CreateChallengeDefinitionInput,
 } from './challenge.rules';
@@ -210,8 +211,30 @@ export class ChallengeService {
     if (!participation || participation.status === 'LEFT') {
       throw new ChallengeFailure('CHALLENGE_NOT_JOINED', 409, 'User is not participating in this challenge');
     }
-    if (participation.status === 'COMPLETED') {
-      throw new ChallengeFailure('CHALLENGE_ALREADY_COMPLETED', 409, 'Challenge participation is already complete');
+    const identity = createChallengeProgressIdentity({ challenge, userId, ...input });
+    if (
+      identity &&
+      (challenge.status !== 'ACTIVE' ||
+        now.getTime() >= challenge.endAt.getTime() ||
+        input.occurredAt.getTime() >= challenge.endAt.getTime())
+    ) {
+      const existing = await this.repository.findProgressEvent(
+        challenge.id,
+        userId,
+        identity.idempotencyKey,
+      );
+      if (existing) {
+        if (existing.fingerprint !== identity.fingerprint) {
+          throw new ChallengeFailure(
+            'CHALLENGE_ACTIVITY_REPLAY_CONFLICT',
+            409,
+            'Challenge activity evidence conflicts with an existing event',
+          );
+        }
+        const projection = await this.repository.getProgress(challengeId, userId);
+        if (!projection) throw new ChallengeFailure('CHALLENGE_NOT_FOUND', 404, 'Challenge progress is unavailable');
+        return { outcome: 'REPLAYED', projection };
+      }
     }
     const decision = this.rules.evaluateProgress({ challenge, userId, ...input }, now);
     if (!decision.eligible) {

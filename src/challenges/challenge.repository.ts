@@ -71,6 +71,11 @@ export interface ChallengeRepository {
   joinChallenge(challengeId: string, userId: string, now: Date): Promise<JoinChallengeResult>;
   leaveChallenge(challengeId: string, userId: string, now: Date): Promise<ChallengeParticipationRecord>;
   findParticipation(challengeId: string, userId: string): Promise<ChallengeParticipationRecord | null>;
+  findProgressEvent(
+    challengeId: string,
+    userId: string,
+    idempotencyKey: string,
+  ): Promise<ChallengeProgressEventRecord | null>;
   appendProgress(input: AppendChallengeProgressInput): Promise<AppendChallengeProgressResult>;
   getProgress(challengeId: string, userId: string): Promise<ChallengeProgressProjection | null>;
 }
@@ -158,12 +163,22 @@ export class InMemoryChallengeRepository implements ChallengeRepository {
     return record ? cloneParticipation(record) : null;
   }
 
+  async findProgressEvent(
+    challengeId: string,
+    userId: string,
+    idempotencyKey: string,
+  ): Promise<ChallengeProgressEventRecord | null> {
+    const record = this.progressEvents.get(idempotencyKey);
+    return record && record.challengeId === challengeId && record.userId === userId
+      ? cloneProgressEvent(record)
+      : null;
+  }
+
   async appendProgress(input: AppendChallengeProgressInput): Promise<AppendChallengeProgressResult> {
     const challenge = this.challenges.get(input.challengeId);
     if (!challenge) throw new ChallengeRepositoryNotFoundError('Challenge does not exist');
     const participation = this.participations.get(participationKey(input.challengeId, input.userId));
     if (!participation) throw new ChallengeRepositoryNotFoundError('Challenge participation does not exist');
-    if (participation.status === 'COMPLETED') throw new ChallengeRepositoryConflictError('Challenge is already complete');
 
     const existing = this.progressEvents.get(input.idempotencyKey);
     if (existing) {
@@ -174,6 +189,7 @@ export class InMemoryChallengeRepository implements ChallengeRepository {
         replayed: true,
       };
     }
+    if (participation.status === 'COMPLETED') throw new ChallengeRepositoryConflictError('Challenge is already complete');
     const sourceKey = progressSourceKey(input);
     const existingSourceKey = this.progressSourceKeys.get(sourceKey);
     if (existingSourceKey) throw new ChallengeProgressReplayConflictError();

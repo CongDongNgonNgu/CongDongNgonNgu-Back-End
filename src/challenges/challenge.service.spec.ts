@@ -94,6 +94,58 @@ describe('ChallengeService', () => {
       },
     });
   });
+
+  it('replays exact progress after completion and rejects an altered replay', async () => {
+    const { service } = await createService();
+    const challenge = await service.createChallenge(baseDefinition({ goalTarget: 1 }));
+    await service.joinChallenge(challenge.id, LEARNER_ID, at('2026-10-01T01:00:00.000Z'));
+
+    const input = {
+      activityType: 'SPEAKING_ROOM_ATTENDANCE' as const,
+      sourceId: SOURCE_ONE,
+      units: 1,
+      occurredAt: at('2026-10-02T03:00:00.000Z'),
+    };
+    const completed = await service.recordTrustedActivity(
+      LEARNER_ID,
+      challenge.id,
+      input,
+      at('2026-10-02T04:00:00.000Z'),
+    );
+    const replay = await service.recordTrustedActivity(
+      LEARNER_ID,
+      challenge.id,
+      input,
+      at('2026-10-02T04:01:00.000Z'),
+    );
+    const lateReplay = await service.recordTrustedActivity(
+      LEARNER_ID,
+      challenge.id,
+      input,
+      at('2026-10-08T00:00:00.000Z'),
+    );
+    const concurrentReplays = await Promise.all([
+      service.recordTrustedActivity(LEARNER_ID, challenge.id, input, at('2026-10-02T04:03:00.000Z')),
+      service.recordTrustedActivity(LEARNER_ID, challenge.id, input, at('2026-10-02T04:04:00.000Z')),
+    ]);
+
+    expect(completed.outcome).toBe('CREATED');
+    expect(replay).toMatchObject({
+      outcome: 'REPLAYED',
+      projection: { status: 'COMPLETED', progressValue: 1 },
+    });
+    expect(lateReplay).toMatchObject({
+      outcome: 'REPLAYED',
+      projection: { status: 'COMPLETED', progressValue: 1 },
+    });
+    expect(concurrentReplays.map(({ outcome }) => outcome)).toEqual(['REPLAYED', 'REPLAYED']);
+    await expect(service.recordTrustedActivity(
+      LEARNER_ID,
+      challenge.id,
+      { ...input, units: 2 },
+      at('2026-10-02T04:02:00.000Z'),
+    )).rejects.toMatchObject({ code: 'CHALLENGE_ACTIVITY_REPLAY_CONFLICT' });
+  });
 });
 
 async function createService() {

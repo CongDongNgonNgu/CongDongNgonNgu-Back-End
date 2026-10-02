@@ -357,14 +357,14 @@ export class PostgresEventParticipationRepository
     }
   }
 
-  async cancelReminderIntents(eventId: string, userId?: string): Promise<void> {
+  async cancelReminderIntents(eventId: string, userId?: string, now = new Date()): Promise<void> {
     const values: unknown[] = [eventId];
     let userFilter = '';
     if (userId) {
       values.push(userId);
       userFilter = ` AND user_id = $${values.length}`;
     }
-    values.push(new Date());
+    values.push(now);
     await this.pool.query(
       `UPDATE event_reminder_intents
           SET status = 'CANCELLED'::event_reminder_status,
