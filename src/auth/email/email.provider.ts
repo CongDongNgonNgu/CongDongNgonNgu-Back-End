@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+export const EMAIL_PROVIDER_REQUEST_TIMEOUT_MS = 10_000;
+
 export interface EmailProvider {
   sendVerification(input: { email: string; displayName: string; token: string }): Promise<void>;
   sendPasswordReset(input: { email: string; displayName: string; token: string }): Promise<void>;
@@ -58,16 +60,32 @@ export class ConfiguredEmailProvider implements EmailProvider {
   }
 
   private async send(body: Record<string, unknown>): Promise<void> {
-    const response = await fetch(this.apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + this.apiKey,
-      },
-      body: JSON.stringify(body),
-    }).catch(() => null);
-    if (!response || !response.ok) {
-      throw new EmailDeliveryError();
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(new Error('Email provider request timed out'));
+      }, EMAIL_PROVIDER_REQUEST_TIMEOUT_MS);
+    });
+    try {
+      const response = await Promise.race([
+        fetch(this.apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + this.apiKey,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }),
+        timeoutPromise,
+      ]).catch(() => null);
+      if (!response || !response.ok) {
+        throw new EmailDeliveryError();
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   }
 }
