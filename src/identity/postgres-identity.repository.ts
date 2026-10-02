@@ -16,6 +16,8 @@ import {
   type CreateProviderAccountInput,
   type CreateSessionInput,
   type CreateUserInput,
+  type IdentityUserListQuery,
+  type IdentityUserListResult,
   type IdentityRepository,
   type RefreshRotationResult,
   type ReplacementSession,
@@ -87,6 +89,123 @@ export class PostgresIdentityRepository implements IdentityRepository {
       values,
     );
     return result.rows[0] ? this.findUserById(id) : null;
+  }
+
+  async listUsers(query: IdentityUserListQuery): Promise<IdentityUserListResult> {
+    const values: unknown[] = [];
+    const where: string[] = [];
+    const add = (value: unknown): string => {
+      values.push(value);
+      return '$' + values.length;
+    };
+    if (query.search) {
+      const search = '%' + query.search.trim().toLowerCase() + '%';
+      const parameter = add(search);
+      where.push(`(LOWER(u.email) LIKE ${parameter} OR LOWER(u.display_name) LIKE ${parameter})`);
+    }
+    if (query.status) where.push('u.status = ' + add(query.status) + '::user_status');
+    if (query.role) {
+      where.push(`EXISTS (
+        SELECT 1 FROM user_roles role_filter
+        WHERE role_filter.user_id = u.id AND role_filter.role_key = ${add(query.role)}::role_key
+      )`);
+    }
+    const filter = where.length ? ' WHERE ' + where.join(' AND ') : '';
+    const countResult = await this.pool.query(
+      'SELECT COUNT(*)::int AS count FROM users u' + filter,
+      [...values],
+    );
+    const limitParameter = add(query.limit);
+    const offsetParameter = add(query.offset);
+    const result = await this.pool.query(
+      `SELECT u.*,
+              COALESCE(array_agg(ur.role_key::text ORDER BY ur.role_key::text)
+                       FILTER (WHERE ur.role_key IS NOT NULL), ARRAY[]::text[]) AS roles
+       FROM users u
+       LEFT JOIN user_roles ur ON ur.user_id = u.id
+       ${filter}
+       GROUP BY u.id
+       ORDER BY u.created_at DESC, u.id DESC
+       LIMIT ${limitParameter} OFFSET ${offsetParameter}`,
+      values,
+    );
+    return {
+      total: Number(countResult.rows[0]?.count ?? 0),
+      items: result.rows.map(mapUser),
+    };
+  }
+
+  async countUsers(filters: { status?: UserStatus; role?: RoleKey } = {}): Promise<number> {
+    const values: unknown[] = [];
+    const where: string[] = [];
+    if (filters.status) {
+      values.push(filters.status);
+      where.push('u.status = $' + values.length + '::user_status');
+    }
+    if (filters.role) {
+      values.push(filters.role);
+      where.push(`EXISTS (
+        SELECT 1 FROM user_roles role_filter
+        WHERE role_filter.user_id = u.id AND role_filter.role_key = $${values.length}::role_key
+      )`);
+    }
+    const result = await this.pool.query(
+      'SELECT COUNT(*)::int AS count FROM users u' + (where.length ? ' WHERE ' + where.join(' AND ') : ''),
+      values,
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async countActiveAdministrators(): Promise<number> {
+    return this.countUsers({ status: 'ACTIVE', role: 'ADMIN' });
+  }
+
+  async replaceUserRoles(id: string, roles: readonly RoleKey[]): Promise<UserRecord | null> {
+    const nextRoles = [...new Set(roles)];
+    if (nextRoles.length === 0) throw new RepositoryConflictError('A user must retain at least one role');
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const current = await client.query(
+        `SELECT u.status,
+                EXISTS (SELECT 1 FROM user_roles current_role WHERE current_role.user_id = u.id AND current_role.role_key = 'ADMIN'::role_key) AS is_admin
+           FROM users u
+          WHERE u.id = $1
+          FOR UPDATE`,
+        [id],
+      );
+      if (!current.rows[0]) {
+        await client.query('COMMIT');
+        return null;
+      }
+      if (current.rows[0].status === 'ACTIVE' && current.rows[0].is_admin && !nextRoles.includes('ADMIN')) {
+        const admins = await client.query(
+          `SELECT u.id
+             FROM users u
+             INNER JOIN user_roles ur ON ur.user_id = u.id AND ur.role_key = 'ADMIN'::role_key
+            WHERE u.status = 'ACTIVE'::user_status
+            FOR UPDATE`,
+        );
+        if (admins.rows.length <= 1) {
+          throw new RepositoryConflictError('The last active administrator cannot be removed');
+        }
+      }
+      await client.query('DELETE FROM user_roles WHERE user_id = $1', [id]);
+      for (const role of nextRoles) {
+        await client.query(
+          'INSERT INTO user_roles (user_id, role_key) VALUES ($1, $2::role_key)',
+          [id, role],
+        );
+      }
+      await client.query('UPDATE users SET updated_at = now() WHERE id = $1', [id]);
+      await client.query('COMMIT');
+      return this.findUserById(id);
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw mapRepositoryError(error);
+    } finally {
+      client.release();
+    }
   }
 
   async findProviderAccount(

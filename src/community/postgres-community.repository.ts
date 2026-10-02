@@ -523,6 +523,29 @@ export class PostgresCommunityRepository implements CommunityRepository {
     return page(result.rows.map(mapReport), query.limit);
   }
 
+  async countReports(query: Omit<CommunityReportListQuery, 'limit'> = {}): Promise<number> {
+    const values: unknown[] = [];
+    const where: string[] = [];
+    if (query.state) {
+      values.push(query.state);
+      where.push('r.state = $' + values.length + '::community_report_state');
+    }
+    if (query.targetType === 'POST') where.push('r.target_post_id IS NOT NULL');
+    if (query.targetType === 'COMMENT') where.push('r.target_comment_id IS NOT NULL');
+    if (query.assignedToUserId === null) {
+      where.push('r.assigned_to_user_id IS NULL');
+    } else if (query.assignedToUserId !== undefined) {
+      values.push(query.assignedToUserId);
+      where.push('r.assigned_to_user_id = $' + values.length);
+    }
+    const result = await this.pool.query(
+      'SELECT COUNT(*)::int AS count FROM community_reports r' +
+      (where.length ? ' WHERE ' + where.join(' AND ') : ''),
+      values,
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
   async updateReport(
     id: string,
     input: UpdateCommunityReportInput,

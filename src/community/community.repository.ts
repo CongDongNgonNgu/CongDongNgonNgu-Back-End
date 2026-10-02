@@ -132,6 +132,7 @@ export interface CommunityRepository {
   createReport(input: CommunityReportInput): Promise<CommunityReportRecord>;
   findReportById(id: string): Promise<CommunityReportRecord | null>;
   listReports(query: CommunityReportListQuery): Promise<CommunityListResult<CommunityReportRecord>>;
+  countReports(query?: Omit<CommunityReportListQuery, 'limit'>): Promise<number>;
   updateReport(id: string, input: UpdateCommunityReportInput): Promise<CommunityReportRecord | null>;
   addReportNote(
     reportId: string,
@@ -431,6 +432,14 @@ export class InMemoryCommunityRepository implements CommunityRepository {
       .sort(compareReports)
       .map((report) => cloneReportWithCount(report, this.reports));
     return page(items, query.limit);
+  }
+
+  async countReports(query: Omit<CommunityReportListQuery, 'limit'> = {}): Promise<number> {
+    return [...this.reports.values()].filter((report) => (
+      (!query.state || report.state === query.state) &&
+      (!query.targetType || report.targetType === query.targetType) &&
+      (query.assignedToUserId === undefined || report.assignedToUserId === query.assignedToUserId)
+    )).length;
   }
 
   async updateReport(
