@@ -1,0 +1,4 @@
+-- This rollback is intentionally a no-op. PostgreSQL cannot remove enum
+-- values safely without rewriting dependent user_roles data. The additive
+-- values are harmless when unused, and removal requires a separately reviewed
+-- data migration rather than a destructive down script.

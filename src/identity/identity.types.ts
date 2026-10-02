@@ -1,5 +1,5 @@
 export type UserStatus = 'ACTIVE' | 'VERIFICATION_PENDING' | 'DISABLED';
-export type RoleKey = 'MEMBER' | 'MODERATOR' | 'ADMIN';
+export type RoleKey = 'USER' | 'CONTRIBUTOR' | 'EXPERT' | 'MEMBER' | 'MODERATOR' | 'ADMIN';
 export type OAuthProviderName = 'google' | 'facebook' | 'zalo' | 'apple';
 export type AuthTokenPurpose = 'EMAIL_VERIFICATION' | 'PASSWORD_RESET';
 
