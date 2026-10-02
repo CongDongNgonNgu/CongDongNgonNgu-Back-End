@@ -389,7 +389,7 @@ export class EventService {
         const registration = await participation.findRegistration(eventId, invitedUserId);
         if (registration && registration.status !== 'CANCELLED') {
           const cancellation = await participation.cancelRegistration(event, invitedUserId, now);
-          await participation.cancelReminderIntents(eventId, invitedUserId);
+          await participation.cancelReminderIntents(eventId, invitedUserId, now);
           for (const promoted of cancellation.promoted) {
             await this.syncReminderIntents(event, promoted, now);
           }
@@ -436,7 +436,7 @@ export class EventService {
       if (result.record.status === 'REGISTERED') {
         await this.syncReminderIntents(event, result.record, now);
       } else {
-        await participation.cancelReminderIntents(event.id, userId);
+        await participation.cancelReminderIntents(event.id, userId, now);
       }
       for (const promoted of result.promoted) {
         await this.syncReminderIntents(event, promoted, now);
@@ -471,7 +471,7 @@ export class EventService {
     const participation = this.requireParticipation();
     try {
       const result = await participation.cancelRegistration(event, userId, now);
-      await participation.cancelReminderIntents(event.id, userId);
+      await participation.cancelReminderIntents(event.id, userId, now);
       for (const promoted of result.promoted) {
         await this.syncReminderIntents(event, promoted, now);
       }

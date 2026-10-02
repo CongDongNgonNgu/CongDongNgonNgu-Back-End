@@ -130,6 +130,33 @@ describe('event participation orchestration', () => {
     expect(reconciled.find((intent) => intent.kind === 'TWENTY_FOUR_HOURS')?.status).toBe('SUPPRESSED');
   });
 
+  it('cancels reminder intents using the server cancellation time', async () => {
+    const { service, rooms } = await createService();
+    const room = await createRoom(rooms, 'LIVE');
+    const event = await service.createEvent(
+      HOST_ID,
+      createInput(room.id, {
+        startAt: '2026-10-10T02:00:00.000Z',
+        endAt: '2026-10-10T03:00:00.000Z',
+      }),
+      NOW,
+    );
+    await service.registerEvent(event.id, LEARNER_A, NOW);
+
+    const cancelledAt = at('2026-10-02T05:06:07.000Z');
+    await service.cancelRegistration(event.id, LEARNER_A, cancelledAt);
+
+    expect(await service.getEventReminders(event.id, LEARNER_A)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: 'CANCELLED',
+          suppressionReason: 'REGISTRATION_CANCELLED',
+          updatedAt: cancelledAt,
+        }),
+      ]),
+    );
+  });
+
   it('accepts host attendance as trusted evidence, rejects altered replay, and calls the hook once', async () => {
     const hook: EventAttendanceLearningHook = {
       recordTrustedAttendance: jest.fn(async () => undefined),

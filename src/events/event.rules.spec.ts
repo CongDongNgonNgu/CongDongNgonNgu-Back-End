@@ -38,6 +38,26 @@ describe('Event scheduling rules', () => {
     });
   });
 
+  it('keeps UTC instants stable at a DST transition instead of applying a fixed offset', () => {
+    const event = normalizeEventDefinition(baseInput({
+      startAt: at('2026-03-08T06:30:00.000Z'),
+      endAt: at('2026-03-08T07:30:00.000Z'),
+      timezone: 'America/New_York',
+      recurrence: {
+        frequency: 'WEEKLY',
+        interval: 1,
+        count: 2,
+        until: null,
+        byWeekday: ['SU'],
+      },
+    }));
+
+    expect(event.startAt.toISOString()).toBe('2026-03-08T06:30:00.000Z');
+    expect(event.endAt.toISOString()).toBe('2026-03-08T07:30:00.000Z');
+    expect(event.timezone).toBe('America/New_York');
+    expect(event.recurrence?.byWeekday).toEqual(['SU']);
+  });
+
   it('rejects invalid timezone, reversed time and unbounded recurrence', () => {
     expect(() =>
       normalizeEventDefinition(baseInput({ timezone: 'Mars/Olympus' })),
