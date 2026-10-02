@@ -444,7 +444,7 @@ export class PostgresCommunityRepository implements CommunityRepository {
   async createReport(input: CommunityReportInput): Promise<CommunityReportRecord> {
     const postId = input.targetType === 'POST' ? input.targetId : null;
     const commentId = input.targetType === 'COMMENT' ? input.targetId : null;
-    const inserted = await this.pool.query(
+    await this.pool.query(
       `INSERT INTO community_reports (
          reporter_user_id, target_post_id, target_comment_id, category, details, created_at, updated_at
        )
@@ -459,7 +459,6 @@ export class PostgresCommunityRepository implements CommunityRepository {
         input.createdAt,
       ],
     );
-    void inserted;
     const targetColumn = input.targetType === 'POST' ? 'target_post_id' : 'target_comment_id';
     const existing = await this.pool.query(
       `SELECT id
