@@ -147,3 +147,13 @@ export class ListEventsQueryDto {
   @Max(50)
   limit?: number;
 }
+
+export class InviteEventUserDto {
+  @IsUUID('4')
+  userId!: string;
+}
+
+export class MarkEventAttendanceDto {
+  @IsUUID('4')
+  userId!: string;
+}
