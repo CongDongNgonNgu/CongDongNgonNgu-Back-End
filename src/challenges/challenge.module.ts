@@ -8,6 +8,7 @@ import { ChallengeRuleEngine } from './challenge.rules';
 import { CHALLENGE_REPOSITORY, InMemoryChallengeRepository } from './challenge.repository';
 import { PostgresChallengeRepository } from './postgres-challenge.repository';
 import { ChallengeService } from './challenge.service';
+import { ChallengeController } from './challenge.controller';
 
 interface ChallengeRuntimeConfig {
   persistence: 'postgres' | 'memory';
@@ -15,6 +16,7 @@ interface ChallengeRuntimeConfig {
 
 @Module({
   imports: [AuthModule, IdentityModule, ProfileModule],
+  controllers: [ChallengeController],
   providers: [
     ChallengeRuleEngine,
     ChallengeService,

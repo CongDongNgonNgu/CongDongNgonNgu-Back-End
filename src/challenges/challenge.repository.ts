@@ -67,6 +67,7 @@ export interface ChallengeRepository {
   createChallenge(input: CreateChallengeRepositoryInput): Promise<ChallengeRecord>;
   findChallengeById(id: string): Promise<ChallengeRecord | null>;
   listChallenges(query: ChallengeListQuery): Promise<ChallengeRecord[]>;
+  getParticipantCount(challengeId: string): Promise<number>;
   joinChallenge(challengeId: string, userId: string, now: Date): Promise<JoinChallengeResult>;
   leaveChallenge(challengeId: string, userId: string, now: Date): Promise<ChallengeParticipationRecord>;
   findParticipation(challengeId: string, userId: string): Promise<ChallengeParticipationRecord | null>;
@@ -101,6 +102,12 @@ export class InMemoryChallengeRepository implements ChallengeRepository {
       .sort((left, right) => left.startAt.getTime() - right.startAt.getTime() || left.id.localeCompare(right.id))
       .slice(0, query.limit)
       .map(cloneChallenge);
+  }
+
+  async getParticipantCount(challengeId: string): Promise<number> {
+    return [...this.participations.values()]
+      .filter((participation) => participation.challengeId === challengeId && participation.status !== 'LEFT')
+      .length;
   }
 
   async joinChallenge(challengeId: string, userId: string, now: Date): Promise<JoinChallengeResult> {

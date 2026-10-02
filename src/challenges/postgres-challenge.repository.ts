@@ -100,6 +100,17 @@ export class PostgresChallengeRepository implements ChallengeRepository {
     return result.rows.map(mapChallengeRow);
   }
 
+  async getParticipantCount(challengeId: string): Promise<number> {
+    const result = await this.pool.query(
+      `SELECT COUNT(*)::int AS count
+         FROM challenge_participations
+        WHERE challenge_id = $1
+          AND status <> 'LEFT'::challenge_participation_status`,
+      [challengeId],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
   async joinChallenge(challengeId: string, userId: string, now: Date): Promise<JoinChallengeResult> {
     const client = await this.pool.connect();
     try {
