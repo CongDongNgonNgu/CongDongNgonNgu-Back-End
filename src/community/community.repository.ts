@@ -11,6 +11,11 @@ import type {
   CommunityPostType,
   CommunityReactionType,
   CommunityReportInput,
+  CommunityReportNoteRecord,
+  CommunityReportRecord,
+  CommunityReportState,
+  CommunityReportTargetType,
+  CommunityReportCategory,
   CommunityVisibility,
 } from './community.types';
 
@@ -73,6 +78,20 @@ export interface CommunityCommentListQuery {
   replyLimit: number;
 }
 
+export interface CommunityReportListQuery {
+  state?: CommunityReportState;
+  targetType?: CommunityReportTargetType;
+  assignedToUserId?: string | null;
+  limit: number;
+}
+
+export interface UpdateCommunityReportInput {
+  assignedToUserId?: string | null;
+  state?: CommunityReportState;
+  resolutionReason?: string | null;
+  updatedAt: Date;
+}
+
 export interface CommunityRepository {
   createPost(input: CreateCommunityPostInput): Promise<CommunityPostRecord>;
   findPostById(id: string): Promise<CommunityPostRecord | null>;
@@ -105,7 +124,17 @@ export interface CommunityRepository {
   removeReaction(userId: string, postId: string, reactionType: CommunityReactionType): Promise<void>;
   savePost(userId: string, postId: string, now: Date): Promise<void>;
   unsavePost(userId: string, postId: string): Promise<void>;
-  createReport(input: CommunityReportInput): Promise<void>;
+  createReport(input: CommunityReportInput): Promise<CommunityReportRecord>;
+  findReportById(id: string): Promise<CommunityReportRecord | null>;
+  listReports(query: CommunityReportListQuery): Promise<CommunityListResult<CommunityReportRecord>>;
+  updateReport(id: string, input: UpdateCommunityReportInput): Promise<CommunityReportRecord | null>;
+  addReportNote(
+    reportId: string,
+    authorUserId: string,
+    body: string,
+    createdAt: Date,
+  ): Promise<CommunityReportNoteRecord>;
+  listReportNotes(reportId: string): Promise<CommunityReportNoteRecord[]>;
 }
 
 export class InMemoryCommunityRepository implements CommunityRepository {
@@ -113,7 +142,9 @@ export class InMemoryCommunityRepository implements CommunityRepository {
   private readonly comments = new Map<string, CommunityCommentRecord>();
   private readonly reactions = new Map<string, Date>();
   private readonly savedPosts = new Map<string, Date>();
-  private readonly reports = new Set<string>();
+  private readonly reports = new Map<string, CommunityReportRecord>();
+  private readonly reportKeys = new Map<string, string>();
+  private readonly reportNotes = new Map<string, CommunityReportNoteRecord>();
 
   async createPost(input: CreateCommunityPostInput): Promise<CommunityPostRecord> {
     const record: CommunityPostRecord = {
@@ -338,14 +369,87 @@ export class InMemoryCommunityRepository implements CommunityRepository {
     this.savedPosts.delete(saveKey(userId, postId));
   }
 
-  async createReport(input: CommunityReportInput): Promise<void> {
+  async createReport(input: CommunityReportInput): Promise<CommunityReportRecord> {
     const key = [
       input.reporterUserId,
       input.targetType,
       input.targetId,
       input.category,
     ].join(':');
-    this.reports.add(key);
+    const existingId = this.reportKeys.get(key);
+    if (existingId) return cloneReport(this.reports.get(existingId)!);
+    const record: CommunityReportRecord = {
+      id: randomUUID(),
+      reporterUserId: input.reporterUserId,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      category: input.category,
+      details: input.details,
+      state: 'OPEN',
+      assignedToUserId: null,
+      resolutionReason: null,
+      duplicateGroupKey: reportGroupKey(input.targetType, input.targetId, input.category),
+      duplicateCount: 1,
+      createdAt: new Date(input.createdAt),
+      updatedAt: new Date(input.createdAt),
+    };
+    this.reports.set(record.id, record);
+    this.reportKeys.set(key, record.id);
+    return cloneReport(record);
+  }
+
+  async findReportById(id: string): Promise<CommunityReportRecord | null> {
+    const report = this.reports.get(id);
+    return report ? cloneReportWithCount(report, this.reports) : null;
+  }
+
+  async listReports(query: CommunityReportListQuery): Promise<CommunityListResult<CommunityReportRecord>> {
+    const items = [...this.reports.values()]
+      .filter((report) => (
+        (!query.state || report.state === query.state) &&
+        (!query.targetType || report.targetType === query.targetType) &&
+        (query.assignedToUserId === undefined || report.assignedToUserId === query.assignedToUserId)
+      ))
+      .sort(compareReports)
+      .map((report) => cloneReportWithCount(report, this.reports));
+    return page(items, query.limit);
+  }
+
+  async updateReport(
+    id: string,
+    input: UpdateCommunityReportInput,
+  ): Promise<CommunityReportRecord | null> {
+    const report = this.reports.get(id);
+    if (!report) return null;
+    if (input.assignedToUserId !== undefined) report.assignedToUserId = input.assignedToUserId;
+    if (input.state !== undefined) report.state = input.state;
+    if (input.resolutionReason !== undefined) report.resolutionReason = input.resolutionReason;
+    report.updatedAt = new Date(input.updatedAt);
+    return cloneReportWithCount(report, this.reports);
+  }
+
+  async addReportNote(
+    reportId: string,
+    authorUserId: string,
+    body: string,
+    createdAt: Date,
+  ): Promise<CommunityReportNoteRecord> {
+    const note: CommunityReportNoteRecord = {
+      id: randomUUID(),
+      reportId,
+      authorUserId,
+      body,
+      createdAt: new Date(createdAt),
+    };
+    this.reportNotes.set(note.id, note);
+    return cloneReportNote(note);
+  }
+
+  async listReportNotes(reportId: string): Promise<CommunityReportNoteRecord[]> {
+    return [...this.reportNotes.values()]
+      .filter((note) => note.reportId === reportId)
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+      .map(cloneReportNote);
   }
 }
 
@@ -390,6 +494,41 @@ function reactionKey(userId: string, postId: string, reactionType: string): stri
 
 function saveKey(userId: string, postId: string): string {
   return userId + ':' + postId;
+}
+
+function reportGroupKey(
+  targetType: CommunityReportTargetType,
+  targetId: string,
+  category: CommunityReportCategory,
+): string {
+  return targetType + ':' + targetId + ':' + category;
+}
+
+function compareReports(left: CommunityReportRecord, right: CommunityReportRecord): number {
+  const timeDifference = right.createdAt.getTime() - left.createdAt.getTime();
+  return timeDifference !== 0 ? timeDifference : right.id.localeCompare(left.id);
+}
+
+function cloneReport(report: CommunityReportRecord): CommunityReportRecord {
+  return {
+    ...report,
+    createdAt: new Date(report.createdAt),
+    updatedAt: new Date(report.updatedAt),
+  };
+}
+
+function cloneReportWithCount(
+  report: CommunityReportRecord,
+  reports: Map<string, CommunityReportRecord>,
+): CommunityReportRecord {
+  const duplicateCount = [...reports.values()].filter(
+    (candidate) => candidate.duplicateGroupKey === report.duplicateGroupKey,
+  ).length;
+  return { ...cloneReport(report), duplicateCount };
+}
+
+function cloneReportNote(note: CommunityReportNoteRecord): CommunityReportNoteRecord {
+  return { ...note, createdAt: new Date(note.createdAt) };
 }
 
 function clonePost(post: CommunityPostRecord): CommunityPostRecord {

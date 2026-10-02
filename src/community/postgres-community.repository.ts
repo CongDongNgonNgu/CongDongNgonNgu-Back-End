@@ -9,15 +9,22 @@ import type {
   CommunityPostRecord,
   CommunityPostType,
   CommunityReactionType,
+  CommunityReportCategory,
   CommunityReportInput,
+  CommunityReportNoteRecord,
+  CommunityReportRecord,
+  CommunityReportState,
+  CommunityReportTargetType,
   CommunityVisibility,
 } from './community.types';
 import type {
   CommunityCommentListQuery,
   CommunityPostListQuery,
+  CommunityReportListQuery,
   CommunityRepository,
   CreateCommunityCommentInput,
   CreateCommunityPostInput,
+  UpdateCommunityReportInput,
   UpdateCommunityCommentInput,
   UpdateCommunityPostInput,
 } from './community.repository';
@@ -434,10 +441,10 @@ export class PostgresCommunityRepository implements CommunityRepository {
     );
   }
 
-  async createReport(input: CommunityReportInput): Promise<void> {
+  async createReport(input: CommunityReportInput): Promise<CommunityReportRecord> {
     const postId = input.targetType === 'POST' ? input.targetId : null;
     const commentId = input.targetType === 'COMMENT' ? input.targetId : null;
-    await this.pool.query(
+    const inserted = await this.pool.query(
       `INSERT INTO community_reports (
          reporter_user_id, target_post_id, target_comment_id, category, details, created_at, updated_at
        )
@@ -452,7 +459,114 @@ export class PostgresCommunityRepository implements CommunityRepository {
         input.createdAt,
       ],
     );
+    void inserted;
+    const targetColumn = input.targetType === 'POST' ? 'target_post_id' : 'target_comment_id';
+    const existing = await this.pool.query(
+      `SELECT id
+       FROM community_reports
+       WHERE reporter_user_id = $1
+         AND ${targetColumn} = $2
+         AND category = $3::community_report_category`,
+      [input.reporterUserId, input.targetId, input.category],
+    );
+    const id = existing.rows[0]?.id;
+    if (!id) throw new CommunityRepositoryConflictError('Report could not be stored');
+    const report = await this.findReportById(String(id));
+    if (!report) throw new CommunityRepositoryConflictError('Report could not be loaded');
+    return report;
   }
+
+  async findReportById(id: string): Promise<CommunityReportRecord | null> {
+    const result = await this.pool.query(reportSelect('r.id = $1'), [id]);
+    return result.rows[0] ? mapReport(result.rows[0]) : null;
+  }
+
+  async listReports(query: CommunityReportListQuery): Promise<CommunityListResult<CommunityReportRecord>> {
+    const values: unknown[] = [];
+    const where: string[] = [];
+    if (query.state) {
+      values.push(query.state);
+      where.push('r.state = $' + values.length + '::community_report_state');
+    }
+    if (query.targetType === 'POST') where.push('r.target_post_id IS NOT NULL');
+    if (query.targetType === 'COMMENT') where.push('r.target_comment_id IS NOT NULL');
+    if (query.assignedToUserId === null) {
+      where.push('r.assigned_to_user_id IS NULL');
+    } else if (query.assignedToUserId !== undefined) {
+      values.push(query.assignedToUserId);
+      where.push('r.assigned_to_user_id = $' + values.length);
+    }
+    values.push(query.limit + 1);
+    const result = await this.pool.query(
+      reportSelect((where.length ? where.join(' AND ') : 'true') +
+        ' ORDER BY r.created_at DESC, r.id DESC LIMIT $' + values.length),
+      values,
+    );
+    return page(result.rows.map(mapReport), query.limit);
+  }
+
+  async updateReport(
+    id: string,
+    input: UpdateCommunityReportInput,
+  ): Promise<CommunityReportRecord | null> {
+    const values: unknown[] = [id];
+    const updates: string[] = [];
+    if (input.assignedToUserId !== undefined) {
+      values.push(input.assignedToUserId);
+      updates.push('assigned_to_user_id = $' + values.length);
+    }
+    if (input.state !== undefined) {
+      values.push(input.state);
+      updates.push('state = $' + values.length + '::community_report_state');
+    }
+    if (input.resolutionReason !== undefined) {
+      values.push(input.resolutionReason);
+      updates.push('resolution_reason = $' + values.length);
+    }
+    values.push(input.updatedAt);
+    updates.push('updated_at = $' + values.length);
+    const result = await this.pool.query(
+      'UPDATE community_reports SET ' + updates.join(', ') + ' WHERE id = $1 RETURNING id',
+      values,
+    );
+    return result.rows[0] ? this.findReportById(id) : null;
+  }
+
+  async addReportNote(
+    reportId: string,
+    authorUserId: string,
+    body: string,
+    createdAt: Date,
+  ): Promise<CommunityReportNoteRecord> {
+    const result = await this.pool.query(
+      `INSERT INTO community_report_notes (report_id, author_user_id, body, created_at)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [reportId, authorUserId, body, createdAt],
+    );
+    return mapReportNote(result.rows[0]);
+  }
+
+  async listReportNotes(reportId: string): Promise<CommunityReportNoteRecord[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM community_report_notes
+       WHERE report_id = $1
+       ORDER BY created_at ASC, id ASC`,
+      [reportId],
+    );
+    return result.rows.map(mapReportNote);
+  }
+}
+
+function reportSelect(where: string): string {
+  return `SELECT r.*,
+       CASE WHEN r.target_post_id IS NOT NULL THEN 'POST' ELSE 'COMMENT' END AS target_type,
+       COALESCE(r.target_post_id, r.target_comment_id)::text AS target_id,
+       (CASE WHEN r.target_post_id IS NOT NULL THEN 'POST' ELSE 'COMMENT' END || ':' ||
+        COALESCE(r.target_post_id, r.target_comment_id)::text || ':' || r.category::text) AS duplicate_group_key,
+       COUNT(*) OVER (PARTITION BY COALESCE(r.target_post_id, r.target_comment_id), r.category)::int AS duplicate_count
+       FROM community_reports r
+       WHERE ${where}`;
 }
 
 function appendCursorCondition(
@@ -514,5 +628,33 @@ function mapComment(row: Record<string, unknown>): CommunityCommentRecord {
     editedAt: row.edited_at ? new Date(String(row.edited_at)) : null,
     deletedAt: row.deleted_at ? new Date(String(row.deleted_at)) : null,
     deletedByUserId: row.deleted_by_user_id ? String(row.deleted_by_user_id) : null,
+  };
+}
+
+function mapReport(row: Record<string, unknown>): CommunityReportRecord {
+  return {
+    id: String(row.id),
+    reporterUserId: String(row.reporter_user_id),
+    targetType: String(row.target_type) as CommunityReportTargetType,
+    targetId: String(row.target_id),
+    category: String(row.category) as CommunityReportCategory,
+    details: row.details ? String(row.details) : null,
+    state: String(row.state) as CommunityReportState,
+    assignedToUserId: row.assigned_to_user_id ? String(row.assigned_to_user_id) : null,
+    resolutionReason: row.resolution_reason ? String(row.resolution_reason) : null,
+    duplicateGroupKey: String(row.duplicate_group_key),
+    duplicateCount: Number(row.duplicate_count ?? 1),
+    createdAt: new Date(String(row.created_at)),
+    updatedAt: new Date(String(row.updated_at)),
+  };
+}
+
+function mapReportNote(row: Record<string, unknown>): CommunityReportNoteRecord {
+  return {
+    id: String(row.id),
+    reportId: String(row.report_id),
+    authorUserId: String(row.author_user_id),
+    body: String(row.body),
+    createdAt: new Date(String(row.created_at)),
   };
 }
