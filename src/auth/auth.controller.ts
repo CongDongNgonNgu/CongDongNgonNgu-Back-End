@@ -11,11 +11,17 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { success } from '../common/http/api-response';
 import { AuthService } from './auth.service';
 import { EmailDto, LoginDto, RegisterDto, ResetPasswordDto, TokenDto } from './auth.dto';
 import { AccessTokenGuard, type AuthenticatedRequest } from './guards/access-token.guard';
+import {
+  appendOAuthStateCookieFromAuthorizationUrl,
+  assertOAuthStateCookie,
+  clearOAuthStateCookie,
+} from './oauth/oauth-state-cookie';
 import { SessionService } from './session/session.service';
 
 @Controller('auth')
@@ -24,6 +30,7 @@ export class AuthController {
     private readonly auth: AuthService,
     private readonly sessions: SessionService,
     private readonly oauth: OAuthService,
+    private readonly config: ConfigService,
   ) {}
 
   @Get('providers')
@@ -94,6 +101,7 @@ export class AuthController {
   ) {
     const selectedMode = mode === 'register' ? 'register' : 'login';
     const url = await this.oauth.start(provider, selectedMode);
+    appendOAuthStateCookieFromAuthorizationUrl(response, url, this.isProduction());
     return response.redirect(url);
   }
 
@@ -102,9 +110,11 @@ export class AuthController {
   async oauthLinkStart(
     @Param('provider') provider: string,
     @Req() request: AuthenticatedRequest,
+    @Res({ passthrough: true }) response: Response,
   ) {
     this.sessions.assertCsrfForCookie(request);
     const url = await this.oauth.start(provider, 'link', request.user!.user.id, request.user!.claims.sid);
+    appendOAuthStateCookieFromAuthorizationUrl(response, url, this.isProduction());
     return success({ authorizationUrl: url }, 'Đang mở liên kết tài khoản');
   }
 
@@ -112,14 +122,23 @@ export class AuthController {
   async oauthCallback(
     @Param('provider') provider: string,
     @Query() query: Record<string, unknown>,
+    @Req() request: Request,
     @Res() response: Response,
   ) {
+    let redirectUrl: string;
     try {
+      assertOAuthStateCookie(request, query);
       await this.oauth.callback(provider, query, response);
-      return response.redirect(this.oauth.callbackRedirect('success'));
+      redirectUrl = this.oauth.callbackRedirect('success');
     } catch (error) {
-      return response.redirect(this.oauth.callbackRedirect('error', callbackErrorCode(error)));
+      redirectUrl = this.oauth.callbackRedirect('error', callbackErrorCode(error));
     }
+    clearOAuthStateCookie(response, this.isProduction());
+    return response.redirect(redirectUrl);
+  }
+
+  private isProduction(): boolean {
+    return this.config.get<string>('app.environment') === 'production';
   }
 
   @Post('logout')
