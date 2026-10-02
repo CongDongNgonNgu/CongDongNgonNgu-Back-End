@@ -10,6 +10,7 @@ import { CommunityRateLimiter } from './community.rate-limiter';
 import { COMMUNITY_REPOSITORY } from './community.repository';
 import { InMemoryCommunityRepository } from './community.repository';
 import { CommunityService } from './community.service';
+import { CommunityModerationService } from './community.moderation.service';
 import { OptionalAccessTokenGuard } from './optional-access-token.guard';
 import { PostgresCommunityRepository } from './postgres-community.repository';
 
@@ -22,6 +23,7 @@ interface CommunityRuntimeConfig {
   controllers: [CommunityController],
   providers: [
     CommunityService,
+    CommunityModerationService,
     CommunityRateLimiter,
     OptionalAccessTokenGuard,
     {
@@ -38,6 +40,6 @@ interface CommunityRuntimeConfig {
       },
     },
   ],
-  exports: [COMMUNITY_REPOSITORY, CommunityService, CommunityRateLimiter],
+  exports: [COMMUNITY_REPOSITORY, CommunityService, CommunityModerationService, CommunityRateLimiter],
 })
 export class CommunityModule {}

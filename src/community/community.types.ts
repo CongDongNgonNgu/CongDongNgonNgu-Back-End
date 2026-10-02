@@ -36,6 +36,9 @@ export const COMMUNITY_REPORT_CATEGORIES = [
 ] as const;
 export type CommunityReportCategory = typeof COMMUNITY_REPORT_CATEGORIES[number];
 
+export const COMMUNITY_REPORT_STATES = ['OPEN', 'DISMISSED', 'ACTIONED'] as const;
+export type CommunityReportState = typeof COMMUNITY_REPORT_STATES[number];
+
 export interface CommunityPostRecord {
   id: string;
   authorUserId: string;
@@ -97,5 +100,29 @@ export interface CommunityReportInput {
   targetId: string;
   category: CommunityReportCategory;
   details: string | null;
+  createdAt: Date;
+}
+
+export interface CommunityReportRecord {
+  id: string;
+  reporterUserId: string;
+  targetType: CommunityReportTargetType;
+  targetId: string;
+  category: CommunityReportCategory;
+  details: string | null;
+  state: CommunityReportState;
+  assignedToUserId: string | null;
+  resolutionReason: string | null;
+  duplicateGroupKey: string;
+  duplicateCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CommunityReportNoteRecord {
+  id: string;
+  reportId: string;
+  authorUserId: string;
+  body: string;
   createdAt: Date;
 }
