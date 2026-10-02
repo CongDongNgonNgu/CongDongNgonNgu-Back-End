@@ -5,6 +5,8 @@ import type {
   OAuthProviderRuntimeConfig,
 } from './oauth.types';
 
+export const OAUTH_PROVIDER_REQUEST_TIMEOUT_MS = 10_000;
+
 export class DisabledOAuthAdapter implements OAuthProviderAdapter {
   readonly enabled = false;
 
@@ -42,7 +44,7 @@ export class GoogleOAuthAdapter implements OAuthProviderAdapter {
   }
 
   async exchangeCode(code: string): Promise<OAuthIdentity> {
-    const tokenResponse = await fetch(this.config.tokenUrl, {
+    const tokenResponse = await requestProvider(this.config.tokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -53,19 +55,19 @@ export class GoogleOAuthAdapter implements OAuthProviderAdapter {
         grant_type: 'authorization_code',
       }),
     }).catch(() => null);
-    if (!tokenResponse || !tokenResponse.ok) {
+    if (!tokenResponse?.ok) {
       throw new OAuthFailure('AUTH_OAUTH_FAILED', 400, 'Không thể xác thực với Google');
     }
-    const tokenPayload = await readJson(tokenResponse);
+    const tokenPayload = tokenResponse.payload;
     const accessToken = readString(tokenPayload.access_token);
     if (!accessToken) throw new OAuthFailure('AUTH_OAUTH_FAILED', 400, 'Phản hồi Google không hợp lệ');
-    const profileResponse = await fetch(this.config.userInfoUrl!, {
+    const profileResponse = await requestProvider(this.config.userInfoUrl!, {
       headers: { Authorization: 'Bearer ' + accessToken },
     }).catch(() => null);
-    if (!profileResponse || !profileResponse.ok) {
+    if (!profileResponse?.ok) {
       throw new OAuthFailure('AUTH_OAUTH_FAILED', 400, 'Không thể đọc hồ sơ Google');
     }
-    const profile = await readJson(profileResponse);
+    const profile = profileResponse.payload;
     const subject = readString(profile.sub);
     if (!subject) throw new OAuthFailure('AUTH_OAUTH_FAILED', 400, 'Hồ sơ Google thiếu định danh');
     return {
@@ -76,6 +78,31 @@ export class GoogleOAuthAdapter implements OAuthProviderAdapter {
       avatarUrl: readString(profile.picture),
       emailVerified: profile.email_verified === true,
     };
+  }
+}
+
+async function requestProvider(
+  url: string,
+  init: RequestInit,
+): Promise<{ ok: true; payload: Record<string, unknown> } | { ok: false }> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error('OAuth provider request timed out'));
+    }, OAUTH_PROVIDER_REQUEST_TIMEOUT_MS);
+  });
+  try {
+    const response = await Promise.race([
+      fetch(url, { ...init, signal: controller.signal }),
+      timeoutPromise,
+    ]);
+    if (!response.ok) return { ok: false };
+    const payload = await Promise.race([readJson(response), timeoutPromise]);
+    return { ok: true, payload };
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
