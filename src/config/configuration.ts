@@ -41,6 +41,7 @@ export interface RuntimeConfig {
     aiApiKey?: string;
     email: ValidatedEnvironment["EMAIL_PROVIDER"];
     emailApiUrl?: string;
+    emailFrom?: string;
     emailApiKey?: string;
     storage: ValidatedEnvironment["STORAGE_PROVIDER"];
     storageApiUrl?: string;
@@ -89,6 +90,7 @@ export function buildConfiguration(env: ValidatedEnvironment): RuntimeConfig {
       ...(env.AI_API_KEY ? { aiApiKey: env.AI_API_KEY } : {}),
       email: env.EMAIL_PROVIDER,
       ...(env.EMAIL_API_URL ? { emailApiUrl: env.EMAIL_API_URL } : {}),
+      ...(env.EMAIL_FROM ? { emailFrom: env.EMAIL_FROM } : {}),
       ...(env.EMAIL_API_KEY ? { emailApiKey: env.EMAIL_API_KEY } : {}),
       storage: env.STORAGE_PROVIDER,
       ...(env.STORAGE_API_URL ? { storageApiUrl: env.STORAGE_API_URL } : {}),

@@ -2,6 +2,8 @@ const BLOCKED_HOST_MARKERS = ["eduai", "giaoducso.org.vn"] as const;
 
 export type RuntimeEnvironment = "development" | "test" | "production";
 export type OptionalProvider = "disabled" | "configured";
+export type EmailProviderSetting = OptionalProvider | "resend";
+export type StorageProviderSetting = OptionalProvider | "r2";
 
 export interface ValidatedEnvironment {
   NODE_ENV: RuntimeEnvironment;
@@ -21,10 +23,11 @@ export interface ValidatedEnvironment {
   AI_PROVIDER: OptionalProvider;
   AI_API_URL?: string;
   AI_API_KEY?: string;
-  EMAIL_PROVIDER: OptionalProvider;
+  EMAIL_PROVIDER: EmailProviderSetting;
   EMAIL_API_URL?: string;
+  EMAIL_FROM?: string;
   EMAIL_API_KEY?: string;
-  STORAGE_PROVIDER: OptionalProvider;
+  STORAGE_PROVIDER: StorageProviderSetting;
   STORAGE_API_URL?: string;
   STORAGE_ACCESS_KEY_ID?: string;
   STORAGE_SECRET_ACCESS_KEY?: string;
@@ -84,25 +87,36 @@ export function validateEnvironment(
     ? readConfiguredSecret(input, "AI_API_KEY", "AI_PROVIDER")
     : undefined;
 
-  const emailProvider = readProvider(input.EMAIL_PROVIDER, "EMAIL_PROVIDER");
-  const emailApiUrl = emailProvider === "configured"
-    ? readConfiguredUrl(input, "EMAIL_API_URL", "EMAIL_PROVIDER", environment === "production")
+  const emailProvider = readProvider(input.EMAIL_PROVIDER, "EMAIL_PROVIDER", ["resend"] as const);
+  if (environment === "production" && emailProvider === "resend") {
+    throw new Error("EMAIL_PROVIDER=resend is TEST/UAT only");
+  }
+  const emailApiUrl = emailProvider === "configured" || emailProvider === "resend"
+    ? readConfiguredUrl(input, "EMAIL_API_URL", "EMAIL_PROVIDER", true)
     : undefined;
-  const emailApiKey = emailProvider === "configured"
+  if (emailProvider === "resend" && emailApiUrl) assertProviderHost(emailApiUrl, "EMAIL_API_URL", "api.resend.com");
+  const emailFrom = emailProvider === "resend"
+    ? readEmailFrom(input, true)
+    : readEmailFrom(input, false);
+  const emailApiKey = emailProvider === "configured" || emailProvider === "resend"
     ? readConfiguredSecret(input, "EMAIL_API_KEY", "EMAIL_PROVIDER")
     : undefined;
 
-  const storageProvider = readProvider(input.STORAGE_PROVIDER, "STORAGE_PROVIDER");
-  const storageApiUrl = storageProvider === "configured"
-    ? readConfiguredUrl(input, "STORAGE_API_URL", "STORAGE_PROVIDER")
+  const storageProvider = readProvider(input.STORAGE_PROVIDER, "STORAGE_PROVIDER", ["r2"] as const);
+  if (environment === "production" && storageProvider === "r2") {
+    throw new Error("STORAGE_PROVIDER=r2 is TEST/UAT only");
+  }
+  const storageApiUrl = storageProvider === "configured" || storageProvider === "r2"
+    ? readConfiguredUrl(input, "STORAGE_API_URL", "STORAGE_PROVIDER", true)
     : undefined;
-  const storageAccessKeyId = storageProvider === "configured"
+  if (storageProvider === "r2" && storageApiUrl) assertProviderHost(storageApiUrl, "STORAGE_API_URL", "r2-s3");
+  const storageAccessKeyId = storageProvider === "configured" || storageProvider === "r2"
     ? readConfiguredValue(input, "STORAGE_ACCESS_KEY_ID", "STORAGE_PROVIDER")
     : undefined;
-  const storageSecretAccessKey = storageProvider === "configured"
+  const storageSecretAccessKey = storageProvider === "configured" || storageProvider === "r2"
     ? readConfiguredSecret(input, "STORAGE_SECRET_ACCESS_KEY", "STORAGE_PROVIDER")
     : undefined;
-  const storageBucket = storageProvider === "configured"
+  const storageBucket = storageProvider === "configured" || storageProvider === "r2"
     ? readConfiguredValue(input, "STORAGE_BUCKET", "STORAGE_PROVIDER")
     : undefined;
 
@@ -150,6 +164,7 @@ export function validateEnvironment(
     ...(aiApiUrl ? { AI_API_URL: aiApiUrl } : {}),
     ...(aiApiKey ? { AI_API_KEY: aiApiKey } : {}),
     ...(emailApiUrl ? { EMAIL_API_URL: emailApiUrl } : {}),
+    ...(emailFrom ? { EMAIL_FROM: emailFrom } : {}),
     ...(emailApiKey ? { EMAIL_API_KEY: emailApiKey } : {}),
     ...(storageApiUrl ? { STORAGE_API_URL: storageApiUrl } : {}),
     ...(storageAccessKeyId ? { STORAGE_ACCESS_KEY_ID: storageAccessKeyId } : {}),
@@ -233,12 +248,16 @@ function readSecret(value: unknown, name: string): string {
   return secret;
 }
 
-function readProvider(value: unknown, name: string): OptionalProvider {
+function readProvider<T extends string = never>(
+  value: unknown,
+  name: string,
+  additionalProviders: readonly T[] = [],
+): OptionalProvider | T {
   const provider = optionalString(value) ?? "disabled";
-  if (provider !== "disabled" && provider !== "configured") {
+  if (provider !== "disabled" && provider !== "configured" && !additionalProviders.includes(provider as T)) {
     throw new Error(`${name} must be disabled or configured`);
   }
-  return provider;
+  return provider as OptionalProvider | T;
 }
 
 function readConfiguredValue(
@@ -252,6 +271,29 @@ function readConfiguredValue(
     throw new Error(`${name} must be replaced when ${providerName} is configured`);
   }
   return value;
+}
+
+function readEmailFrom(input: Record<string, unknown>, required: boolean): string | undefined {
+  const rawValue = typeof input.EMAIL_FROM === "string" ? input.EMAIL_FROM : undefined;
+  if (rawValue && /[\r\n]/u.test(rawValue)) {
+    throw new Error("EMAIL_FROM must be a single safe header value");
+  }
+  const value = optionalString(rawValue);
+  if (!value && required) throw new Error("EMAIL_FROM is required when EMAIL_PROVIDER is configured");
+  if (value && value.length > 320) {
+    throw new Error("EMAIL_FROM must be a single safe header value");
+  }
+  return value;
+}
+
+function assertProviderHost(value: string, name: string, provider: "api.resend.com" | "r2-s3"): void {
+  const hostname = new URL(value).hostname.toLowerCase();
+  const valid = provider === "api.resend.com"
+    ? hostname === provider
+    : hostname.endsWith(".r2.cloudflarestorage.com");
+  if (!valid) {
+    throw new Error(`${name} must use ${provider === "api.resend.com" ? provider : "an R2 S3 endpoint"}`);
+  }
 }
 
 function readConfiguredSecret(
