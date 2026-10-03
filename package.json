@@ -14,6 +14,7 @@
     "library:import:tatoeba:sentence": "node dist/cli/library-import-tatoeba-sentence.js",
     "library:import:tatoeba:translation": "node dist/cli/library-import-tatoeba-translation.js",
     "uat:seed": "node --env-file-if-exists=.env dist/cli/uat-seed.runner.js",
+    "uat:r2:backup-restore": "node --env-file-if-exists=.env dist/cli/phase18-r2-backup-restore.js",
     "db:migrate": "node --env-file-if-exists=.env database/migrate.cjs",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js",
     "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
@@ -22,6 +23,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
     "@nestjs/common": "^12.0.1",
     "@nestjs/config": "^12.0.0",
     "@nestjs/core": "^12.0.1",
