@@ -147,6 +147,97 @@ describe("validateEnvironment", () => {
     });
   });
 
+  it("accepts the TEST/UAT Resend and R2 provider literals", () => {
+    expect(validateEnvironment({
+      ...base,
+      EMAIL_PROVIDER: "resend",
+      EMAIL_API_URL: "https://api.resend.com/emails",
+      EMAIL_FROM: "CongDongNgonNgu <onboarding@resend.dev>",
+      EMAIL_API_KEY: "local-resend-key",
+      STORAGE_PROVIDER: "r2",
+      STORAGE_API_URL: "https://account-id.r2.cloudflarestorage.com",
+      STORAGE_ACCESS_KEY_ID: "local-r2-access-key",
+      STORAGE_SECRET_ACCESS_KEY: "local-r2-secret-key",
+      STORAGE_BUCKET: "congdongngonngu",
+    })).toMatchObject({
+      EMAIL_PROVIDER: "resend",
+      EMAIL_FROM: "CongDongNgonNgu <onboarding@resend.dev>",
+      STORAGE_PROVIDER: "r2",
+      STORAGE_BUCKET: "congdongngonngu",
+    });
+  });
+
+  it("requires EMAIL_FROM for the Resend provider", () => {
+    expect(() => validateEnvironment({
+      ...base,
+      EMAIL_PROVIDER: "resend",
+      EMAIL_API_URL: "https://api.resend.com/emails",
+      EMAIL_API_KEY: "local-resend-key",
+    })).toThrow("EMAIL_FROM is required when EMAIL_PROVIDER is configured");
+  });
+
+  it("keeps Resend and R2 literal providers out of production", () => {
+    expect(() => validateEnvironment({
+      ...base,
+      NODE_ENV: "production",
+      PUBLIC_APP_URL: "https://app.example.test",
+      CORS_ALLOWED_ORIGINS: "https://app.example.test",
+      EMAIL_PROVIDER: "resend",
+      EMAIL_API_URL: "https://api.resend.com",
+      EMAIL_FROM: "CongDongNgonNgu <onboarding@resend.dev>",
+      EMAIL_API_KEY: "local-resend-key",
+    })).toThrow("EMAIL_PROVIDER=resend is TEST/UAT only");
+
+    expect(() => validateEnvironment({
+      ...base,
+      NODE_ENV: "production",
+      PUBLIC_APP_URL: "https://app.example.test",
+      CORS_ALLOWED_ORIGINS: "https://app.example.test",
+      STORAGE_PROVIDER: "r2",
+      STORAGE_API_URL: "https://account-id.r2.cloudflarestorage.com",
+      STORAGE_ACCESS_KEY_ID: "local-r2-access-key",
+      STORAGE_SECRET_ACCESS_KEY: "local-r2-secret-key",
+      STORAGE_BUCKET: "congdongngonngu",
+    })).toThrow("STORAGE_PROVIDER=r2 is TEST/UAT only");
+  });
+
+  it("requires secure provider endpoints and pins named providers to their vendor hosts", () => {
+    expect(() => validateEnvironment({
+      ...base,
+      EMAIL_PROVIDER: "resend",
+      EMAIL_API_URL: "http://api.resend.com",
+      EMAIL_FROM: "CongDongNgonNgu <onboarding@resend.dev>",
+      EMAIL_API_KEY: "local-resend-key",
+    })).toThrow("EMAIL_API_URL must use HTTPS");
+
+    expect(() => validateEnvironment({
+      ...base,
+      EMAIL_PROVIDER: "resend",
+      EMAIL_API_URL: "https://mailer.example.test",
+      EMAIL_FROM: "CongDongNgonNgu <onboarding@resend.dev>",
+      EMAIL_API_KEY: "local-resend-key",
+    })).toThrow("EMAIL_API_URL must use api.resend.com");
+
+    expect(() => validateEnvironment({
+      ...base,
+      STORAGE_PROVIDER: "r2",
+      STORAGE_API_URL: "https://storage.example.test",
+      STORAGE_ACCESS_KEY_ID: "local-r2-access-key",
+      STORAGE_SECRET_ACCESS_KEY: "local-r2-secret-key",
+      STORAGE_BUCKET: "congdongngonngu",
+    })).toThrow("STORAGE_API_URL must use an R2 S3 endpoint");
+  });
+
+  it("rejects header injection in EMAIL_FROM before trimming", () => {
+    expect(() => validateEnvironment({
+      ...base,
+      EMAIL_PROVIDER: "resend",
+      EMAIL_API_URL: "https://api.resend.com",
+      EMAIL_FROM: "\r\nCongDongNgonNgu <onboarding@resend.dev>",
+      EMAIL_API_KEY: "local-resend-key",
+    })).toThrow("EMAIL_FROM must be a single safe header value");
+  });
+
   it("fails closed when a configured AI provider has no API key", () => {
     expect(() => validateEnvironment({
       ...base,
