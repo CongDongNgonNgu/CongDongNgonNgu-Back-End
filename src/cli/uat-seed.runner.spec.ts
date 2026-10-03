@@ -16,7 +16,7 @@ class TestWriter {
   }
 }
 
-function createDatabase(options: { failAfterBegin?: boolean } = {}): {
+function createDatabase(options: { failAfterBegin?: boolean; existingChallenge?: boolean } = {}): {
   database: UatSeedDatabaseClient;
   queries: string[];
 } {
@@ -49,6 +49,17 @@ function createDatabase(options: { failAfterBegin?: boolean } = {}): {
       if (text.includes('INSERT INTO user_languages')) {
         languageSequence += 1;
         return { rows: [{ id: `user-language-${languageSequence}` }] as unknown as T[] };
+      }
+      if (text.includes('FROM challenges')) {
+        return {
+          rows: (options.existingChallenge ? [{ id: 'existing-challenge' }] : []) as unknown as T[],
+        };
+      }
+      if (text.includes('UPDATE challenges')) {
+        return { rows: [{ id: 'existing-challenge' }] as unknown as T[] };
+      }
+      if (text.includes('INSERT INTO challenges')) {
+        return { rows: [{ id: 'challenge-1' }] as unknown as T[] };
       }
       return { rows: [] as T[] };
     },
@@ -104,6 +115,30 @@ describe('Phase 18 UAT seed runner', () => {
     expect(queries).toContain('BEGIN');
     expect(queries).toContain('ROLLBACK');
     expect(queries).not.toContain('COMMIT');
+  });
+
+  it('adds the deterministic challenge fixture when the seeded admin persona is present', async () => {
+    const { database, queries } = createDatabase();
+
+    const result = await seedUatPersonas(database, 'hashed-test-password', getPersona('admin'));
+
+    expect(result.challenges).toEqual([
+      { key: 'phase18-challenge-progress', id: 'challenge-1' },
+    ]);
+    expect(queries.some((query) => query.includes('FROM challenges'))).toBe(true);
+    expect(queries.some((query) => query.includes('INSERT INTO challenges'))).toBe(true);
+  });
+
+  it('updates the existing deterministic challenge fixture instead of creating a duplicate', async () => {
+    const { database, queries } = createDatabase({ existingChallenge: true });
+
+    const result = await seedUatPersonas(database, 'hashed-test-password', getPersona('admin'));
+
+    expect(result.challenges).toEqual([
+      { key: 'phase18-challenge-progress', id: 'existing-challenge' },
+    ]);
+    expect(queries.some((query) => query.includes('UPDATE challenges'))).toBe(true);
+    expect(queries.some((query) => query.includes('INSERT INTO challenges'))).toBe(false);
   });
 
   it('supports dry-run without opening a database connection', async () => {

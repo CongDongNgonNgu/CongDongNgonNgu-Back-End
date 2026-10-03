@@ -181,6 +181,9 @@ export function createEmailProvider(config: ConfigService): EmailProvider {
       return new ConfiguredEmailProvider(config, apiUrl, apiKey, {
         transport: provider === 'resend' ? 'resend' : 'generic',
         ...(from ? { from } : {}),
+        ...(provider === 'resend' && (environment === 'development' || environment === 'test')
+          ? { allowUatTestEmail: true }
+          : {}),
       });
     }
     return new FailClosedEmailProvider();

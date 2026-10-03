@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
-import { ConfiguredEmailProvider, EMAIL_PROVIDER_REQUEST_TIMEOUT_MS, EmailDeliveryError } from './email.provider';
+import { ConfiguredEmailProvider, createEmailProvider, EMAIL_PROVIDER_REQUEST_TIMEOUT_MS, EmailDeliveryError } from './email.provider';
 
 describe('ConfiguredEmailProvider', () => {
   afterEach(() => {
@@ -83,6 +83,29 @@ describe('ConfiguredEmailProvider', () => {
     );
 
     await expect(provider.sendUatTestEmail({
+      correlationId: 'uat-correlation-id',
+    })).resolves.toEqual({ providerMessageId: 'uat-message-id' });
+  });
+
+  it('enables the safe UAT test email through the non-production Resend factory path', async () => {
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'uat-message-id' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const values: Record<string, unknown> = {
+      'app.environment': 'development',
+      'providers.email': 'resend',
+      'providers.emailApiUrl': 'https://api.resend.com',
+      'providers.emailApiKey': 'api-key',
+      'providers.emailFrom': 'CongDongNgonNgu <onboarding@resend.dev>',
+    };
+    const provider = createEmailProvider({
+      get: (key: string) => values[key],
+    } as never);
+
+    await expect((provider as ConfiguredEmailProvider).sendUatTestEmail({
       correlationId: 'uat-correlation-id',
     })).resolves.toEqual({ providerMessageId: 'uat-message-id' });
   });
