@@ -341,7 +341,7 @@ function mapChallengeRow(row: QueryResultRow): ChallengeRecord {
     endAt: toDate(row.ends_at),
     timezone: String(row.timezone),
     goal: { unit: row.goal_unit, target: Number(row.goal_target) },
-    eligibleActivityTypes: [...(row.eligible_activity_types as ChallengeActivityType[])],
+    eligibleActivityTypes: parseChallengeActivityTypes(row.eligible_activity_types),
     ruleVersion: String(row.rule_version),
     reward: row.reward_event_type
       ? { eventType: String(row.reward_event_type), ruleVersion: String(row.reward_rule_version) }
@@ -350,6 +350,19 @@ function mapChallengeRow(row: QueryResultRow): ChallengeRecord {
     createdAt: toDate(row.created_at),
     updatedAt: toDate(row.updated_at),
   };
+}
+
+function parseChallengeActivityTypes(value: unknown): ChallengeActivityType[] {
+  if (Array.isArray(value)) return value.map((item) => String(item)) as ChallengeActivityType[];
+  if (typeof value !== 'string') return [];
+  const normalized = value.trim();
+  if (!normalized.startsWith('{') || !normalized.endsWith('}')) return [];
+  const content = normalized.slice(1, -1).trim();
+  if (!content) return [];
+  return content
+    .split(',')
+    .map((item) => item.trim().replace(/^"|"$/gu, ''))
+    .filter(Boolean) as ChallengeActivityType[];
 }
 
 function mapParticipationRow(row: QueryResultRow): ChallengeParticipationRecord {

@@ -32,9 +32,20 @@ export interface UatSeededPersona {
   userId: string;
 }
 
+export interface UatSeededChallenge {
+  key: string;
+  id: string;
+}
+
 export interface UatSeedResult {
   personas: readonly UatSeededPersona[];
+  challenges: readonly UatSeededChallenge[];
 }
+
+const UAT_CHALLENGE_KEY = 'phase18-challenge-progress';
+const UAT_CHALLENGE_TITLE = 'Phase 18 UAT Challenge';
+const UAT_CHALLENGE_DESCRIPTION = 'Deterministic TEST/UAT challenge fixture for Phase 18 progress verification.';
+const UAT_CHALLENGE_RULE_VERSION = 'phase18-uat-challenge-v1';
 
 export async function seedUatPersonas(
   database: UatSeedDatabaseClient,
@@ -62,6 +73,7 @@ export async function seedUatPersonas(
     await database.query('BEGIN');
     transactionStarted = true;
     const seeded: UatSeededPersona[] = [];
+    const seededPersonaIds = new Map<string, string>();
 
     for (const persona of personas) {
       const userId = await upsertUser(database, persona, passwordHash);
@@ -78,10 +90,12 @@ export async function seedUatPersonas(
 
       await upsertExchange(database, userId, persona, relationIds);
       seeded.push({ key: persona.key, userId });
+      seededPersonaIds.set(persona.key, userId);
     }
 
+    const challenges = await upsertUatChallenges(database, seededPersonaIds, languageIds);
     await database.query('COMMIT');
-    return { personas: seeded };
+    return { personas: seeded, challenges };
   } catch (error) {
     if (transactionStarted) await database.query('ROLLBACK').catch(() => undefined);
     throw error;
@@ -166,6 +180,8 @@ export async function executeUatSeedCli(
       environment: target.environment,
       seededPersonaCount: result.personas.length,
       seededPersonaKeys: result.personas.map((persona) => persona.key),
+      seededChallengeCount: result.challenges.length,
+      seededChallengeKeys: result.challenges.map((challenge) => challenge.key),
     }) + '\n');
     return 0;
   } catch (error) {
@@ -203,6 +219,70 @@ async function upsertUser(
   const userId = result.rows[0]?.id;
   if (!userId) throw new UatSeedError('UAT_SEED_USER_WRITE_FAILED', 'A seeded user id was not returned.');
   return userId;
+}
+
+async function upsertUatChallenges(
+  database: UatSeedDatabaseClient,
+  seededPersonaIds: ReadonlyMap<string, string>,
+  languageIds: ReadonlyMap<string, string>,
+): Promise<UatSeededChallenge[]> {
+  const creatorId = seededPersonaIds.get('admin');
+  const languageId = languageIds.get('vi');
+  if (!creatorId || !languageId) return [];
+
+  const existing = await database.query<{ id: string }>(
+    `SELECT id::text AS id
+       FROM challenges
+      WHERE created_by_user_id = $1
+        AND title = $2
+        AND rule_version = $3
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+      FOR UPDATE`,
+    [creatorId, UAT_CHALLENGE_TITLE, UAT_CHALLENGE_RULE_VERSION],
+  );
+  const existingId = existing.rows[0]?.id;
+  const result = existingId
+    ? await database.query<{ id: string }>(
+      `UPDATE challenges
+          SET description = $2,
+              challenge_type = 'SENTENCE_PRACTICE'::challenge_type,
+              language_id = $3,
+              level = 'A2',
+              topic = $4,
+              starts_at = now() - interval '1 day',
+              ends_at = now() + interval '30 days',
+              timezone = 'Asia/Ho_Chi_Minh',
+              goal_unit = 'ACTIVITIES'::challenge_goal_unit,
+              goal_target = 2,
+              eligible_activity_types = ARRAY['PRACTICE_COMPLETED']::challenge_activity_type[],
+              rule_version = $5,
+              reward_event_type = NULL,
+              reward_rule_version = NULL,
+              status = 'ACTIVE'::challenge_status,
+              updated_at = now()
+        WHERE id = $1
+        RETURNING id::text AS id`,
+      [existingId, UAT_CHALLENGE_DESCRIPTION, languageId, 'Phase 18', UAT_CHALLENGE_RULE_VERSION],
+    )
+    : await database.query<{ id: string }>(
+      `INSERT INTO challenges (
+         created_by_user_id, title, description, challenge_type, language_id, level, topic,
+         starts_at, ends_at, timezone, goal_unit, goal_target, eligible_activity_types,
+         rule_version, reward_event_type, reward_rule_version, status
+       ) VALUES (
+         $1, $2, $3, 'SENTENCE_PRACTICE'::challenge_type, $4, 'A2', $5,
+         now() - interval '1 day', now() + interval '30 days', 'Asia/Ho_Chi_Minh',
+         'ACTIVITIES'::challenge_goal_unit, 2,
+         ARRAY['PRACTICE_COMPLETED']::challenge_activity_type[], $6, NULL, NULL,
+         'ACTIVE'::challenge_status
+       )
+       RETURNING id::text AS id`,
+      [creatorId, UAT_CHALLENGE_TITLE, UAT_CHALLENGE_DESCRIPTION, languageId, 'Phase 18', UAT_CHALLENGE_RULE_VERSION],
+    );
+  const id = result.rows[0]?.id;
+  if (!id) throw new UatSeedError('UAT_SEED_CHALLENGE_WRITE_FAILED', 'The deterministic challenge fixture id was not returned.');
+  return [{ key: UAT_CHALLENGE_KEY, id }];
 }
 
 async function upsertRoles(
