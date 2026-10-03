@@ -20,7 +20,6 @@ import {
   type MembershipWebhookProcessingResult,
   type RedeemMembershipCreditInput,
 } from './membership.fulfillment.types';
-import { PAYOS_PROVIDER_CODE } from './membership.fulfillment.types';
 import {
   MEMBERSHIP_WEBHOOK_VERIFIER,
   MembershipWebhookValidationError,
@@ -70,7 +69,7 @@ export class MembershipFulfillmentService {
     private readonly notificationEvents?: NotificationDomainEventSink,
   ) {}
 
-  async handlePayOsWebhook(payload: unknown): Promise<MembershipWebhookResponse> {
+  async handleWebhook(payload: unknown): Promise<MembershipWebhookResponse> {
     let verified;
     try {
       verified = this.webhookVerifier.verify(payload);
@@ -97,7 +96,7 @@ export class MembershipFulfillmentService {
         };
       }
     }
-    await this.publishFulfillmentNotifications(result, recorded.settlementId);
+    await this.publishFulfillmentNotifications(result, recorded.settlementId, verified.providerCode);
     return {
       accepted: result.outcome === 'FULFILLED' ||
         result.outcome === 'REPLAYED' ||
@@ -105,6 +104,10 @@ export class MembershipFulfillmentService {
       outcome: result.outcome,
       retryable: result.outcome === 'FULFILLMENT_RETRYABLE',
     };
+  }
+
+  async handlePayOsWebhook(payload: unknown): Promise<MembershipWebhookResponse> {
+    return this.handleWebhook(payload);
   }
 
   async redeemContributionCredit(
@@ -180,13 +183,15 @@ export class MembershipFulfillmentService {
   private async publishFulfillmentNotifications(
     result: MembershipWebhookProcessingResult,
     settlementId: string | null,
+    providerCode: string,
   ): Promise<void> {
     if (!this.notificationEvents || !result.subscription) return;
     if (result.outcome !== 'FULFILLED' && result.outcome !== 'REPLAYED') return;
     await this.publishMembershipActivatedNotification(
       result.subscription,
-      PAYOS_PROVIDER_CODE.toUpperCase(),
+      providerCode.toUpperCase(),
       result.subscription.id,
+      'PROVIDER',
     );
     if (settlementId) {
       await this.notificationEvents.publish(createNotificationDomainEvent({
@@ -194,7 +199,7 @@ export class MembershipFulfillmentService {
         eventType: 'membership.payment.fulfilled',
         aggregateType: 'MEMBERSHIP_SUBSCRIPTION',
         aggregateId: result.subscription.id,
-        actor: { kind: 'PROVIDER', code: PAYOS_PROVIDER_CODE.toUpperCase() },
+        actor: { kind: 'PROVIDER', code: providerCode.toUpperCase() },
         recipientUserId: result.subscription.userId,
         occurredAt: result.subscription.createdAt,
         idempotencyKey: `membership.payment.fulfilled:${settlementId}:v1`,
@@ -212,9 +217,10 @@ export class MembershipFulfillmentService {
     subscription: NonNullable<MembershipWebhookProcessingResult['subscription']>,
     actorCode: string,
     eventId: string,
+    actorKind: 'PROVIDER' | 'SYSTEM' = 'SYSTEM',
   ): Promise<void> {
     if (!this.notificationEvents) return;
-    const actor = actorCode === PAYOS_PROVIDER_CODE.toUpperCase()
+    const actor = actorKind === 'PROVIDER'
       ? { kind: 'PROVIDER' as const, code: actorCode }
       : { kind: 'SYSTEM' as const, code: actorCode };
     await this.notificationEvents.publish(createNotificationDomainEvent({

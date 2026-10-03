@@ -24,12 +24,20 @@ export class MembershipPaymentProviderError extends Error {
   }
 }
 
+export interface MembershipPaymentCapabilities {
+  available: boolean;
+  qrAvailable: boolean;
+  provider: string | null;
+}
+
 export interface CreateMembershipCheckoutInput {
   localAttemptReference: string;
   amountMinor: bigint;
   currency: MembershipPaymentCurrency;
   description: string;
   expiresAt: Date;
+  returnUrl: string;
+  cancelUrl: string;
 }
 
 export interface CreatedMembershipCheckout {
@@ -42,6 +50,7 @@ export interface CreatedMembershipCheckout {
 export interface MembershipPaymentProvider {
   readonly code: string;
   isAvailable(): boolean;
+  getCapabilities(): MembershipPaymentCapabilities;
   createCheckout(input: CreateMembershipCheckoutInput): Promise<CreatedMembershipCheckout>;
 }
 
@@ -57,6 +66,10 @@ export class DisabledMembershipPaymentProvider implements MembershipPaymentProvi
 
   isAvailable(): boolean {
     return false;
+  }
+
+  getCapabilities(): MembershipPaymentCapabilities {
+    return { available: false, qrAvailable: false, provider: null };
   }
 
   createCheckout(_input: CreateMembershipCheckoutInput): Promise<CreatedMembershipCheckout> {

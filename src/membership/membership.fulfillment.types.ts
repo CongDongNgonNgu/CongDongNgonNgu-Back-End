@@ -27,7 +27,7 @@ export const MEMBERSHIP_FULFILLMENT_OUTCOMES = [
 export type MembershipFulfillmentOutcome = typeof MEMBERSHIP_FULFILLMENT_OUTCOMES[number];
 
 export interface VerifiedMembershipWebhook {
-  providerCode: typeof PAYOS_PROVIDER_CODE;
+  providerCode: string;
   eventKey: string;
   eventType: MembershipWebhookEventType;
   providerReference: string;

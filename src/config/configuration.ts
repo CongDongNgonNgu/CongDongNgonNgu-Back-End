@@ -52,9 +52,11 @@ export interface RuntimeConfig {
     realtimeApiUrl?: string;
     realtimeApiKey?: string;
     payment: ValidatedEnvironment["PAYMENT_PROVIDER"];
-    paymentApiUrl?: string;
-    paymentApiKey?: string;
-    paymentWebhookSecret?: string;
+    paymentQrEnabled: boolean;
+    payosApiUrl?: string;
+    payosClientId?: string;
+    payosApiKey?: string;
+    payosChecksumKey?: string;
     redisUrl?: string;
   };
 }
@@ -101,9 +103,11 @@ export function buildConfiguration(env: ValidatedEnvironment): RuntimeConfig {
       ...(env.REALTIME_API_URL ? { realtimeApiUrl: env.REALTIME_API_URL } : {}),
       ...(env.REALTIME_API_KEY ? { realtimeApiKey: env.REALTIME_API_KEY } : {}),
       payment: env.PAYMENT_PROVIDER,
-      ...(env.PAYMENT_API_URL ? { paymentApiUrl: env.PAYMENT_API_URL } : {}),
-      ...(env.PAYMENT_API_KEY ? { paymentApiKey: env.PAYMENT_API_KEY } : {}),
-      ...(env.PAYMENT_WEBHOOK_SECRET ? { paymentWebhookSecret: env.PAYMENT_WEBHOOK_SECRET } : {}),
+      paymentQrEnabled: env.PAYMENT_QR_ENABLED,
+      ...(env.PAYOS_API_URL ? { payosApiUrl: env.PAYOS_API_URL } : {}),
+      ...(env.PAYOS_CLIENT_ID ? { payosClientId: env.PAYOS_CLIENT_ID } : {}),
+      ...(env.PAYOS_API_KEY ? { payosApiKey: env.PAYOS_API_KEY } : {}),
+      ...(env.PAYOS_CHECKSUM_KEY ? { payosChecksumKey: env.PAYOS_CHECKSUM_KEY } : {}),
       ...(env.REDIS_URL ? { redisUrl: env.REDIS_URL } : {}),
     },
   };

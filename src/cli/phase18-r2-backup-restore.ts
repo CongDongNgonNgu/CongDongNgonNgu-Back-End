@@ -453,6 +453,10 @@ function cleanChildEnvironment(): NodeJS.ProcessEnv {
     'STORAGE_SECRET_ACCESS_KEY',
     'STORAGE_TOKEN_VALUE',
     'EMAIL_API_KEY',
+    'PAYOS_CLIENT_ID',
+    'PAYOS_API_KEY',
+    'PAYOS_CHECKSUM_KEY',
+    'PAYMENT_API_URL',
     'PAYMENT_API_KEY',
     'PAYMENT_WEBHOOK_SECRET',
   ]) delete environment[name];

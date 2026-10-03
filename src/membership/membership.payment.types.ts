@@ -84,6 +84,11 @@ export interface MembershipCatalogResponse {
     benefits: MembershipPublicBenefit[];
   };
   plans: MembershipCatalogPlanResponse[];
+  payment: {
+    available: boolean;
+    qrAvailable: boolean;
+    provider: string | null;
+  };
   evaluatedAt: string;
 }
 

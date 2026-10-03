@@ -71,6 +71,7 @@ describe("validateEnvironment", () => {
       PORT: 3000,
       AI_PROVIDER: "disabled",
       PAYMENT_PROVIDER: "disabled",
+      PAYMENT_QR_ENABLED: false,
       AUTH_PERSISTENCE: "memory",
       AUTH_ACCESS_TTL_SECONDS: 900,
       AUTH_REFRESH_TTL_SECONDS: 2592000,
@@ -133,6 +134,7 @@ describe("validateEnvironment", () => {
       OAUTH_PROVIDER: "disabled",
       AI_PROVIDER: "disabled",
       PAYMENT_PROVIDER: "disabled",
+      PAYMENT_QR_ENABLED: "false",
       EMAIL_PROVIDER: "disabled",
       STORAGE_PROVIDER: "disabled",
       REALTIME_PROVIDER: "disabled",
@@ -144,7 +146,49 @@ describe("validateEnvironment", () => {
       EMAIL_PROVIDER: "disabled",
       STORAGE_PROVIDER: "disabled",
       REALTIME_PROVIDER: "disabled",
+      PAYMENT_QR_ENABLED: false,
     });
+  });
+
+  it('accepts PayOS schema without exposing generic legacy payment fields', () => {
+    expect(validateEnvironment({
+      ...base,
+      PAYMENT_PROVIDER: 'payos',
+      PAYMENT_QR_ENABLED: 'true',
+      PAYOS_API_URL: 'https://api-merchant.payos.vn',
+      PAYOS_CLIENT_ID: 'client-id',
+      PAYOS_API_KEY: 'api-key',
+      PAYOS_CHECKSUM_KEY: 'checksum-key',
+    })).toMatchObject({
+      PAYMENT_PROVIDER: 'payos',
+      PAYMENT_QR_ENABLED: true,
+      PAYOS_API_URL: 'https://api-merchant.payos.vn',
+      PAYOS_CLIENT_ID: 'client-id',
+      PAYOS_API_KEY: 'api-key',
+      PAYOS_CHECKSUM_KEY: 'checksum-key',
+    });
+  });
+
+  it('rejects the legacy generic payment provider literal', () => {
+    expect(() => validateEnvironment({
+      ...base,
+      PAYMENT_PROVIDER: 'configured',
+    })).toThrow('PAYMENT_PROVIDER must be disabled or payos');
+  });
+
+  it('pins a configured PayOS endpoint to the official merchant host', () => {
+    expect(() => validateEnvironment({
+      ...base,
+      PAYMENT_PROVIDER: 'payos',
+      PAYOS_API_URL: 'https://payments.example.test',
+    })).toThrow('PAYOS_API_URL must use api-merchant.payos.vn');
+  });
+
+  it('rejects an invalid payment QR flag instead of guessing its meaning', () => {
+    expect(() => validateEnvironment({
+      ...base,
+      PAYMENT_QR_ENABLED: 'enabled',
+    })).toThrow('PAYMENT_QR_ENABLED must be true or false');
   });
 
   it("accepts the TEST/UAT Resend and R2 provider literals", () => {

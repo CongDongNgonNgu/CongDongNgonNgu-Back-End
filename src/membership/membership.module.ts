@@ -29,6 +29,7 @@ import {
   createDisabledMembershipPaymentProvider,
   MEMBERSHIP_PAYMENT_PROVIDER,
 } from './membership.payment-provider';
+import { PayOsMembershipPaymentProvider } from './payos-payment-provider';
 import {
   InMemoryMembershipPaymentRepository,
   MEMBERSHIP_PAYMENT_REPOSITORY,
@@ -91,7 +92,14 @@ interface MembershipRuntimeConfig {
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
         const providers = config.get<RuntimeConfig['providers']>('providers');
-        return createDisabledMembershipPaymentProvider(providers?.payment === 'configured');
+        if (providers?.payment !== 'payos') return createDisabledMembershipPaymentProvider(false);
+        return new PayOsMembershipPaymentProvider({
+          apiUrl: providers.payosApiUrl,
+          clientId: providers.payosClientId,
+          apiKey: providers.payosApiKey,
+          checksumKey: providers.payosChecksumKey,
+          qrEnabled: providers.paymentQrEnabled,
+        });
       },
     },
     {
@@ -112,8 +120,8 @@ interface MembershipRuntimeConfig {
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
         const providers = config.get<RuntimeConfig['providers']>('providers');
-        const secret = providers?.paymentWebhookSecret;
-        if (providers?.payment === 'configured' && secret) return new PayOsMembershipWebhookVerifier(secret);
+        const checksumKey = providers?.payosChecksumKey;
+        if (providers?.payment === 'payos' && checksumKey) return new PayOsMembershipWebhookVerifier(checksumKey);
         return new UnavailableMembershipWebhookVerifier();
       },
     },

@@ -50,6 +50,10 @@ class E2ePaymentProvider implements MembershipPaymentProvider {
     return true;
   }
 
+  getCapabilities() {
+    return { available: true, qrAvailable: true, provider: this.code };
+  }
+
   async createCheckout(_input: CreateMembershipCheckoutInput) {
     return {
       providerReference: 'e2e-provider-reference',
@@ -115,7 +119,8 @@ describe('membership checkout/payment API', () => {
       }],
     });
     expect(response.body.data.plans[0].price).not.toHaveProperty('availableFrom');
-    expect(JSON.stringify(response.body.data)).not.toMatch(/provider|webhook|userId|raw_payload/iu);
+    expect(response.body.data.payment).toEqual({ available: true, qrAvailable: true, provider: 'e2e-provider' });
+    expect(JSON.stringify(response.body.data)).not.toMatch(/apiKey|checksum|webhook|userId|raw_payload/iu);
   });
 
   it('rejects unauthenticated access and client-controlled trusted fields', async () => {

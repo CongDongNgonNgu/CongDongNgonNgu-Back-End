@@ -4,6 +4,7 @@ export type RuntimeEnvironment = "development" | "test" | "production";
 export type OptionalProvider = "disabled" | "configured";
 export type EmailProviderSetting = OptionalProvider | "resend";
 export type StorageProviderSetting = OptionalProvider | "r2";
+export type PaymentProviderSetting = "disabled" | "payos";
 
 export interface ValidatedEnvironment {
   NODE_ENV: RuntimeEnvironment;
@@ -35,10 +36,12 @@ export interface ValidatedEnvironment {
   REALTIME_PROVIDER: OptionalProvider;
   REALTIME_API_URL?: string;
   REALTIME_API_KEY?: string;
-  PAYMENT_PROVIDER: OptionalProvider;
-  PAYMENT_API_URL?: string;
-  PAYMENT_API_KEY?: string;
-  PAYMENT_WEBHOOK_SECRET?: string;
+  PAYMENT_PROVIDER: PaymentProviderSetting;
+  PAYMENT_QR_ENABLED: boolean;
+  PAYOS_API_URL?: string;
+  PAYOS_CLIENT_ID?: string;
+  PAYOS_API_KEY?: string;
+  PAYOS_CHECKSUM_KEY?: string;
 }
 
 export function validateEnvironment(
@@ -128,16 +131,15 @@ export function validateEnvironment(
     ? readConfiguredSecret(input, "REALTIME_API_KEY", "REALTIME_PROVIDER")
     : undefined;
 
-  const paymentProvider = readProvider(input.PAYMENT_PROVIDER, "PAYMENT_PROVIDER");
-  const paymentApiUrl = paymentProvider === "configured"
-    ? readConfiguredUrl(input, "PAYMENT_API_URL", "PAYMENT_PROVIDER")
+  const paymentProvider = readPaymentProvider(input.PAYMENT_PROVIDER);
+  const paymentQrEnabled = readBoolean(input.PAYMENT_QR_ENABLED, "PAYMENT_QR_ENABLED", false);
+  const payosApiUrl = optionalString(input.PAYOS_API_URL)
+    ? readHttpUrl(input.PAYOS_API_URL, "PAYOS_API_URL", environment === "production")
     : undefined;
-  const paymentApiKey = paymentProvider === "configured"
-    ? readConfiguredSecret(input, "PAYMENT_API_KEY", "PAYMENT_PROVIDER")
-    : undefined;
-  const paymentWebhookSecret = paymentProvider === "configured"
-    ? readConfiguredSecret(input, "PAYMENT_WEBHOOK_SECRET", "PAYMENT_PROVIDER")
-    : undefined;
+  if (payosApiUrl) assertProviderHost(payosApiUrl, "PAYOS_API_URL", "api-merchant.payos.vn");
+  const payosClientId = optionalString(input.PAYOS_CLIENT_ID);
+  const payosApiKey = optionalString(input.PAYOS_API_KEY);
+  const payosChecksumKey = optionalString(input.PAYOS_CHECKSUM_KEY);
 
   const result: Omit<
     ValidatedEnvironment,
@@ -157,6 +159,7 @@ export function validateEnvironment(
     STORAGE_PROVIDER: storageProvider,
     REALTIME_PROVIDER: realtimeProvider,
     PAYMENT_PROVIDER: paymentProvider,
+    PAYMENT_QR_ENABLED: paymentQrEnabled,
     ...(sessionSecret ? { SESSION_SECRET: sessionSecret } : {}),
     ...(oauthClientId ? { OAUTH_CLIENT_ID: oauthClientId } : {}),
     ...(oauthClientSecret ? { OAUTH_CLIENT_SECRET: oauthClientSecret } : {}),
@@ -172,9 +175,10 @@ export function validateEnvironment(
     ...(storageBucket ? { STORAGE_BUCKET: storageBucket } : {}),
     ...(realtimeApiUrl ? { REALTIME_API_URL: realtimeApiUrl } : {}),
     ...(realtimeApiKey ? { REALTIME_API_KEY: realtimeApiKey } : {}),
-    ...(paymentApiUrl ? { PAYMENT_API_URL: paymentApiUrl } : {}),
-    ...(paymentApiKey ? { PAYMENT_API_KEY: paymentApiKey } : {}),
-    ...(paymentWebhookSecret ? { PAYMENT_WEBHOOK_SECRET: paymentWebhookSecret } : {}),
+    ...(payosApiUrl ? { PAYOS_API_URL: payosApiUrl } : {}),
+    ...(payosClientId ? { PAYOS_CLIENT_ID: payosClientId } : {}),
+    ...(payosApiKey ? { PAYOS_API_KEY: payosApiKey } : {}),
+    ...(payosChecksumKey ? { PAYOS_CHECKSUM_KEY: payosChecksumKey } : {}),
   };
 
   const redisUrl = optionalString(input.REDIS_URL);
@@ -255,9 +259,17 @@ function readProvider<T extends string = never>(
 ): OptionalProvider | T {
   const provider = optionalString(value) ?? "disabled";
   if (provider !== "disabled" && provider !== "configured" && !additionalProviders.includes(provider as T)) {
-    throw new Error(`${name} must be disabled or configured`);
+    throw new Error(`${name} must be disabled, configured, or a supported provider literal`);
   }
   return provider as OptionalProvider | T;
+}
+
+function readPaymentProvider(value: unknown): PaymentProviderSetting {
+  const provider = optionalString(value) ?? "disabled";
+  if (provider !== "disabled" && provider !== "payos") {
+    throw new Error("PAYMENT_PROVIDER must be disabled or payos");
+  }
+  return provider;
 }
 
 function readConfiguredValue(
@@ -286,14 +298,24 @@ function readEmailFrom(input: Record<string, unknown>, required: boolean): strin
   return value;
 }
 
-function assertProviderHost(value: string, name: string, provider: "api.resend.com" | "r2-s3"): void {
+function assertProviderHost(value: string, name: string, provider: "api.resend.com" | "r2-s3" | "api-merchant.payos.vn"): void {
   const hostname = new URL(value).hostname.toLowerCase();
   const valid = provider === "api.resend.com"
     ? hostname === provider
-    : hostname.endsWith(".r2.cloudflarestorage.com");
+    : provider === "api-merchant.payos.vn"
+      ? hostname === provider
+      : hostname.endsWith(".r2.cloudflarestorage.com");
   if (!valid) {
-    throw new Error(`${name} must use ${provider === "api.resend.com" ? provider : "an R2 S3 endpoint"}`);
+    throw new Error(`${name} must use ${provider === "api.resend.com" ? provider : provider === "api-merchant.payos.vn" ? provider : "an R2 S3 endpoint"}`);
   }
+}
+
+function readBoolean(value: unknown, name: string, defaultValue: boolean): boolean {
+  const normalized = optionalString(value);
+  if (!normalized) return defaultValue;
+  if (normalized.toLowerCase() === "true") return true;
+  if (normalized.toLowerCase() === "false") return false;
+  throw new Error(`${name} must be true or false`);
 }
 
 function readConfiguredSecret(
