@@ -57,6 +57,42 @@ describe('event participation orchestration', () => {
     expect(await participation.listReminderIntents(event.id)).toHaveLength(4);
   });
 
+  it('enforces registration ownership and makes cancelled retries deterministic', async () => {
+    const { service, rooms, participation } = await createService();
+    const room = await createRoom(rooms, 'LIVE');
+    const event = await service.createEvent(
+      HOST_ID,
+      createInput(room.id, {
+        startAt: '2026-10-10T02:00:00.000Z',
+        endAt: '2026-10-10T03:00:00.000Z',
+      }),
+      NOW,
+    );
+    await service.registerEvent(event.id, LEARNER_A, NOW);
+
+    await expect(service.cancelRegistration(event.id, LEARNER_B, NOW)).rejects.toMatchObject({
+      code: 'EVENT_REGISTRATION_NOT_FOUND',
+    });
+    expect((await participation.findRegistration(event.id, LEARNER_A))?.status).toBe('REGISTERED');
+
+    const first = await service.cancelRegistration(event.id, LEARNER_A, NOW);
+    const retry = await service.cancelRegistration(
+      event.id,
+      LEARNER_A,
+      at('2026-10-02T00:00:00.000Z'),
+    );
+    expect(first).toMatchObject({
+      outcome: 'CANCELLED',
+      replayed: false,
+      registration: { status: 'CANCELLED', cancelledAt: NOW },
+    });
+    expect(retry).toMatchObject({
+      outcome: 'REPLAYED',
+      replayed: true,
+      registration: { status: 'CANCELLED', cancelledAt: NOW },
+    });
+  });
+
   it('enforces private invitation access and never treats the host as an attendee', async () => {
     const { service, rooms } = await createService();
     const room = await createRoom(rooms, 'LIVE');
