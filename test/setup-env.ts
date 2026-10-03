@@ -15,5 +15,6 @@ process.env.EMAIL_PROVIDER = "disabled";
 process.env.STORAGE_PROVIDER = "disabled";
 process.env.REALTIME_PROVIDER = "disabled";
 process.env.PAYMENT_PROVIDER = "disabled";
+process.env.PAYMENT_QR_ENABLED = "false";
 process.env.SESSION_STORE = "disabled";
 process.env.REDIS_URL = "";

@@ -9,6 +9,7 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { MembershipAuthorizationService } from './membership.service';
 import { getFreePublicMembershipBenefits } from './membership.policy';
 import {
@@ -35,6 +36,7 @@ import {
   type MembershipPaymentAttemptResponse,
   type MembershipCatalogResponse,
 } from './membership.payment.types';
+import type { RuntimeConfig } from '../config/configuration';
 
 export const MEMBERSHIP_PAYMENT_CLOCK = 'MEMBERSHIP_PAYMENT_CLOCK';
 
@@ -56,6 +58,8 @@ export class MembershipPaymentService {
     @Optional()
     @Inject(MEMBERSHIP_PAYMENT_CLOCK)
     private readonly clock: () => Date = () => new Date(),
+    @Optional()
+    private readonly config?: ConfigService<RuntimeConfig, true>,
   ) {}
 
   async getCatalog(now = this.currentTime()): Promise<MembershipCatalogResponse> {
@@ -88,6 +92,7 @@ export class MembershipPaymentService {
         benefits: getFreePublicMembershipBenefits(),
       },
       plans,
+      payment: this.provider.getCapabilities(),
       evaluatedAt: now.toISOString(),
     };
   }
@@ -195,6 +200,8 @@ export class MembershipPaymentService {
         currency: prepared.attempt.currency,
         description: `CongDongNgonNgu ${order.productCode} v${order.planVersion}`,
         expiresAt: prepared.attempt.expiresAt,
+        returnUrl: this.paymentReturnUrl(order.id, 'success'),
+        cancelUrl: this.paymentReturnUrl(order.id, 'cancelled'),
       });
       validateProviderCheckout(created, {
         amountMinor: prepared.attempt.amountMinor,
@@ -318,6 +325,11 @@ export class MembershipPaymentService {
       throw this.configurationInvalid();
     }
     return new Date(now);
+  }
+
+  private paymentReturnUrl(orderId: string, status: 'success' | 'cancelled'): string {
+    const publicAppUrl = this.config?.get<RuntimeConfig['app']>('app')?.publicAppUrl ?? 'http://localhost:5173';
+    return `${publicAppUrl}/membership/checkout/${encodeURIComponent(orderId)}?status=${status}`;
   }
 
   private mapRepositoryError(error: unknown): Error {

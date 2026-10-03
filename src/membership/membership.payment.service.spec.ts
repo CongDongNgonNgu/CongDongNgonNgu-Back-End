@@ -63,6 +63,10 @@ class TestPaymentProvider implements MembershipPaymentProvider {
     return true;
   }
 
+  getCapabilities() {
+    return { available: true, qrAvailable: true, provider: this.code };
+  }
+
   async createCheckout(input: Parameters<MembershipPaymentProvider['createCheckout']>[0]) {
     this.calls += 1;
     if (this.shouldFail) throw new MembershipPaymentProviderError('UNAVAILABLE', true);
@@ -133,7 +137,8 @@ describe('MembershipPaymentService', () => {
     expect(result.plans[0].benefits).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'ai-practice' }),
     ]));
-    expect(JSON.stringify(result)).not.toMatch(/internalOnly|provider|webhook|userId/iu);
+    expect(result.payment).toEqual({ available: true, qrAvailable: true, provider: 'test-provider' });
+    expect(JSON.stringify(result)).not.toMatch(/internalOnly|apiKey|checksum|webhook|userId/iu);
   });
 
   it('derives amount and plan snapshot from the server catalog, never the client', async () => {
@@ -274,6 +279,7 @@ describe('MembershipPaymentService', () => {
     const provider: MembershipPaymentProvider = {
       code: 'disabled',
       isAvailable: () => false,
+      getCapabilities: () => ({ available: false, qrAvailable: false, provider: null }),
       createCheckout: async () => {
         throw new MembershipPaymentProviderError('DISABLED', false);
       },

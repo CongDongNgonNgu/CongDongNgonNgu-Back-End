@@ -72,7 +72,7 @@ export class PayOsMembershipWebhookVerifier implements MembershipWebhookVerifier
 
   constructor(checksumKey: string) {
     if (typeof checksumKey !== 'string' || checksumKey.trim().length === 0 || checksumKey.length > 512) {
-      throw new Error('PAYMENT_WEBHOOK_SECRET is required for PayOS webhook verification');
+      throw new Error('PAYOS_CHECKSUM_KEY is required for PayOS webhook verification');
     }
     this.checksumKey = checksumKey;
   }

@@ -1150,7 +1150,7 @@ export class PostgresMembershipFulfillmentRepository implements MembershipFulfil
 
 function validateVerifiedWebhook(input: VerifiedMembershipWebhook, now: Date): void {
   if (
-    input.providerCode !== 'payos' ||
+    !/^[a-z0-9][a-z0-9._:-]{0,31}$/u.test(input.providerCode) ||
     !/^[0-9a-f]{64}$/u.test(input.eventKey) ||
     !/^[0-9a-f]{64}$/u.test(input.payloadHash) ||
     input.providerReference.trim().length < 1 ||
