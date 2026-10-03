@@ -131,6 +131,41 @@ the route does not accept a client-supplied plan, status or expiry claim.
 Payment attempts, provider settlement, webhook fulfillment and pricing are
 later Phase 11 boundaries and are not initialized by this foundation.
 
+## Phase 18 UAT fixture seed
+
+The Phase 18 seed command creates dedicated, non-deliverable UAT identities
+(`example.invalid`) for TEST or an explicitly selected non-production UAT
+database. It is idempotent and transactional: existing fixture rows are
+updated or upserted, and no reset/delete operation is available.
+
+Build before invoking the compiled command:
+
+~~~powershell
+npm run build
+npm run uat:seed -- --environment TEST --dry-run
+~~~
+
+A non-dry run requires all of these values to be supplied through the shell
+or an approved secret manager; `UAT_SEED_PASSWORD` must never be committed:
+
+~~~powershell
+$env:NODE_ENV = "test"
+$env:DATABASE_URL = "postgresql://user:password@localhost:5432/congdongngonngu_test"
+$env:UAT_SEED_EXPECTED_DATABASE_HOST = "localhost"
+$env:UAT_SEED_EXPECTED_DATABASE_NAME = "congdongngonngu_test"
+$env:UAT_SEED_ALLOWED_DATABASE_HOSTS = "localhost"
+$env:UAT_SEED_CONFIRMATION = "CONGDONGNGONNGU_PHASE18_UAT_ONLY"
+# Set UAT_SEED_PASSWORD in the invoking shell or approved secret manager.
+npm run uat:seed -- --environment TEST
+~~~
+
+The runner fails closed for `NODE_ENV=production`, mismatched or
+unallowlisted database targets, blocked external-product host markers,
+missing confirmation, and missing password. Production deployment, schema
+migration, provider activation, and secret mutation remain separate
+human-authorized operations. `--reset` and other destructive seed options are
+intentionally unsupported.
+
 ## CI and deployment boundary
 
 CI runs on pull requests and pushes to `main` and checks install, lint, types, unit/e2e tests, build, and dependency audit. Phase 00 configures no deployment workflow; production deployment remains a separate approved task.
