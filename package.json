@@ -13,6 +13,7 @@
     "library:import:tatoeba:preflight": "node dist/cli/library-import-tatoeba-preflight.js",
     "library:import:tatoeba:sentence": "node dist/cli/library-import-tatoeba-sentence.js",
     "library:import:tatoeba:translation": "node dist/cli/library-import-tatoeba-translation.js",
+    "uat:seed": "node --env-file-if-exists=.env dist/cli/uat-seed.runner.js",
     "db:migrate": "node --env-file-if-exists=.env database/migrate.cjs",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js",
     "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
