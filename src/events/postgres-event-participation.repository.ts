@@ -247,11 +247,11 @@ export class PostgresEventParticipationRepository
         `UPDATE event_registrations
             SET status = 'CANCELLED'::event_registration_status,
                 waitlist_position = NULL,
-                cancelled_at = $3,
-                updated_at = $3
+                cancelled_at = $2,
+                updated_at = $2
           WHERE id = $1
           RETURNING *`,
-        [existing.id, event.id, now],
+        [existing.id, now],
       );
       const promoted = await this.promoteWaitlisted(
         client,

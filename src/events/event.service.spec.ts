@@ -4,6 +4,7 @@ import { InMemoryProfileRepository } from '../profile/profile.repository';
 import { InMemorySpeakingRoomRepository } from '../rooms/room.repository';
 import { EventService } from './event.service';
 import { InMemoryEventRepository } from './event.repository';
+import type { EventParticipationRepository } from './event.participation.repository';
 import type { CreateEventDto } from './event.dto';
 
 const HOST_ID = '11111111-1111-4111-8111-111111111111';
@@ -166,6 +167,42 @@ describe('EventService', () => {
     });
   });
 
+  it('classifies unexpected participation failures as sanitized internal errors', async () => {
+    const persistenceFailure = new Error('database detail must not reach the client');
+    const participation = {
+      cancelRegistration: async () => {
+        throw persistenceFailure;
+      },
+    } as unknown as EventParticipationRepository;
+    const { service, rooms } = await createService(participation);
+    const room = await rooms.createRoom({
+      hostUserId: HOST_ID,
+      languageCode: 'en',
+      level: 'B1',
+      topic: 'Unexpected persistence failure',
+      visibility: 'PUBLIC',
+      lifecycle: 'SCHEDULED',
+      capacity: 20,
+      accessTokenHash: null,
+      scheduledAt: at('2026-10-10T02:00:00.000Z'),
+      startedAt: null,
+      createdAt: NOW,
+    });
+    const event = await service.createEvent(
+      HOST_ID,
+      { ...createInput(room.id), recurrence: undefined },
+      NOW,
+    );
+
+    await expect(service.cancelRegistration(event.id, OTHER_ID, NOW)).rejects.toMatchObject({
+      code: 'EVENT_INTERNAL_ERROR',
+      status: 500,
+    });
+    await expect(service.cancelRegistration(event.id, OTHER_ID, NOW)).rejects.not.toMatchObject({
+      code: 'EVENT_REGISTRATION_CONFLICT',
+    });
+  });
+
   it('rejects inactive actors before any event or room lookup', async () => {
     const { service } = await createService();
     await expect(
@@ -178,7 +215,7 @@ describe('EventService', () => {
   });
 });
 
-async function createService() {
+async function createService(participation?: EventParticipationRepository) {
   const rooms = new InMemorySpeakingRoomRepository();
   const identities = {
     findUserById: async (id: string) =>
@@ -215,6 +252,7 @@ async function createService() {
       new InMemoryProfileRepository(),
       identities,
       rooms,
+      participation,
     ),
   };
 }

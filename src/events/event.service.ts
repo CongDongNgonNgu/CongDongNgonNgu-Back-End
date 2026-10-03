@@ -727,7 +727,7 @@ export class EventService {
   private requireParticipation(): EventParticipationRepository {
     if (!this.participation) {
       throw new EventFailure(
-        'EVENT_REGISTRATION_CONFLICT',
+        'EVENT_INTERNAL_ERROR',
         500,
         'Event participation persistence is unavailable',
       );
@@ -751,7 +751,7 @@ export class EventService {
     }
     return error instanceof EventFailure
       ? error
-      : new EventFailure('EVENT_REGISTRATION_CONFLICT', 500, fallback);
+      : new EventFailure('EVENT_INTERNAL_ERROR', 500, fallback);
   }
 
   private async assertVenueCapability(
