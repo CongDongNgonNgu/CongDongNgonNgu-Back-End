@@ -91,9 +91,6 @@ export function validateEnvironment(
     : undefined;
 
   const emailProvider = readProvider(input.EMAIL_PROVIDER, "EMAIL_PROVIDER", ["resend"] as const);
-  if (environment === "production" && emailProvider === "resend") {
-    throw new Error("EMAIL_PROVIDER=resend is TEST/UAT only");
-  }
   const emailApiUrl = emailProvider === "configured" || emailProvider === "resend"
     ? readConfiguredUrl(input, "EMAIL_API_URL", "EMAIL_PROVIDER", true)
     : undefined;
@@ -106,9 +103,6 @@ export function validateEnvironment(
     : undefined;
 
   const storageProvider = readProvider(input.STORAGE_PROVIDER, "STORAGE_PROVIDER", ["r2"] as const);
-  if (environment === "production" && storageProvider === "r2") {
-    throw new Error("STORAGE_PROVIDER=r2 is TEST/UAT only");
-  }
   const storageApiUrl = storageProvider === "configured" || storageProvider === "r2"
     ? readConfiguredUrl(input, "STORAGE_API_URL", "STORAGE_PROVIDER", true)
     : undefined;

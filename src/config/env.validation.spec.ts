@@ -220,31 +220,6 @@ describe("validateEnvironment", () => {
     })).toThrow("EMAIL_FROM is required when EMAIL_PROVIDER is configured");
   });
 
-  it("keeps Resend and R2 literal providers out of production", () => {
-    expect(() => validateEnvironment({
-      ...base,
-      NODE_ENV: "production",
-      PUBLIC_APP_URL: "https://app.example.test",
-      CORS_ALLOWED_ORIGINS: "https://app.example.test",
-      EMAIL_PROVIDER: "resend",
-      EMAIL_API_URL: "https://api.resend.com",
-      EMAIL_FROM: "CongDongNgonNgu <onboarding@resend.dev>",
-      EMAIL_API_KEY: "local-resend-key",
-    })).toThrow("EMAIL_PROVIDER=resend is TEST/UAT only");
-
-    expect(() => validateEnvironment({
-      ...base,
-      NODE_ENV: "production",
-      PUBLIC_APP_URL: "https://app.example.test",
-      CORS_ALLOWED_ORIGINS: "https://app.example.test",
-      STORAGE_PROVIDER: "r2",
-      STORAGE_API_URL: "https://account-id.r2.cloudflarestorage.com",
-      STORAGE_ACCESS_KEY_ID: "local-r2-access-key",
-      STORAGE_SECRET_ACCESS_KEY: "local-r2-secret-key",
-      STORAGE_BUCKET: "congdongngonngu",
-    })).toThrow("STORAGE_PROVIDER=r2 is TEST/UAT only");
-  });
-
   it("requires secure provider endpoints and pins named providers to their vendor hosts", () => {
     expect(() => validateEnvironment({
       ...base,
@@ -304,5 +279,54 @@ describe("validateEnvironment", () => {
       EMAIL_API_URL: "https://eduai.example.test",
       EMAIL_API_KEY: "local-email-key",
     })).toThrow("EMAIL_API_URL points to a blocked external-product host");
+  });
+});
+
+const productionProviders = {
+  ...base,
+  NODE_ENV: 'production',
+  PUBLIC_APP_URL: 'https://app.example.test',
+  CORS_ALLOWED_ORIGINS: 'https://app.example.test',
+  EMAIL_PROVIDER: 'resend',
+  EMAIL_API_URL: 'https://api.resend.com',
+  EMAIL_FROM: 'Application <sender@example.test>',
+  EMAIL_API_KEY: 'fake-email-credential',
+  STORAGE_PROVIDER: 'r2',
+  STORAGE_API_URL: 'https://fake-account.r2.cloudflarestorage.com',
+  STORAGE_ACCESS_KEY_ID: 'fake-storage-access',
+  STORAGE_SECRET_ACCESS_KEY: 'fake-storage-secret',
+  STORAGE_BUCKET: 'fake-backup-bucket',
+  PAYMENT_PROVIDER: 'disabled',
+  PAYMENT_QR_ENABLED: 'false',
+};
+
+describe('production provider compatibility', () => {
+  it('accepts Resend and R2 with payments disabled and no PayOS credentials', () => {
+    const result = validateEnvironment(productionProviders);
+    expect(result).toMatchObject({ NODE_ENV: 'production', EMAIL_PROVIDER: 'resend', STORAGE_PROVIDER: 'r2', PAYMENT_PROVIDER: 'disabled', PAYMENT_QR_ENABLED: false });
+    expect(result.PAYOS_CLIENT_ID).toBeUndefined();
+    expect(result.PAYOS_API_KEY).toBeUndefined();
+    expect(result.PAYOS_CHECKSUM_KEY).toBeUndefined();
+  });
+
+  it.each([
+    ['EMAIL_API_KEY', '', 'EMAIL_API_KEY is required'],
+    ['EMAIL_FROM', '', 'EMAIL_FROM is required'],
+    ['EMAIL_API_URL', '', 'EMAIL_API_URL is required'],
+    ['EMAIL_API_URL', 'https://api.resend.com.evil.test', 'EMAIL_API_URL must use api.resend.com'],
+    ['EMAIL_API_URL', 'http://api.resend.com', 'EMAIL_API_URL must use HTTPS'],
+    ['EMAIL_FROM', 'sender@example.test\r\nInjected: value', 'EMAIL_FROM must be a single safe header value'],
+    ['STORAGE_ACCESS_KEY_ID', '', 'STORAGE_ACCESS_KEY_ID is required'],
+    ['STORAGE_SECRET_ACCESS_KEY', '', 'STORAGE_SECRET_ACCESS_KEY is required'],
+    ['STORAGE_BUCKET', '', 'STORAGE_BUCKET is required'],
+    ['STORAGE_API_URL', '', 'STORAGE_API_URL is required'],
+    ['STORAGE_API_URL', 'https://fake-account.r2.cloudflarestorage.com.evil.test', 'STORAGE_API_URL must use an R2 S3 endpoint'],
+    ['STORAGE_API_URL', 'http://fake-account.r2.cloudflarestorage.com', 'STORAGE_API_URL must use HTTPS'],
+    ['JWT_ACCESS_SECRET', 'replace-with-a-random-access-secret', 'JWT_ACCESS_SECRET must be replaced'],
+    ['JWT_REFRESH_SECRET', 'replace-with-a-random-refresh-secret', 'JWT_REFRESH_SECRET must be replaced'],
+    ['PUBLIC_APP_URL', 'http://app.example.test', 'PUBLIC_APP_URL must use HTTPS'],
+    ['CORS_ALLOWED_ORIGINS', 'http://app.example.test', 'CORS_ALLOWED_ORIGINS must use HTTPS'],
+  ])('rejects invalid %s in production', (name, value, reason) => {
+    expect(() => validateEnvironment({ ...productionProviders, [name]: value })).toThrow(reason);
   });
 });

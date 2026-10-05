@@ -120,6 +120,8 @@ export class ConfiguredEmailProvider implements EmailProvider {
       const response = await Promise.race([
         fetch(this.options.transport === 'resend' ? resolveResendEmailsUrl(this.apiUrl) : this.apiUrl, {
           method: 'POST',
+          // Never forward credential-bearing email requests through redirects.
+          redirect: 'error',
           headers: {
             'Content-Type': 'application/json',
             Authorization: 'Bearer ' + this.apiKey,
