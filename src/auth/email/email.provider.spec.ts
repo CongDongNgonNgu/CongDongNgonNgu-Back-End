@@ -185,3 +185,50 @@ describe('ConfiguredEmailProvider', () => {
     });
   });
 });
+
+
+describe('production Resend factory', () => {
+  afterEach(() => { jest.restoreAllMocks(); });
+  const values: Record<string, unknown> = {
+    'app.environment': 'production',
+    'providers.email': 'resend',
+    'providers.emailApiUrl': 'https://api.resend.com',
+    'providers.emailApiKey': 'fake-email-credential',
+    'providers.emailFrom': 'Application <sender@example.test>',
+  };
+  const config = { get: (key: string) => values[key] };
+
+  it.each(['sendVerification', 'sendPasswordReset'] as const)('uses Resend transport for %s in production', async (method) => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    const provider = createEmailProvider(config as never);
+    await provider[method]({ email: 'member@example.test', displayName: '<Member>', token: '<fake-token>' });
+    const request = fetchMock.mock.calls[0]?.[1];
+    const body = JSON.parse(String(request?.body));
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://api.resend.com/emails');
+    expect(body).toMatchObject({ from: values['providers.emailFrom'], to: ['member@example.test'], subject: method === 'sendVerification' ? '[CongDongNgonNgu] Verify your email' : '[CongDongNgonNgu] Reset your password', text: expect.any(String), html: expect.any(String) });
+    expect(body.html).toContain('&lt;Member&gt;');
+    expect(body.html).toContain('&lt;fake-token&gt;');
+    expect(body).not.toHaveProperty('template');
+    expect(body).not.toHaveProperty('variables');
+    expect(JSON.stringify(body)).not.toContain('fake-email-credential');
+    expect(request?.headers).toMatchObject({ Authorization: 'Bearer fake-email-credential' });
+    expect(request?.redirect).toBe('error');
+  });
+
+  it('blocks UAT test email before any network request, including a manually enabled option', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch');
+    const providers = [createEmailProvider(config as never), new ConfiguredEmailProvider(config as never, 'https://api.resend.com', 'fake-email-credential', { transport: 'resend', from: 'sender@example.test', allowUatTestEmail: true })];
+    for (const provider of providers) {
+      await expect((provider as ConfiguredEmailProvider).sendUatTestEmail({ correlationId: 'fake-correlation' })).rejects.toBeInstanceOf(EmailDeliveryError);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes provider failures and rejects oversized responses', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('fake-email-credential'));
+    const provider = createEmailProvider(config as never);
+    await expect(provider.sendVerification({ email: 'member@example.test', displayName: 'Member', token: 'fake-token' })).rejects.toThrow('Email delivery is unavailable');
+    fetchMock.mockResolvedValue(new Response('x'.repeat(65537), { status: 200 }));
+    await expect(provider.sendPasswordReset({ email: 'member@example.test', displayName: 'Member', token: 'fake-token' })).rejects.toThrow('Email delivery is unavailable');
+  });
+});
