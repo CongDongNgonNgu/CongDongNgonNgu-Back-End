@@ -1,0 +1,49 @@
+{
+  "version": "phase21-v1",
+  "resources": [
+    {"key":"hello","language":"en","level":"A1","type":"VOCABULARY","topics":["greeting"],"details":{"term":"hello","definition":"A greeting used when meeting someone"}},
+    {"key":"welcome","language":"en","level":"A1","type":"SENTENCE","topics":["greeting"],"details":{"text":"It is nice to meet you","context":"First introduction"}},
+    {"key":"bonjour","language":"fr","level":"A1","type":"VOCABULARY","topics":["greeting"],"details":{"term":"bonjour","definition":"A polite daytime salutation"}},
+    {"key":"hello-vi","language":"en","secondary":"vi","level":"A1","type":"TRANSLATION","topics":["greeting"],"details":{"sourceText":"hello","translatedText":"xin chao"}},
+    {"key":"present","language":"en","level":"A1","type":"GRAMMAR_ITEM","topics":["tense"],"details":{"title":"Present simple","explanation":"Describe regular actions","pattern":"subject + verb"}},
+    {"key":"past","language":"en","level":"A2","type":"GRAMMAR_ITEM","topics":["tense"],"details":{"title":"Past simple","explanation":"Describe completed actions","pattern":"subject + verb-ed"}},
+    {"key":"perfect","language":"en","level":"B1","type":"GRAMMAR_ITEM","topics":["tense"],"details":{"title":"Present perfect","explanation":"Connect earlier actions to now","pattern":"have + participle"}},
+    {"key":"journey","language":"en","level":"A2","type":"VOCABULARY","topics":["travel"],"details":{"term":"journey","definition":"An act of travelling from one place to another"}},
+    {"key":"ticket","language":"en","level":"A2","type":"SENTENCE","topics":["travel"],"details":{"text":"May I buy a return ticket?","context":"At a railway station"}},
+    {"key":"travel-book","language":"en","level":"A2","type":"LEARNING_COLLECTION","topics":["travel"],"details":{"title":"Travel essentials","description":"Practice requests at a station"}},
+    {"key":"thanks","language":"en","level":"A1","type":"VOCABULARY","topics":["courtesy"],"details":{"term":"thanks","definition":"Express appreciation"}},
+    {"key":"thanks-vi","language":"en","secondary":"vi","level":"A1","type":"TRANSLATION","topics":["courtesy"],"details":{"sourceText":"thanks","translatedText":"cam on"}},
+    {"key":"river","language":"en","level":"A2","type":"VOCABULARY","topics":["nature"],"details":{"term":"river","definition":"A natural flowing watercourse"}},
+    {"key":"tone","language":"vi","level":"A1","type":"PRONUNCIATION","topics":["sound"],"details":{"term":"ma","phonetic":"ma","notes":"Practice contrasting pitch contours"}}
+  ],
+  "relations": [
+    {"id":"e01","from":"hello","to":"welcome","type":"SAME_CONCEPT","reason":"Both illustrate first-meeting greetings"},
+    {"id":"e02","from":"hello","to":"bonjour","type":"SAME_CONCEPT","reason":"Parallel salutation concept; not a certified translation"},
+    {"id":"e03","from":"past","to":"present","type":"PREREQUISITE","reason":"Fixture learning sequence introduces base verb forms first"},
+    {"id":"e04","from":"present","to":"past","type":"FOLLOW_UP","reason":"Fixture sequence progresses from regular to completed actions"},
+    {"id":"e05","from":"past","to":"perfect","type":"FOLLOW_UP","reason":"Fixture sequence adds earlier-action connection to now"},
+    {"id":"e06","from":"hello","to":"hello-vi","type":"DIRECT_TRANSLATION","reason":"Explicit sourceText equals the anchor term"},
+    {"id":"e07","from":"thanks","to":"thanks-vi","type":"DIRECT_TRANSLATION","reason":"Explicit sourceText equals the anchor term"},
+    {"id":"e08","from":"travel-book","to":"journey","type":"COLLECTION_MEMBER","reason":"Curated fixture member for travelling vocabulary"},
+    {"id":"e09","from":"travel-book","to":"ticket","type":"COLLECTION_MEMBER","reason":"Curated fixture member for station practice"},
+    {"id":"e10","from":"journey","to":"ticket","type":"SAME_CONCEPT","reason":"Shared travelling situation with distinct learning types"}
+  ],
+  "queries": [
+    {"id":"q01","q":"greeting","anchor":"hello","relation":"SAME_CONCEPT","language":"en","expected":["welcome"]},
+    {"id":"q02","q":"salutation","anchor":"hello","relation":"SAME_CONCEPT","language":"fr","expected":["bonjour"]},
+    {"id":"q03","q":"completed actions","anchor":"past","relation":"PREREQUISITE","language":"en","expected":["present"]},
+    {"id":"q04","q":"regular actions","anchor":"present","relation":"FOLLOW_UP","language":"en","level":"A2","expected":["past"]},
+    {"id":"q05","q":"completed actions","anchor":"past","relation":"FOLLOW_UP","language":"en","level":"B1","expected":["perfect"]},
+    {"id":"q06","q":"hello","anchor":"hello","relation":"DIRECT_TRANSLATION","language":"vi","type":"TRANSLATION","expected":["hello-vi"]},
+    {"id":"q07","q":"thanks","anchor":"thanks","relation":"DIRECT_TRANSLATION","language":"vi","expected":["thanks-vi"]},
+    {"id":"q08","q":"travel","anchor":"travel-book","relation":"COLLECTION_MEMBER","language":"en","level":"A2","expected":["journey","ticket"]},
+    {"id":"q09","q":"railway","anchor":"journey","relation":"SAME_CONCEPT","language":"en","type":"SENTENCE","expected":["ticket"]},
+    {"id":"q10","q":"river","anchor":"river","relation":"SAME_CONCEPT","language":"en","expected":["river"],"control":true},
+    {"id":"q11","q":"pitch","anchor":"tone","relation":"SAME_CONCEPT","language":"vi","type":"PRONUNCIATION","expected":["tone"],"control":true},
+    {"id":"q12","q":"appreciation","anchor":"thanks","relation":"FOLLOW_UP","language":"en","expected":["thanks"],"control":true},
+    {"id":"q13","q":"unlisted astronomical phrase","anchor":"river","relation":"DIRECT_TRANSLATION","language":"en","expected":[]},
+    {"id":"q14","q":"unlisted botanical phrase","anchor":"tone","relation":"PREREQUISITE","language":"vi","expected":[]}
+  ],
+  "configuration": {"k":3,"maxEdges":64,"maxPool":32,"maxQueries":32,"traversalHops":1,"fallback":"unchanged lexical service when no valid edge remains; invalid anchor abstains"},
+  "thresholds": {"candidateMacroRecallMinimum":0.8,"macroRecallGainMinimum":0.2,"returnedPrecisionMinimum":0.9,"controlRegressionsMaximum":0,"correctEmptyQueriesRequired":2,"safetyViolationsMaximum":0}
+}
