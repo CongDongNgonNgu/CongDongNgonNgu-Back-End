@@ -1,0 +1,11 @@
+# Phase22 persisted PostgreSQL proof
+
+Run `npm run test:study-groups` with `PHASE22_TEST_DATABASE_URL` inherited from the approved TEST environment. Do not print credentials, tokens or digests. This runner fails when the dedicated URL is absent; it never silently skips SQL evidence. Ordinary e2e configuration remains separate.
+
+The connection guard accepts only the CI loopback database `congdongngonngu_phase22_ci` or the exact previously approved Neon TEST hostname/database. For that exact Neon instance only, it derives its corresponding direct endpoint because transaction pooling rejects startup schema options. It verifies PostgreSQL18+, `current_database()` and initial `public` schema on the direct endpoint before writes. Every fixture/migration runs in a randomly generated `phase22_test_<32 hex>` schema, selected through PostgreSQL connection options. Cleanup validates and drops only that exact generated schema, then verifies its absence. No production migration or public-schema fixture writes are performed.
+
+The suite uses the actual service, PostgreSQL constraints, transactions and independent clients/processes. Worker credentials are inherited through environment, actions through IPC; output never carries invitation tokens. A ready barrier starts both independent workers. Lock interleaving tests observe actual database lock waits through `pg_stat_activity`, with bounded polling rather than assumed scheduling sleeps.
+
+Proof covers invitation races/replay/digest storage, membership uniqueness/capacity, competing ownership transfers, owner leave/removal denial, invalid direct commits, visible committed-owner consistency, rollback, stale queued operations, moderator privilege changes, logical expiry after waiting, durable failed-attempt counters, bounded text/report history and migration down/up preservation. The HTTP suite uses real PostgreSQL identity/session records, production guards/validation/error formatting, CSRF/origin boundaries, safe serializers, scoped ID substitution and post-commit revocation.
+
+This is synthetic isolated TEST proof. It does not certify real-user rollout, abuse prevention, backup/retention approval or notification delivery. Full existing unit/e2e and Phase20 privacy regressions remain separate required gates.

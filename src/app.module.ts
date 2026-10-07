@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { StudyGroupModule } from './study-groups/study-group.module';
 import { AuthModule } from './auth/auth.module';
 import { AppConfigModule } from './config/config.module';
 import { HealthModule } from './health/health.module';
@@ -40,6 +41,7 @@ import { AdminModule } from './admin/admin.module';
     ChallengeModule,
     EventModule,
     AdminModule,
+    StudyGroupModule,
   ],
 })
 export class AppModule {}
