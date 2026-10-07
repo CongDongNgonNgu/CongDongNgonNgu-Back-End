@@ -1,1 +1,1 @@
-﻿DROP TABLE library_resource_relations;
+DROP TABLE library_resource_relations;

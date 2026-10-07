@@ -1,4 +1,4 @@
-﻿CREATE TABLE library_resource_relations (
+CREATE TABLE library_resource_relations (
   anchor_resource_id uuid NOT NULL REFERENCES library_resources(id) ON DELETE CASCADE,
   target_resource_id uuid NOT NULL REFERENCES library_resources(id) ON DELETE CASCADE,
   relation_type text NOT NULL CHECK (relation_type IN ('SAME_CONCEPT','PREREQUISITE','FOLLOW_UP','DIRECT_TRANSLATION','COLLECTION_MEMBER')),

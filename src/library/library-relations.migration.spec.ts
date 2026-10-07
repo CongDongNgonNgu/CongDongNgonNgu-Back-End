@@ -1,7 +1,11 @@
-﻿import { readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { LIBRARY_RELATION_TYPES } from './library-relations.types';
 describe('0028 additive reviewed relation migration contract', () => {
+  it.each(['sql', 'down.sql'])('provides BOM-free %s executable SQL', (suffix) => {
+    const bytes = readFileSync(resolve(__dirname, '../../database/migrations/0028_phase23_library_relations.' + suffix));
+    expect(bytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))).toBe(false);
+  });
   it('has directed unique nonself assertions, current review evidence and revision guards', () => {
     const sql = readFileSync(
       resolve(
