@@ -16,6 +16,19 @@ concurrency:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: congdongngonngu_phase22_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d congdongngonngu_phase22_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -43,6 +56,11 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: PostgreSQL18 study-group transaction proof
+        run: npm run test:study-groups
+        env:
+          PHASE22_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/congdongngonngu_phase22_ci
 
       - name: Security audit
         run: npm audit --audit-level=high
