@@ -1,4 +1,4 @@
-﻿import { randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { Pool } from 'pg';
@@ -205,8 +205,13 @@ describe('Phase23 actual PostgreSQL18 relation proof', () => {
       ).rejects.toMatchObject({ code: '23514' });
     }
     await expect(
-      pool.query('DELETE FROM users WHERE id=$1', [f.reviewer.id]),
+      pool.query('UPDATE library_resource_relations SET reviewer_user_id=$2 WHERE anchor_resource_id=$1', [f.anchor.id, randomUUID()]),
     ).rejects.toMatchObject({ code: '23503' });
+    await expect(
+      pool.query('DELETE FROM users WHERE id=$1', [f.reviewer.id]),
+    ).rejects.toMatchObject({ code: '23001' });
+    expect(await identity.findUserById(f.reviewer.id)).not.toBeNull();
+    expect(await relations.findForTargets(f.anchor.id, [f.target.id])).toHaveLength(1);
   });
   it('invalidates changed endpoint snapshots and cascades only hard-deleted endpoint assertions', async () => {
     const f = await fixture();
