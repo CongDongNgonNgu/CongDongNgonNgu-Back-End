@@ -1,4 +1,4 @@
-﻿{
+{
   "rootDir": "../..",
   "testEnvironment": "node",
   "testMatch": ["<rootDir>/test/phase23/*.sql-spec.ts"],
