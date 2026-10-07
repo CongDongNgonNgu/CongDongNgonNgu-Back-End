@@ -776,6 +776,92 @@ export class PostgresCorrectionsRepository implements CorrectionsRepository {
     });
   }
 
+  async inspectLibraryCandidateSources(
+    references: readonly Phase06SourceReference[],
+  ): Promise<Phase06SourceHealth[]> {
+    if (!references.length) return [];
+    const result = await this.pool.query(
+      `SELECT
+         candidate.id AS candidate_id,
+         candidate.state AS candidate_state,
+         candidate.source_post_id AS candidate_source_post_id,
+         candidate.source_response_id AS candidate_source_response_id,
+         candidate.acceptance_id AS candidate_acceptance_id,
+         post.id AS post_id,
+         post.moderation_state AS post_moderation_state,
+         post.visibility AS post_visibility,
+         response.id AS response_id,
+         response.parent_post_id AS response_parent_post_id,
+         response.moderation_state AS response_moderation_state,
+         acceptance.id AS acceptance_id,
+         acceptance.parent_post_id AS acceptance_parent_post_id,
+         acceptance.response_id AS acceptance_response_id,
+         acceptance.revoked_at AS acceptance_revoked_at,
+         current_acceptance.id AS current_acceptance_id,
+         current_acceptance.response_id AS current_acceptance_response_id
+       FROM community_library_candidates AS candidate
+       LEFT JOIN community_posts AS post
+         ON post.id = candidate.source_post_id
+       LEFT JOIN community_structured_responses AS response
+         ON response.id = candidate.source_response_id
+       LEFT JOIN community_structured_response_acceptances AS acceptance
+         ON acceptance.id = candidate.acceptance_id
+       LEFT JOIN community_structured_response_acceptances AS current_acceptance
+         ON current_acceptance.parent_post_id = candidate.source_post_id
+        AND current_acceptance.revoked_at IS NULL
+       WHERE candidate.id = ANY($1::uuid[])`,
+      [[...new Set(references.map((r) => r.sourceCandidateId))]],
+    );
+    const byId = new Map(
+      result.rows.map((row) => [String(row.candidate_id), row]),
+    );
+    return references.map((reference) => {
+      const row = byId.get(reference.sourceCandidateId);
+      if (!row) return evaluatePhase06SourceHealth(reference, null);
+      return evaluatePhase06SourceHealth(reference, {
+        candidateId: String(row.candidate_id),
+        candidateState: String(row.candidate_state),
+        candidateSourcePostId: String(row.candidate_source_post_id),
+        candidateSourceResponseId: String(row.candidate_source_response_id),
+        candidateAcceptanceId: String(row.candidate_acceptance_id),
+        postExists: row.post_id !== null && row.post_id !== undefined,
+        postModerationState: row.post_moderation_state
+          ? String(row.post_moderation_state)
+          : null,
+        postVisibility: row.post_visibility
+          ? String(row.post_visibility)
+          : null,
+        responseExists:
+          row.response_id !== null && row.response_id !== undefined,
+        responseParentPostId: row.response_parent_post_id
+          ? String(row.response_parent_post_id)
+          : null,
+        responseModerationState: row.response_moderation_state
+          ? String(row.response_moderation_state)
+          : null,
+        acceptanceExists:
+          row.acceptance_id !== null && row.acceptance_id !== undefined,
+        acceptanceParentPostId: row.acceptance_parent_post_id
+          ? String(row.acceptance_parent_post_id)
+          : null,
+        acceptanceResponseId: row.acceptance_response_id
+          ? String(row.acceptance_response_id)
+          : null,
+        acceptanceRevokedAt:
+          mapOptionalTimestamp(
+            row.acceptance_revoked_at,
+            'acceptance_revoked_at',
+          )?.toISOString() ?? null,
+        currentAcceptanceId: row.current_acceptance_id
+          ? String(row.current_acceptance_id)
+          : null,
+        currentAcceptanceResponseId: row.current_acceptance_response_id
+          ? String(row.current_acceptance_response_id)
+          : null,
+      });
+    });
+  }
+
   async listContributionEvents(
     query: Phase06ContributionEventQuery = {},
   ): Promise<Phase06ContributionEvent[]> {

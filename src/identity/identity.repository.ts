@@ -99,6 +99,7 @@ export class RepositoryConflictError extends Error {
 
 export interface IdentityRepository {
   findUserById(id: string): Promise<UserRecord | null>;
+  findUsersByIds?(ids: readonly string[]): Promise<UserRecord[]>;
   findUserByEmail(email: string): Promise<UserRecord | null>;
   createUser(input: CreateUserInput): Promise<UserRecord>;
   updateUser(id: string, input: UpdateUserInput): Promise<UserRecord | null>;
@@ -145,6 +146,13 @@ export class InMemoryIdentityRepository implements IdentityRepository {
   async findUserById(id: string): Promise<UserRecord | null> {
     const user = this.users.get(id);
     return user ? cloneUser(user) : null;
+  }
+
+  async findUsersByIds(ids: readonly string[]): Promise<UserRecord[]> {
+    const users = await Promise.all(
+      [...new Set(ids)].map((id) => this.findUserById(id)),
+    );
+    return users.filter((user): user is UserRecord => user !== null);
   }
 
   async findUserByEmail(email: string): Promise<UserRecord | null> {

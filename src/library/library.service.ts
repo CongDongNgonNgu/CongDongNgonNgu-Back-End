@@ -1,3 +1,5 @@
+import { LIBRARY_RELATED_MAX_PROVENANCE } from './library-relations.types';
+import { createHash } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { CORRECTIONS_REPOSITORY } from '../corrections/corrections.repository';
 import type { CorrectionsRepository } from '../corrections/corrections.repository';
@@ -79,6 +81,7 @@ export class LibraryService {
     @Inject(PROFILE_REPOSITORY) private readonly profiles: ProfileRepository,
     @Inject(CORRECTIONS_REPOSITORY)
     private readonly corrections: Pick<CorrectionsRepository, 'findLibraryCandidateById'> & {
+      inspectLibraryCandidateSources?: (references: readonly Phase06SourceReference[]) => Promise<Phase06SourceHealth[]>;
       inspectLibraryCandidateSource?: (
         reference: Phase06SourceReference,
       ) => Promise<Phase06SourceHealth>;
@@ -691,8 +694,79 @@ export class LibraryService {
     };
   }
 
+  // Internal current projection: public serializer remains canonical; snapshot includes
+  // complete persisted facts and current registered licenses, not only public fields.
+  async projectRelatedResources(records: readonly LibraryResourceRecord[]) {
+    records = records.filter(
+      (r) => r.provenance.length <= LIBRARY_RELATED_MAX_PROVENANCE,
+    );
+    const licenses = await this.repository.findLicensesByKeys([
+      ...new Set(records.flatMap((r) => r.provenance.map((p) => p.licenseKey))),
+    ]);
+    const byKey = new Map(licenses.map((l) => [l.licenseKey, l]));
+    const sourceReferences = records
+      .flatMap((r) => r.provenance)
+      .filter(
+        (p) =>
+          p.sourceType === 'PHASE06_LIBRARY_CANDIDATE' &&
+          p.sourcePostId &&
+          p.sourceResponseId &&
+          p.sourceCandidateId &&
+          p.sourceAcceptanceId &&
+          p.sourceId === p.sourceCandidateId,
+      );
+    const batchHealth = this.corrections.inspectLibraryCandidateSources
+      ? await this.corrections.inspectLibraryCandidateSources(
+          sourceReferences.map((p) => ({
+            sourceId: p.sourceId,
+            sourcePostId: p.sourcePostId!,
+            sourceResponseId: p.sourceResponseId!,
+            sourceCandidateId: p.sourceCandidateId!,
+            sourceAcceptanceId: p.sourceAcceptanceId!,
+          })),
+        )
+      : undefined;
+    const healthByProvenance = batchHealth
+      ? new Map(
+          sourceReferences.map((p, i) => [
+            p.id,
+            { applicable: true, ...batchHealth[i] },
+          ]),
+        )
+      : undefined;
+    const result = new Map<
+      string,
+      { resource: LibraryPublicResource; snapshot: string }
+    >();
+    for (const record of records) {
+      const resource = await this.projectPublicResource(
+        record,
+        byKey,
+        healthByProvenance,
+      );
+      if (resource)
+        result.set(record.id, {
+          resource,
+          snapshot: createHash('sha256')
+            .update(
+              JSON.stringify({
+                ...record,
+                provenance: record.provenance.map((p) => ({
+                  ...p,
+                  license: byKey.get(p.licenseKey),
+                })),
+              }),
+            )
+            .digest('hex'),
+        });
+    }
+    return result;
+  }
+
   private async projectPublicResource(
     resource: LibraryResourceRecord | null,
+    currentLicenses?: ReadonlyMap<string, LibraryLicenseRecord>,
+    currentSourceHealth?: ReadonlyMap<string, LibrarySourceHealth>,
   ): Promise<LibraryPublicResource | null> {
     if (
       !resource ||
@@ -703,15 +777,39 @@ export class LibraryService {
     ) {
       return null;
     }
-    const provenance = await this.refreshProvenanceLicenses(resource.provenance);
+    const provenance = currentLicenses
+      ? resource.provenance.every((p) => currentLicenses.has(p.licenseKey))
+        ? resource.provenance.map((p) => ({
+            ...p,
+            license: currentLicenses.get(p.licenseKey)!,
+          }))
+        : null
+      : await this.refreshProvenanceLicenses(resource.provenance);
     if (
       !provenance ||
-      provenance.some((entry) => (
-        !entry.license.active || entry.license.redistributionAllowed !== true
-      ))
-    ) return null;
-    const sourceHealth = await this.evaluateProvenanceSourceHealth(provenance);
-    if (sourceHealth.some((entry) => entry.applicable && !entry.valid)) return null;
+      provenance.some(
+        (entry) =>
+          !entry.license.active || entry.license.redistributionAllowed !== true,
+      )
+    )
+      return null;
+    const sourceHealth = currentSourceHealth
+      ? provenance.map((p) =>
+          p.sourceType !== 'PHASE06_LIBRARY_CANDIDATE'
+            ? {
+                applicable: false,
+                valid: true,
+                reason: 'NOT_APPLICABLE' as const,
+              }
+            : (currentSourceHealth.get(p.id) ?? {
+                applicable: true,
+                valid: false,
+                reason: 'SOURCE_REFERENCE_MISMATCH' as const,
+              }),
+        )
+      : await this.evaluateProvenanceSourceHealth(provenance);
+    if (sourceHealth.some((entry) => entry.applicable && !entry.valid))
+      return null;
 
     return {
       id: resource.id,

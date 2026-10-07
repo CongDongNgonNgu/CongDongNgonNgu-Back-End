@@ -1,3 +1,4 @@
+import { LIBRARY_RELATED_MAX_PROVENANCE } from './library-relations.types';
 import type { Pool, PoolClient } from 'pg';
 import {
   mergeNormalizedProvenanceEntries,
@@ -519,6 +520,91 @@ export class PostgresLibraryRepository implements LibraryRepository {
 
   async findResourceById(id: string): Promise<LibraryResourceRecord | null> {
     return this.findResourceWithExecutor(this.pool, id);
+  }
+
+  async findLicensesByKeys(
+    keys: readonly string[],
+  ): Promise<LibraryLicenseRecord[]> {
+    if (!keys.length) return [];
+    const result = await this.pool.query(
+      'SELECT * FROM library_licenses WHERE license_key=ANY($1::text[])',
+      [keys],
+    );
+    return result.rows.map(mapLicense);
+  }
+
+  // Target hydration is batched by component and detail type, never by target.
+  async findResourcesByIds(
+    ids: readonly string[],
+  ): Promise<LibraryResourceRecord[]> {
+    if (!ids.length) return [];
+    const base = await this.pool.query(
+      `SELECT resource.*,primary_language.code AS primary_language_code,secondary_language.code AS secondary_language_code FROM library_resources resource JOIN languages primary_language ON primary_language.id=resource.primary_language_id LEFT JOIN languages secondary_language ON secondary_language.id=resource.secondary_language_id WHERE resource.id=ANY($1::uuid[]) AND (SELECT count(*) FROM (SELECT 1 FROM library_resource_provenance bounded_source WHERE bounded_source.resource_id=resource.id LIMIT ${LIBRARY_RELATED_MAX_PROVENANCE + 1}) bounded_sources) <= ${LIBRARY_RELATED_MAX_PROVENANCE}`,
+      [ids],
+    );
+    const hydratedIds = base.rows.map((row) => String(row.id));
+    if (!hydratedIds.length) return [];
+    const tables: Record<string, string> = {
+      VOCABULARY: 'library_vocabularies',
+      SENTENCE: 'library_sentences',
+      TRANSLATION: 'library_translations',
+      GRAMMAR_ITEM: 'library_grammar_items',
+      DIALOGUE: 'library_dialogues',
+      IDIOM: 'library_idioms',
+      SLANG: 'library_slang',
+      CULTURAL_NOTE: 'library_cultural_notes',
+      PRONUNCIATION: 'library_pronunciations',
+      LEARNING_COLLECTION: 'library_learning_collections',
+    };
+    const types = [
+      ...new Set(base.rows.map((row) => String(row.resource_type))),
+    ];
+    const [topics, provenance, ...details] = await Promise.all([
+      this.pool.query(
+        'SELECT resource_id,topic FROM library_resource_topics WHERE resource_id=ANY($1::uuid[]) ORDER BY topic',
+        [hydratedIds],
+      ),
+      this.pool.query(
+        provenanceSelect(
+          'WHERE provenance.resource_id=ANY($1::uuid[]) AND (SELECT count(*) FROM (SELECT 1 FROM library_resource_provenance bounded_source WHERE bounded_source.resource_id=provenance.resource_id LIMIT 33) bounded_sources) <= 32',
+          false,
+        ),
+        [hydratedIds],
+      ),
+      ...types.map((type) =>
+        this.pool.query(
+          'SELECT * FROM ' +
+            tables[type] +
+            ' WHERE resource_id=ANY($1::uuid[])',
+          [base.rows.filter((r) => r.resource_type === type).map((r) => r.id)],
+        ),
+      ),
+    ]);
+    const detailMap = new Map(
+      details.flatMap((result, i) =>
+        result.rows.map(
+          (row) =>
+            [String(row.resource_id), mapDetails(types[i], row)] as const,
+        ),
+      ),
+    );
+    return base.rows.flatMap((row) => {
+      const id = String(row.id),
+        detail = detailMap.get(id);
+      if (!detail) return [];
+      return [
+        mapResource(
+          row,
+          topics.rows
+            .filter((r) => String(r.resource_id) === id)
+            .map((r) => String(r.topic)),
+          provenance.rows
+            .filter((r) => String(r.resource_id) === id)
+            .map((r) => mapProvenance(r, mapLicenseFromProvenanceRow(r))),
+          detail,
+        ),
+      ];
+    });
   }
 
   async setModerationState(

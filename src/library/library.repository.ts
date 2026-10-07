@@ -1,3 +1,4 @@
+import { LIBRARY_RELATED_MAX_PROVENANCE } from './library-relations.types';
 import { randomUUID } from 'node:crypto';
 import {
   mergeNormalizedProvenanceEntries,
@@ -126,6 +127,8 @@ export interface LibraryRepository {
   listLicenses(): Promise<LibraryLicenseRecord[]>;
   createResource(input: CreateLibraryResourceRepositoryInput): Promise<LibraryResourceRecord>;
   findResourceById(id: string): Promise<LibraryResourceRecord | null>;
+  findResourcesByIds(ids: readonly string[]): Promise<LibraryResourceRecord[]>;
+  findLicensesByKeys(keys: readonly string[]): Promise<LibraryLicenseRecord[]>;
   setModerationState(
     id: string,
     moderationState: LibraryResourceRecord['moderationState'],
@@ -309,6 +312,25 @@ export class InMemoryLibraryRepository implements LibraryRepository {
   async findResourceById(id: string): Promise<LibraryResourceRecord | null> {
     const record = this.resources.get(id);
     return record ? cloneResource(record) : null;
+  }
+
+  async findResourcesByIds(
+    ids: readonly string[],
+  ): Promise<LibraryResourceRecord[]> {
+    return [...new Set(ids)].flatMap((id) => {
+      const r = this.resources.get(id);
+      return r && r.provenance.length <= LIBRARY_RELATED_MAX_PROVENANCE
+        ? [cloneResource(r)]
+        : [];
+    });
+  }
+  async findLicensesByKeys(
+    keys: readonly string[],
+  ): Promise<LibraryLicenseRecord[]> {
+    return [...new Set(keys)].flatMap((key) => {
+      const r = this.licenses.get(key);
+      return r ? [cloneLicense(r)] : [];
+    });
   }
 
   async setModerationState(

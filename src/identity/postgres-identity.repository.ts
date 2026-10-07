@@ -28,6 +28,15 @@ import {
 export class PostgresIdentityRepository implements IdentityRepository {
   constructor(private readonly pool: Pool) {}
 
+  async findUsersByIds(ids: readonly string[]): Promise<UserRecord[]> {
+    if (!ids.length) return [];
+    const result = await this.pool.query(
+      'SELECT u.*, COALESCE(array_agg(ur.role_key::text) FILTER (WHERE ur.role_key IS NOT NULL), ARRAY[]::text[]) AS roles FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id WHERE u.id=ANY($1::uuid[]) GROUP BY u.id',
+      [ids],
+    );
+    return result.rows.map(mapUser);
+  }
+
   async findUserById(id: string): Promise<UserRecord | null> {
     const result = await this.pool.query(
       'SELECT u.*, COALESCE(array_agg(ur.role_key::text) FILTER (WHERE ur.role_key IS NOT NULL), ARRAY[]::text[]) AS roles FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id WHERE u.id = $1 GROUP BY u.id',
