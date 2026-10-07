@@ -177,7 +177,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
       await client.query('BEGIN');
       const current = await client.query(
         `SELECT u.status,
-                EXISTS (SELECT 1 FROM user_roles current_role WHERE current_role.user_id = u.id AND current_role.role_key = 'ADMIN'::role_key) AS is_admin
+                EXISTS (SELECT 1 FROM user_roles role_entry WHERE role_entry.user_id = u.id AND role_entry.role_key = 'ADMIN'::role_key) AS is_admin
            FROM users u
           WHERE u.id = $1
           FOR UPDATE`,
