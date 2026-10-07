@@ -1,3 +1,5 @@
+import { LibraryRelationsService } from './library-relations.service';
+import { RelatedLibraryResourcesDto } from './library.dto';
 import {
   Body,
   Controller,
@@ -32,7 +34,16 @@ export class LibraryController {
   constructor(
     private readonly library: LibraryService,
     private readonly sessions: SessionService,
+    private readonly relations: LibraryRelationsService,
   ) {}
+
+  @Get('resources/:resourceId/related')
+  async getRelatedResources(
+    @Param('resourceId', new ParseUUIDPipe({ version: '4' })) resourceId: string,
+    @Query() input: RelatedLibraryResourcesDto,
+  ) {
+    return success(await this.relations.list(resourceId, input), 'Library related resources');
+  }
 
   @Get('contribution-policy')
   async getContributionPolicy() {

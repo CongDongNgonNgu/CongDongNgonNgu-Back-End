@@ -1,3 +1,4 @@
+import { LIBRARY_RELATION_TYPES } from './library-relations.types';
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -234,4 +235,17 @@ export class SubmitLibraryContributionDto {
 
   @IsBoolean()
   reuseConsent!: boolean;
+}
+
+export class RelatedLibraryResourcesDto {
+  @IsOptional() @IsIn(LIBRARY_RELATION_TYPES) relation?: string;
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i)
+  @MaxLength(35)
+  language?: string;
+  @IsOptional() @IsIn(LIBRARY_RESOURCE_TYPES) type?: string;
+  @IsOptional() @IsIn(COMMUNITY_CEFR_LEVELS) level?: string;
+  @IsOptional() @IsString() @MaxLength(512) cursor?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(12) limit?: number;
 }

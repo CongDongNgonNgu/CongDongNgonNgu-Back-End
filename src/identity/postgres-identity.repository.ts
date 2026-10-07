@@ -28,6 +28,15 @@ import {
 export class PostgresIdentityRepository implements IdentityRepository {
   constructor(private readonly pool: Pool) {}
 
+  async findUsersByIds(ids: readonly string[]): Promise<UserRecord[]> {
+    if (!ids.length) return [];
+    const result = await this.pool.query(
+      'SELECT u.*, COALESCE(array_agg(ur.role_key::text) FILTER (WHERE ur.role_key IS NOT NULL), ARRAY[]::text[]) AS roles FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id WHERE u.id=ANY($1::uuid[]) GROUP BY u.id',
+      [ids],
+    );
+    return result.rows.map(mapUser);
+  }
+
   async findUserById(id: string): Promise<UserRecord | null> {
     const result = await this.pool.query(
       'SELECT u.*, COALESCE(array_agg(ur.role_key::text) FILTER (WHERE ur.role_key IS NOT NULL), ARRAY[]::text[]) AS roles FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id WHERE u.id = $1 GROUP BY u.id',
@@ -168,7 +177,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
       await client.query('BEGIN');
       const current = await client.query(
         `SELECT u.status,
-                EXISTS (SELECT 1 FROM user_roles current_role WHERE current_role.user_id = u.id AND current_role.role_key = 'ADMIN'::role_key) AS is_admin
+                EXISTS (SELECT 1 FROM user_roles role_entry WHERE role_entry.user_id = u.id AND role_entry.role_key = 'ADMIN'::role_key) AS is_admin
            FROM users u
           WHERE u.id = $1
           FOR UPDATE`,
