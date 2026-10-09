@@ -67,5 +67,28 @@ jobs:
         env:
           PHASE23_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/congdongngonngu_phase22_ci
 
+      - name: Prepare ephemeral PostgreSQL18 baseline extensions
+        run: |
+          node <<'NODE'
+          const { Pool } = require('pg');
+          const url = new URL(process.env.PHASE22_TEST_DATABASE_URL);
+          if (url.hostname !== 'localhost' || url.pathname !== '/congdongngonngu_phase22_ci') throw new Error('CI database identity mismatch');
+          const pool = new Pool({ connectionString: url.toString() });
+          (async () => {
+            try {
+              const { rows } = await pool.query("SELECT current_database() AS db, current_schema() AS schema, current_setting('server_version_num')::int AS version");
+              if (rows[0].db !== 'congdongngonngu_phase22_ci' || rows[0].schema !== 'public' || rows[0].version < 180000) throw new Error('CI PostgreSQL18 preflight failed');
+              await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public; CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public; CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public');
+            } finally { await pool.end(); }
+          })().catch(() => { console.error('CI baseline extension preparation failed'); process.exitCode = 1; });
+          NODE
+        env:
+          PHASE22_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/congdongngonngu_phase22_ci
+
+      - name: PostgreSQL18 connection transactions and notification privacy
+        run: npm run test:connections
+        env:
+          PHASE22_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/congdongngonngu_phase22_ci
+
       - name: Security audit
         run: npm audit --audit-level=high

@@ -16,6 +16,24 @@ const POST_ID = '44444444-4444-4444-8444-444444444444';
 const CONNECTION_ID = '55555555-5555-4555-8555-555555555555';
 
 describe('notification event integration', () => {
+  it('maps accepted connections distinctly, deduplicates and honors Exchange in-app preferences',async()=>{
+    const identity=new InMemoryIdentityRepository();
+    const actor=await seedUser(identity,'Accepting Learner');
+    const recipient=await seedUser(identity,'Requesting Learner');
+    const preferences=new NotificationPreferenceService(new InMemoryNotificationPreferenceRepository());
+    const repository=new InMemoryNotificationRepository();
+    const integration=new NotificationDomainEventIntegrationService(new NotificationService(repository,undefined,preferences),preferences,identity);
+    const event=createNotificationDomainEvent({eventId:CONNECTION_ID,eventType:'exchange.connection.connected',
+      aggregateType:'EXCHANGE_CONNECTION',aggregateId:CONNECTION_ID,actor:{kind:'USER',userId:actor.id},
+      recipientUserId:recipient.id,occurredAt:'2026-10-09T01:00:00.000Z',
+      idempotencyKey:`exchange.connection.connected:${CONNECTION_ID}:v1`,
+      target:{kind:'EXCHANGE_CONNECTION',id:CONNECTION_ID,path:'/exchange/connections'},variables:{}});
+    expect(await integration.publish(event)).toMatchObject({outcome:'CREATED',record:{notificationType:'BUDDY_CONNECTED',category:'EXCHANGE'}});
+    expect(await integration.publish(event)).toMatchObject({outcome:'REPLAYED'});
+    await preferences.update(recipient.id,[{category:'EXCHANGE',channel:'IN_APP',enabled:false}]);
+    expect(await integration.publish(event)).toMatchObject({outcome:'SUPPRESSED'});
+    expect((await repository.listForUser(recipient.id,{limit:10,status:'ALL'})).items).toHaveLength(1);
+  });
   it('maps a canonical source event, projects the actor and replays the exact event idempotently', async () => {
     const identity = new InMemoryIdentityRepository();
     const actor = await seedUser(identity, 'Source Learner');

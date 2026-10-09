@@ -99,6 +99,7 @@ export class PostgresExchangePreferenceRepository implements ExchangePreferenceR
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [userId]);
       await client.query(
         `INSERT INTO language_exchange_preferences (
            user_id, exchange_opt_in, discoverable, timezone_visibility,

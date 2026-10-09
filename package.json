@@ -22,7 +22,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
     "test:study-groups": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/phase22/jest-sql.json --runInBand",
-    "test:library-relations": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/phase23/jest-sql.json --runInBand"
+    "test:library-relations": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/phase23/jest-sql.json --runInBand",
+    "test:connections": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/phase26/jest-sql.json --runInBand"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",

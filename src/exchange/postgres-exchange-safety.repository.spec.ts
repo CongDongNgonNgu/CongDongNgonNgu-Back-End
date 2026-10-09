@@ -7,7 +7,8 @@ describe('PostgresExchangeSafetyRepository', () => {
     const calls: string[] = [];
     const client = fakeClient(async (sql: string) => {
       calls.push(sql);
-      if (sql === 'BEGIN' || sql === 'COMMIT') return { rows: [], rowCount: 0 };
+      if (sql.startsWith('BEGIN') || sql === 'COMMIT') return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM users')) return { rows: accountRows(), rowCount: 2 };
       if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 0 };
       if (sql.includes('INSERT INTO language_exchange_blocks')) return { rows: [{ blocker_user_id: 'first' }], rowCount: 1 };
       if (sql.includes('DELETE FROM language_exchange_connections')) {
@@ -28,8 +29,9 @@ describe('PostgresExchangeSafetyRepository', () => {
       removedRequesterUserId: 'requester-1',
     });
 
-    expect(calls[0]).toBe('BEGIN');
-    expect(calls[1]).toContain('pg_advisory_xact_lock');
+    expect(calls[0]).toBe('BEGIN ISOLATION LEVEL READ COMMITTED');
+    expect(calls[1]).toContain('ORDER BY id FOR UPDATE');
+    expect(calls[2]).toContain('pg_advisory_xact_lock');
     expect(calls.some((sql) => sql.includes('INSERT INTO language_exchange_blocks'))).toBe(true);
     const deleteSql = calls.find((sql) => sql.includes('DELETE FROM language_exchange_connections'));
     expect(deleteSql).toContain('RETURNING id, requester_id');
@@ -42,7 +44,8 @@ describe('PostgresExchangeSafetyRepository', () => {
     const calls: string[] = [];
     const client = fakeClient(async (sql: string) => {
       calls.push(sql);
-      if (sql === 'BEGIN' || sql === 'COMMIT') return { rows: [], rowCount: 0 };
+      if (sql.startsWith('BEGIN') || sql === 'COMMIT') return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM users')) return { rows: accountRows(), rowCount: 2 };
       if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 0 };
       if (sql.includes('DELETE FROM language_exchange_blocks')) return { rows: [], rowCount: 0 };
       throw new Error('Unexpected SQL: ' + sql);
@@ -88,6 +91,11 @@ describe('PostgresExchangeSafetyRepository', () => {
     await expect(repository.submitReport({ ...input, category: 'OTHER' })).resolves.toEqual({ duplicate: false });
   });
 });
+
+function accountRows() {
+  return ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']
+    .map(id => ({ id, status: 'ACTIVE', email_verified_at: new Date() }));
+}
 
 function fakeClient(
   query: (sql: string) => Promise<{ rows: Array<Record<string, unknown>>; rowCount: number }>,

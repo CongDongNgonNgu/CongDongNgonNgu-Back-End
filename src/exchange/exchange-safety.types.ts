@@ -1,5 +1,7 @@
 import type { PoolClient } from 'pg';
 
+export const EXCHANGE_SAFETY_GATE='EXCHANGE_SAFETY_GATE';
+
 export const EXCHANGE_REPORT_CATEGORIES = [
   'SPAM',
   'HARASSMENT',
@@ -39,6 +41,7 @@ export interface ExchangeReportMutationResult {
 }
 
 export interface ExchangeSafetyReadStore {
+  readonly revision?:number;
   isBlocked(firstUserId: string, secondUserId: string): Promise<boolean>;
   isBlockedBy(blockerUserId: string, blockedUserId: string): Promise<boolean>;
   isBlockedOnClient(

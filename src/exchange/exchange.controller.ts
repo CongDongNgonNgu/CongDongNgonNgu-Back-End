@@ -16,7 +16,7 @@ import {
 import { AccessTokenGuard, type AuthenticatedRequest } from '../auth/guards/access-token.guard';
 import { SessionService } from '../auth/session/session.service';
 import { success } from '../common/http/api-response';
-import { ExchangeDiscoveryQueryDto, ExchangePreferenceUpdateDto, ExchangeReportDto } from './exchange.dto';
+import { ExchangeConnectionListDto, ExchangeDiscoveryQueryDto, ExchangePreferenceUpdateDto, ExchangeReportDto } from './exchange.dto';
 import { ExchangeService } from './exchange.service';
 
 @Controller('exchange')
@@ -25,6 +25,12 @@ export class ExchangeController {
     private readonly exchanges: ExchangeService,
     private readonly sessions: SessionService,
   ) {}
+
+  @Get('connections')
+  @UseGuards(AccessTokenGuard)
+  async connections(@Query() query: ExchangeConnectionListDto, @Req() request: AuthenticatedRequest) {
+    return success(await this.exchanges.listConnections(request.user!.user.id,query),'Exchange connections');
+  }
 
   @Get('preferences')
   @UseGuards(AccessTokenGuard)

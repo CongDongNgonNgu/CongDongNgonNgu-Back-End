@@ -1,5 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { lockExchangePair } from './exchange-safety.repository';
+import { authorizeConnectionPair, lockExchangeUsers } from './exchange-pair-authorization';
+import { ExchangeFailure } from './exchange.errors';
 import type {
   ExchangeBlockMutationResult,
   ExchangeReportInput,
@@ -43,8 +45,13 @@ export class PostgresExchangeSafetyRepository implements ExchangeSafetyRepositor
   async blockUser(blockerUserId: string, blockedUserId: string): Promise<ExchangeBlockMutationResult> {
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN');
+      await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+      const users = await lockExchangeUsers(client, blockerUserId, blockedUserId);
       await lockExchangePair(client, blockerUserId, blockedUserId);
+      await authorizeConnectionPair(client, users, blockerUserId, blockedUserId, false);
+      if (!users.some(user => user.id === blockedUserId)) {
+        throw new ExchangeFailure('EXCHANGE_PROFILE_UNAVAILABLE', 404, 'Buddy profile was not found');
+      }
       const inserted = await client.query(
         `INSERT INTO language_exchange_blocks (blocker_user_id, blocked_user_id)
          VALUES ($1::uuid, $2::uuid)
@@ -88,8 +95,10 @@ export class PostgresExchangeSafetyRepository implements ExchangeSafetyRepositor
   async unblockUser(blockerUserId: string, blockedUserId: string): Promise<ExchangeBlockMutationResult> {
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN');
+      await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+      const users = await lockExchangeUsers(client, blockerUserId, blockedUserId);
       await lockExchangePair(client, blockerUserId, blockedUserId);
+      await authorizeConnectionPair(client, users, blockerUserId, blockedUserId, false);
       const result = await client.query(
         `DELETE FROM language_exchange_blocks
           WHERE blocker_user_id = $1::uuid

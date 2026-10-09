@@ -198,7 +198,7 @@ describe('ExchangeService', () => {
   });
 
   it('enforces the relationship lifecycle and rejects self or ineligible requests', async () => {
-    const { identity, profiles, service } = createService();
+    const { identity, profiles, service, advancePairWindow } = createService();
     const requester = await createNamedUser(identity, 'Requester');
     const target = await createNamedUser(identity, 'Target');
     await prepareExchangePair(identity, profiles, service, requester.id, target.id);
@@ -225,8 +225,10 @@ describe('ExchangeService', () => {
       .rejects.toMatchObject({ code: 'EXCHANGE_CONNECTION_ACTION_INVALID' });
     await expect(service.declineConnection(target.id, requester.id)).resolves.toMatchObject({ state: 'NONE' });
 
+    advancePairWindow();
     await service.requestConnection(requester.id, target.id);
     await expect(service.cancelConnection(requester.id, target.id)).resolves.toMatchObject({ state: 'NONE' });
+    advancePairWindow();
     await service.requestConnection(requester.id, target.id);
     await expect(service.acceptConnection(target.id, requester.id)).resolves.toMatchObject({
       state: 'CONNECTED',
@@ -239,6 +241,37 @@ describe('ExchangeService', () => {
     await identity.updateUser(inactive.id, { status: 'DISABLED' });
     await expect(service.requestConnection(requester.id, inactive.id))
       .rejects.toMatchObject({ code: 'EXCHANGE_PROFILE_UNAVAILABLE' });
+  });
+
+  it.each(['cancelConnection', 'declineConnection', 'disconnect'] as const)(
+    'allows %s cleanup after the other participant is disabled',
+    async (action) => {
+      const { identity, profiles, service } = createService();
+      const requester = await createNamedUser(identity, 'Cleanup requester');
+      const recipient = await createNamedUser(identity, 'Cleanup recipient');
+      await prepareExchangePair(identity, profiles, service, requester.id, recipient.id);
+      await service.requestConnection(requester.id, recipient.id);
+      if (action === 'disconnect') await service.acceptConnection(recipient.id, requester.id);
+      const actor = action === 'declineConnection' ? recipient : requester;
+      const target = action === 'declineConnection' ? requester : recipient;
+      await identity.updateUser(target.id, { status: 'DISABLED' });
+
+      await expect(service[action](actor.id, target.id)).resolves.toMatchObject({ state: 'NONE' });
+    },
+  );
+
+  it('denies acceptance when the requester has opted out after sending', async () => {
+    const { identity, profiles, service } = createService();
+    const requester = await createNamedUser(identity, 'Opted out requester');
+    const recipient = await createNamedUser(identity, 'Accepting recipient');
+    await prepareExchangePair(identity, profiles, service, requester.id, recipient.id);
+    await service.requestConnection(requester.id, recipient.id);
+    await service.updateOwnPreferences(requester.id, { exchangeOptIn: false, discoverable: false });
+
+    await expect(service.acceptConnection(recipient.id, requester.id))
+      .rejects.toMatchObject({ code: 'EXCHANGE_PROFILE_UNAVAILABLE', status: 404 });
+    await expect(service.getRelationship(recipient.id, requester.id))
+      .resolves.toMatchObject({ state: 'INCOMING_PENDING' });
   });
 
   it('converges reciprocal requests to one connected relationship', async () => {
@@ -303,7 +336,7 @@ describe('ExchangeService', () => {
 
   it('publishes one event per lifecycle transition and suppresses idempotent retries', async () => {
     const eventSink = new RecordingExchangeConnectionEventSink();
-    const { identity, profiles, service } = createService(eventSink);
+    const { identity, profiles, service, advancePairWindow } = createService(eventSink);
     const requester = await createNamedUser(identity, 'Event requester');
     const target = await createNamedUser(identity, 'Event target');
     await prepareExchangePair(identity, profiles, service, requester.id, target.id);
@@ -333,6 +366,7 @@ describe('ExchangeService', () => {
     await service.disconnect(requester.id, target.id);
     expect(eventTypes()).toHaveLength(3);
 
+    advancePairWindow();
     await service.requestConnection(requester.id, target.id);
     await service.declineConnection(target.id, requester.id);
     expect(eventTypes()).toEqual([
@@ -346,6 +380,7 @@ describe('ExchangeService', () => {
     await service.declineConnection(target.id, requester.id);
     expect(eventTypes()).toHaveLength(5);
 
+    advancePairWindow();
     await service.requestConnection(requester.id, target.id);
     await service.cancelConnection(requester.id, target.id);
     expect(eventTypes()).toEqual([
@@ -552,20 +587,23 @@ function createService(eventSink: ExchangeConnectionEventSink = new NoopExchange
   profiles: InMemoryProfileRepository;
   repository: InMemoryExchangePreferenceRepository;
   service: ExchangeService;
+  advancePairWindow:()=>void;
 } {
   const identity = new InMemoryIdentityRepository();
   const profiles = new InMemoryProfileRepository();
   const repository = new InMemoryExchangePreferenceRepository();
+  let pairClock=Date.now();
   return {
     identity,
     profiles,
     repository,
+    advancePairWindow:()=>{pairClock+=60000;},
     service: new ExchangeService(
       repository,
       profiles,
       identity,
       new NoopExchangeSafetyGate(),
-      new InMemoryExchangeConnectionRepository(),
+      new InMemoryExchangeConnectionRepository(undefined,undefined,()=>pairClock),
       eventSink,
     ),
   };

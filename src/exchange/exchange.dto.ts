@@ -25,6 +25,23 @@ import { EXCHANGE_REPORT_CATEGORIES } from './exchange-safety.types';
 const LANGUAGE_CODE_PATTERN = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/;
 const PROFILE_CODE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
+export class ExchangeConnectionListDto {
+  @IsIn(['INCOMING','OUTGOING','CONNECTED'])
+  kind: 'INCOMING' | 'OUTGOING' | 'CONNECTED' = 'CONNECTED';
+
+  @IsOptional()
+  @Transform(({value}) => Number(value))
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  cursor?: string;
+}
+
 export class ExchangePreferenceUpdateDto {
   @ValidateIf(({ value }) => value !== undefined)
   @IsBoolean()

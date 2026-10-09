@@ -6,11 +6,14 @@ import type {
 export const NOTIFICATION_PREFERENCE_REPOSITORY = 'NOTIFICATION_PREFERENCE_REPOSITORY';
 
 export interface NotificationPreferenceRepository {
+  readonly revision?:number;
   findOverrides(userId: string): Promise<NotificationPreferenceOverride[]>;
   saveOverrides(userId: string, changes: readonly NotificationPreferenceChange[]): Promise<void>;
 }
 
 export class InMemoryNotificationPreferenceRepository implements NotificationPreferenceRepository {
+  private mutationRevision=0;
+  get revision():number {return this.mutationRevision;}
   private readonly overridesByUser = new Map<string, Map<string, NotificationPreferenceOverride>>();
 
   async findOverrides(userId: string): Promise<NotificationPreferenceOverride[]> {
@@ -28,6 +31,7 @@ export class InMemoryNotificationPreferenceRepository implements NotificationPre
       current.set(`${change.category}:${change.channel}`, { ...change });
     }
     this.overridesByUser.set(userId, current);
+    this.mutationRevision+=1;
   }
 }
 

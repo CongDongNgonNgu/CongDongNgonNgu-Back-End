@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import type { Pool } from 'pg';
+import type { Pool,PoolClient } from 'pg';
 import { createNotificationIntent } from './notification.contracts';
 import { PostgresNotificationRepository } from './postgres-notification.repository';
 
@@ -16,6 +16,23 @@ type QueryResult = {
 type QueryFn = (...args: unknown[]) => Promise<QueryResult>;
 
 describe('PostgresNotificationRepository', () => {
+  it.each([false,true])('leaves the caller transaction and client ownership intact (failure=%s)',async fail=>{
+    const intent=buildIntent();const release=jest.fn();
+    const query=jest.fn<QueryFn>().mockImplementation(async(...args)=>{
+      const sql=String(args[0]);
+      if(sql.includes('INSERT INTO notifications')) return {rows:[notificationRow(intent)]};
+      if(fail && sql.includes('INSERT INTO notification_read_states')) throw new Error('Synthetic materialization failure');
+      return {rows:[]};
+    });
+    const client={query,release} as unknown as PoolClient;
+    const connect=jest.fn<()=>Promise<PoolClient>>().mockResolvedValue(client);
+    const repository=new PostgresNotificationRepository({connect} as unknown as Pool);
+    const result=repository.claimIntentOnClient(client,intent,NOW);
+    if(fail) await expect(result).rejects.toThrow('Synthetic materialization failure');
+    else await expect(result).resolves.toMatchObject({outcome:'CREATED',record:{id:NOTIFICATION_ID}});
+    expect(connect).not.toHaveBeenCalled();expect(release).not.toHaveBeenCalled();
+    expect(query.mock.calls.map(call=>String(call[0])).filter(sql=>/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql))).toEqual([]);
+  });
   it('persists a validated intent and creates a separate unread state in one transaction', async () => {
     const intent = buildIntent();
     const clientQuery = jest.fn<QueryFn>()

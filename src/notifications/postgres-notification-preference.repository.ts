@@ -31,6 +31,8 @@ export class PostgresNotificationPreferenceRepository implements NotificationPre
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      // Serialize opt-out with Exchange account→pair intent materialization.
+      await client.query('SELECT id FROM users WHERE id=$1::uuid ORDER BY id FOR UPDATE',[userId]);
       for (const change of changes) {
         await upsertPreference(client, userId, change);
       }

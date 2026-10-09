@@ -7,6 +7,8 @@ import { PROFILE_REPOSITORY } from '../profile/profile.repository';
 import type { ProfileRepository } from '../profile/profile.repository';
 import type { ProfileRecord } from '../profile/profile.types';
 import { ExchangeFailure } from './exchange.errors';
+import { EXCHANGE_ACTION_LIMITER,MemoryExchangeActionLimiter,type ExchangeActionLimiter } from './exchange-action-limiter';
+import { connectionListQuery, type ConnectionListInput, type ConnectionListPage } from './exchange-connection-list';
 import {
   ExchangeRepositoryConflictError,
   EXCHANGE_PREFERENCE_REPOSITORY,
@@ -56,6 +58,7 @@ import {
 } from './exchange.types';
 import {
   EXCHANGE_REPORT_CATEGORIES,
+  EXCHANGE_SAFETY_GATE,
   type ExchangeReportInput,
   type ExchangeSafetyRepository,
 } from './exchange-safety.types';
@@ -96,7 +99,7 @@ export interface ExchangeDiscoveryInput {
   pageSize?: unknown;
 }
 
-export const EXCHANGE_SAFETY_GATE = 'EXCHANGE_SAFETY_GATE';
+export { EXCHANGE_SAFETY_GATE } from './exchange-safety.types';
 
 export interface ExchangeSafetyGate extends ExchangeSafetyRepository {}
 
@@ -150,6 +153,8 @@ export class ExchangeService {
     private readonly connections: ExchangeConnectionRepository,
     @Inject(EXCHANGE_CONNECTION_EVENT_SINK)
     private readonly connectionEvents: ExchangeConnectionEventSink,
+    @Inject(EXCHANGE_ACTION_LIMITER)
+    private readonly actionLimiter: ExchangeActionLimiter = new MemoryExchangeActionLimiter(),
   ) {}
 
   async getOwnPreferences(userId: string): Promise<ExchangePreferencesResponse> {
@@ -194,6 +199,7 @@ export class ExchangeService {
 
   async blockUser(viewerUserId: string, targetUserId: string): Promise<ExchangeBlockResponse> {
     await this.requireActiveUser(viewerUserId);
+    await this.actionLimiter.consume(viewerUserId,'TRANSITION');
     await this.requireExistingUser(targetUserId);
     this.assertDifferentUsers(viewerUserId, targetUserId);
     const result = await this.safetyGate.blockUser(viewerUserId, targetUserId);
@@ -221,6 +227,7 @@ export class ExchangeService {
 
   async unblockUser(viewerUserId: string, targetUserId: string): Promise<ExchangeBlockResponse> {
     await this.requireActiveUser(viewerUserId);
+    await this.actionLimiter.consume(viewerUserId,'TRANSITION');
     this.assertDifferentUsers(viewerUserId, targetUserId);
     const result = await this.safetyGate.unblockUser(viewerUserId, targetUserId);
     return {
@@ -236,6 +243,7 @@ export class ExchangeService {
     input: ExchangeReportSubmissionInput,
   ): Promise<ExchangeReportResponse> {
     await this.requireActiveUser(reporterUserId);
+    await this.actionLimiter.consume(reporterUserId,'REPORT');
     if (reporterUserId === targetUserId) {
       throw exchangeFailure('EXCHANGE_SELF_REPORT', 'You cannot report yourself');
     }
@@ -324,6 +332,23 @@ export class ExchangeService {
     return this.getRelationshipResponse(viewerUserId, targetUserId);
   }
 
+  async listConnections(actor: string, input: ConnectionListInput): Promise<ConnectionListPage> {
+    await this.requireActiveUser(actor);
+    connectionListQuery(actor,{...input,cursor:undefined});
+    const page = await this.connections.listRelationships(actor,input);
+    const items: ConnectionListPage['items'] = [];
+    for (const item of page.items) {
+      // PostgreSQL projection was authorized under the account/pair locks.
+      if (item.displayName !== undefined) { items.push(item); continue; }
+      // The memory adapter is used only by isolated local/test auth sessions.
+      const target = await this.identities.findUserById(item.targetUserId);
+      if (!isActiveUser(target) || await this.safetyGate.isBlocked(actor,item.targetUserId)) continue;
+      if (!await this.getContactParticipant(actor) || !await this.getContactParticipant(item.targetUserId)) continue;
+      items.push({...item,displayName:target.displayName});
+    }
+    return {...page,items};
+  }
+
   async getContactPermission(
     viewerUserId: string,
     targetUserId: string,
@@ -360,6 +385,7 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(requesterUserId);
+    await this.actionLimiter.consume(requesterUserId,'REQUEST');
     this.assertDifferentUsers(requesterUserId, targetUserId);
     await this.requireRequestParticipant(requesterUserId);
     const eligibility = await this.getEligibility(targetUserId, requesterUserId);
@@ -375,9 +401,17 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
+    await this.actionLimiter.consume(actorUserId,'TRANSITION');
     await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
+    const participants = await Promise.all([
+      this.getContactParticipant(actorUserId),
+      this.getContactParticipant(targetUserId),
+    ]);
+    if (participants.some((participant) => !participant)) {
+      throw new ExchangeFailure('EXCHANGE_PROFILE_UNAVAILABLE', 404, 'Buddy profile was not found');
+    }
     const result = await this.connections.acceptConnection(actorUserId, targetUserId);
     return this.completeConnectionMutation(actorUserId, targetUserId, result);
   }
@@ -387,7 +421,7 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
-    await this.requireActiveUser(targetUserId);
+    await this.actionLimiter.consume(actorUserId,'TRANSITION');
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.declineConnection(actorUserId, targetUserId);
@@ -399,7 +433,7 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
-    await this.requireActiveUser(targetUserId);
+    await this.actionLimiter.consume(actorUserId,'TRANSITION');
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.cancelConnection(actorUserId, targetUserId);
@@ -411,7 +445,7 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
-    await this.requireActiveUser(targetUserId);
+    await this.actionLimiter.consume(actorUserId,'TRANSITION');
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.disconnect(actorUserId, targetUserId);

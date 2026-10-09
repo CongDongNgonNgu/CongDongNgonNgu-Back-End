@@ -56,6 +56,7 @@ export class InMemoryProfileRepository
       availability: input.availability.map((window) => ({ ...window })),
     };
     this.profiles.set(userId, profile);
+    this.mutationRevision+=1;
     return cloneProfile(profile);
   }
 }

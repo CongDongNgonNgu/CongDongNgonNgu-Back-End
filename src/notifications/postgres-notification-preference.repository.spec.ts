@@ -39,11 +39,13 @@ describe('PostgresNotificationPreferenceRepository', () => {
 
     expect(clientQuery.mock.calls.map(([sql]) => sql)).toEqual([
       'BEGIN',
+      expect.stringContaining('ORDER BY id FOR UPDATE'),
       expect.stringContaining('ON CONFLICT (user_id, category, channel)'),
       expect.stringContaining('ON CONFLICT (user_id, category, channel)'),
       'COMMIT',
     ]);
-    expect(clientQuery.mock.calls[1][1]).toEqual([USER_ID, 'COMMUNITY', 'SSE', false]);
-    expect(clientQuery.mock.calls[2][1]).toEqual([USER_ID, 'COMMUNITY', 'EMAIL', true]);
+    expect(clientQuery.mock.calls[1][1]).toEqual([USER_ID]);
+    expect(clientQuery.mock.calls[2][1]).toEqual([USER_ID, 'COMMUNITY', 'SSE', false]);
+    expect(clientQuery.mock.calls[3][1]).toEqual([USER_ID, 'COMMUNITY', 'EMAIL', true]);
   });
 });

@@ -13,6 +13,7 @@ export class ExchangeRepositoryConflictError extends Error {
 }
 
 export interface ExchangePreferenceRepository {
+  readonly revision?:number;
   findPreferences(userId: string): Promise<ExchangePreferenceRecord>;
   listDiscoverableUserIds(): Promise<string[]>;
   savePreferences(
@@ -40,6 +41,8 @@ export function defaultExchangePreferences(userId: string): ExchangePreferenceRe
 }
 
 export class InMemoryExchangePreferenceRepository implements ExchangePreferenceRepository {
+  private mutationRevision=0;
+  get revision():number {return this.mutationRevision;}
   private readonly preferences = new Map<string, ExchangePreferenceRecord>();
 
   async findPreferences(userId: string): Promise<ExchangePreferenceRecord> {
@@ -71,6 +74,7 @@ export class InMemoryExchangePreferenceRepository implements ExchangePreferenceR
       updatedAt: now,
     };
     this.preferences.set(userId, record);
+    this.mutationRevision+=1;
     return clonePreferences(record);
   }
 }

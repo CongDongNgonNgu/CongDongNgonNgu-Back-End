@@ -98,6 +98,7 @@ export class RepositoryConflictError extends Error {
 }
 
 export interface IdentityRepository {
+  readonly revision?:number;
   findUserById(id: string): Promise<UserRecord | null>;
   findUsersByIds?(ids: readonly string[]): Promise<UserRecord[]>;
   findUserByEmail(email: string): Promise<UserRecord | null>;
@@ -133,6 +134,8 @@ export interface IdentityRepository {
 }
 
 export class InMemoryIdentityRepository implements IdentityRepository {
+  private userRevision=0;
+  get revision():number {return this.userRevision;}
   private readonly users = new Map<string, UserRecord>();
   private readonly usersByEmail = new Map<string, string>();
   private readonly providers = new Map<string, ProviderAccountRecord>();
@@ -177,6 +180,7 @@ export class InMemoryIdentityRepository implements IdentityRepository {
       roles: ['MEMBER'],
     };
     this.users.set(user.id, user);
+    this.userRevision+=1;
     this.usersByEmail.set(user.email, user.id);
     return cloneUser(user);
   }
@@ -189,6 +193,7 @@ export class InMemoryIdentityRepository implements IdentityRepository {
     if (input.status !== undefined) user.status = input.status;
     if (input.emailVerifiedAt !== undefined) user.emailVerifiedAt = input.emailVerifiedAt;
     user.updatedAt = new Date();
+    this.userRevision+=1;
     return cloneUser(user);
   }
 

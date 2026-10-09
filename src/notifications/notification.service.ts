@@ -8,8 +8,9 @@ import {
 } from './notification.repository';
 import { NotificationFailure } from './notification.errors';
 import { NotificationPreferenceService } from './notification-preference.service';
-import { toNotificationResponse, type NotificationResponse } from './notification.projection';
+import { type NotificationResponse } from './notification.projection';
 import { NotificationRealtimeService } from './notification-realtime.service';
+import { CONNECTION_NOTIFICATION_ACCESS,countCurrentUnread,projectCurrentNotification,type ConnectionNotificationAccess } from './connection-notification-access';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -46,6 +47,7 @@ export class NotificationService {
     @Inject(NOTIFICATION_REPOSITORY) private readonly repository: NotificationRepository,
     @Optional() private readonly realtime?: NotificationRealtimeService,
     @Optional() private readonly preferences?: NotificationPreferenceService,
+    @Optional() @Inject(CONNECTION_NOTIFICATION_ACCESS) private readonly connectionAccess?:ConnectionNotificationAccess,
   ) {}
 
   async publish(intent: NotificationIntent, now = new Date()) {
@@ -71,9 +73,10 @@ export class NotificationService {
     }
     const [page, unreadCount] = await Promise.all([
       this.repository.listForUser(userId, { limit, status, before }),
-      this.repository.countUnread(userId),
+      countCurrentUnread(userId,this.repository,this.connectionAccess),
     ]);
-    const items = page.items.map(({ record, readState }) => toNotificationResponse(record, readState.status === 'READ', readState.readAt));
+    const items = await Promise.all(page.items.map(async({record,readState})=>
+      (await projectCurrentNotification(record,readState.status==='READ',readState.readAt,this.connectionAccess)).response));
     const last = items.at(-1);
     return {
       items,
@@ -89,7 +92,7 @@ export class NotificationService {
 
   async unreadCount(userId: string): Promise<{ unreadCount: number }> {
     assertUserId(userId);
-    return { unreadCount: await this.repository.countUnread(userId) };
+    return { unreadCount: await countCurrentUnread(userId,this.repository,this.connectionAccess) };
   }
 
   async markOneRead(userId: string, notificationId: string, now = new Date()): Promise<NotificationReadResponse> {
@@ -123,7 +126,7 @@ export class NotificationService {
     const result = await this.repository.markManyRead(userId, uniqueIds, now);
     return {
       updatedCount: result.updatedCount,
-      unreadCount: await this.repository.countUnread(userId),
+      unreadCount: await countCurrentUnread(userId,this.repository,this.connectionAccess),
     };
   }
 

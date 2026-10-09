@@ -20,6 +20,7 @@ const MAX_PREFERENCE_CHANGES = 32;
 
 @Injectable()
 export class NotificationPreferenceService {
+  get revision():number|undefined {return this.repository.revision;}
   constructor(
     @Inject(NOTIFICATION_PREFERENCE_REPOSITORY)
     private readonly repository: NotificationPreferenceRepository,

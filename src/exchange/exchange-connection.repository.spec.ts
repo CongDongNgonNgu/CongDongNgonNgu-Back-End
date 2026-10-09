@@ -3,6 +3,21 @@ import { randomUUID } from 'node:crypto';
 import { InMemoryExchangeConnectionRepository } from './exchange-connection.repository';
 
 describe('InMemoryExchangeConnectionRepository', () => {
+  it('keeps the new-pair cooldown after removal and releases it exactly at expiry',async()=>{
+    let now=0;const repository=new InMemoryExchangeConnectionRepository(undefined,undefined,()=>now);
+    const [a,b]=[randomUUID(),randomUUID()];
+    await repository.requestConnection(a,b);
+    await expect(repository.requestConnection(a,b)).resolves.toMatchObject({outcome:'ALREADY_PENDING'});
+    await repository.cancelConnection(a,b);
+    await expect(repository.requestConnection(b,a)).rejects.toMatchObject({code:'EXCHANGE_RATE_LIMITED'});
+    now=60000;
+    await expect(repository.requestConnection(b,a)).resolves.toMatchObject({outcome:'REQUESTED'});
+  });
+  it('rejects accept without a current request instead of acknowledging an unrelated pair', async () => {
+    const repository = new InMemoryExchangeConnectionRepository();
+    await expect(repository.acceptConnection(randomUUID(), randomUUID()))
+      .resolves.toMatchObject({ outcome: 'INVALID_ACTION', record: null });
+  });
   it('is idempotent for duplicate requests and converges reciprocal requests', async () => {
     const repository = new InMemoryExchangeConnectionRepository();
     const firstUserId = randomUUID();
@@ -28,7 +43,7 @@ describe('InMemoryExchangeConnectionRepository', () => {
   });
 
   it('supports accept, decline, cancel, and disconnect with actor-aware transitions', async () => {
-    const repository = new InMemoryExchangeConnectionRepository();
+    let now=0;const repository = new InMemoryExchangeConnectionRepository(undefined,undefined,()=>now);
     const firstUserId = randomUUID();
     const secondUserId = randomUUID();
 
@@ -50,11 +65,13 @@ describe('InMemoryExchangeConnectionRepository', () => {
       outcome: 'NONE',
     });
 
+    now+=60000;
     await repository.requestConnection(firstUserId, secondUserId);
     await expect(repository.cancelConnection(firstUserId, secondUserId)).resolves.toMatchObject({
       outcome: 'CANCELLED',
     });
 
+    now+=60000;
     await repository.requestConnection(firstUserId, secondUserId);
     await repository.acceptConnection(secondUserId, firstUserId);
     await expect(repository.disconnect(secondUserId, firstUserId)).resolves.toMatchObject({
