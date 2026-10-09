@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
+import { ConnectionCursorCodec } from '../../src/exchange/connection-cursor-codec';
 import { PostgresExchangeConnectionRepository } from '../../src/exchange/postgres-exchange-connection.repository';
 import { PostgresExchangeSafetyRepository } from '../../src/exchange/postgres-exchange-safety.repository';
 import { SqlHarness } from '../phase22/sql-harness';
@@ -15,7 +16,8 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
       await db.migration(migration);
     }
     safety = new PostgresExchangeSafetyRepository(db.pool);
-    connections = new PostgresExchangeConnectionRepository(db.pool, safety);
+    connections = new PostgresExchangeConnectionRepository(db.pool, safety,
+      new ConnectionCursorCodec('synthetic-phase26-cursor-secret-for-tests'));
   });
   afterAll(async () => { await db.close(); });
   beforeEach(async () => { await db.reset(); });
@@ -58,6 +60,48 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
     await connections.requestConnection(a,b);
     await db.pool.query(`UPDATE users SET status='DISABLED' WHERE id=$1`,[b]);
     await expect(connections.findRelationship(a,b)).rejects.toMatchObject({code:'EXCHANGE_PROFILE_UNAVAILABLE'});
+  });
+
+  it('lists only actor-owned rows with stable cursor pages and no blocked routing ids', async () => {
+    const [a,b] = await pair();
+    const [c,d] = await pair();
+    await connections.requestConnection(a,b);
+    await connections.requestConnection(a,c);
+    await connections.requestConnection(d,b);
+    const first = await connections.listRelationships(a,{kind:'OUTGOING',limit:1});
+    if (!first.nextCursor) throw new Error('Expected another page');
+    const second = await connections.listRelationships(a,{kind:'OUTGOING',limit:1,cursor:first.nextCursor});
+    const replica = new PostgresExchangeConnectionRepository(db.pool,safety,
+      new ConnectionCursorCodec('synthetic-phase26-cursor-secret-for-tests'));
+    expect(await replica.listRelationships(a,{kind:'OUTGOING',limit:1,cursor:first.nextCursor})).toEqual(second);
+    expect(new Set([...first.items,...second.items].map(item => item.targetUserId))).toEqual(new Set([b,c]));
+    expect(second.nextCursor).toBeNull();
+    await expect(connections.listRelationships(d,{kind:'OUTGOING',limit:1,cursor:first.nextCursor}))
+      .rejects.toMatchObject({code:'EXCHANGE_INVALID_CURSOR'});
+    await safety.blockUser(b,a);
+    const visible = await connections.listRelationships(a,{kind:'OUTGOING'});
+    expect(visible.items.map(item => item.targetUserId)).toEqual([c]);
+  });
+
+  it('keeps hidden scan metadata encrypted and reaches an eligible row after an empty page', async () => {
+    const [a,b] = await pair();
+    const [c] = await pair();
+    await connections.requestConnection(a,b);
+    const hidden = await connections.requestConnection(a,c);
+    await db.pool.query(`UPDATE language_exchange_connections SET updated_at='2026-10-09T00:00:01Z'
+      WHERE id<>$1`,[hidden.record!.id]);
+    await db.pool.query(`UPDATE language_exchange_connections SET updated_at='2026-10-09T00:00:02Z'
+      WHERE id=$1`,[hidden.record!.id]);
+    await db.pool.query('UPDATE language_exchange_preferences SET exchange_opt_in=false WHERE user_id=$1',[c]);
+    const first = await connections.listRelationships(a,{kind:'OUTGOING',limit:1});
+    expect(first.items).toEqual([]);
+    if (!first.nextCursor) throw new Error('Expected another scan page');
+    expect(Buffer.from(first.nextCursor,'base64url').toString('utf8')).not.toContain(hidden.record!.id);
+    const next = await connections.listRelationships(a,{kind:'OUTGOING',limit:1,cursor:first.nextCursor});
+    expect(next.items.map(item=>item.targetUserId)).toEqual([b]);
+    const tampered = Buffer.from(first.nextCursor,'base64url'); tampered[tampered.length-1]^=1;
+    await expect(connections.listRelationships(a,{kind:'OUTGOING',limit:1,cursor:tampered.toString('base64url')}))
+      .rejects.toMatchObject({code:'EXCHANGE_INVALID_CURSOR'});
   });
 
   it('converges concurrent duplicate and crossed requests to exactly one connected pair', async () => {

@@ -7,6 +7,7 @@ import { PROFILE_REPOSITORY } from '../profile/profile.repository';
 import type { ProfileRepository } from '../profile/profile.repository';
 import type { ProfileRecord } from '../profile/profile.types';
 import { ExchangeFailure } from './exchange.errors';
+import { connectionListQuery, type ConnectionListInput, type ConnectionListPage } from './exchange-connection-list';
 import {
   ExchangeRepositoryConflictError,
   EXCHANGE_PREFERENCE_REPOSITORY,
@@ -322,6 +323,23 @@ export class ExchangeService {
     this.assertDifferentUsers(viewerUserId, targetUserId);
     await this.assertPairAvailable(viewerUserId, targetUserId);
     return this.getRelationshipResponse(viewerUserId, targetUserId);
+  }
+
+  async listConnections(actor: string, input: ConnectionListInput): Promise<ConnectionListPage> {
+    await this.requireActiveUser(actor);
+    connectionListQuery(actor,{...input,cursor:undefined});
+    const page = await this.connections.listRelationships(actor,input);
+    const items: ConnectionListPage['items'] = [];
+    for (const item of page.items) {
+      // PostgreSQL projection was authorized under the account/pair locks.
+      if (item.displayName !== undefined) { items.push(item); continue; }
+      // The memory adapter is used only by isolated local/test auth sessions.
+      const target = await this.identities.findUserById(item.targetUserId);
+      if (!isActiveUser(target) || await this.safetyGate.isBlocked(actor,item.targetUserId)) continue;
+      if (!await this.getContactParticipant(actor) || !await this.getContactParticipant(item.targetUserId)) continue;
+      items.push({...item,displayName:target.displayName});
+    }
+    return {...page,items};
   }
 
   async getContactPermission(

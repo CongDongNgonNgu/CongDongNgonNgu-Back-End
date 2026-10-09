@@ -194,6 +194,32 @@ describe('language exchange API', () => {
       .expect(200)
       .expect(({ body }) => expect(body.data).toMatchObject({ state: 'OUTGOING_PENDING' }));
     await request(app.getHttpServer())
+      .get('/api/v1/exchange/connections?kind=OUTGOING')
+      .set('Authorization','Bearer '+accessTokenA)
+      .expect(200)
+      .expect(({body}) => {
+        expect(body.data.items).toHaveLength(1);
+        expect(body.data.items[0]).toMatchObject({targetUserId:userB.id,displayName:userB.displayName,state:'OUTGOING_PENDING'});
+        expect(body.data.items[0]).not.toHaveProperty('email');
+      });
+    await request(app.getHttpServer())
+      .get('/api/v1/exchange/connections?kind=INCOMING')
+      .set('Authorization','Bearer '+accessTokenB)
+      .expect(200)
+      .expect(({body}) => expect(body.data.items[0]).toMatchObject({targetUserId:userA.id,state:'INCOMING_PENDING'}));
+    await request(app.getHttpServer())
+      .get('/api/v1/exchange/connections?kind=OUTGOING')
+      .set('Authorization','Bearer '+accessTokenC)
+      .expect(200)
+      .expect(({body}) => expect(body.data.items).toEqual([]));
+    await request(app.getHttpServer())
+      .get('/api/v1/exchange/connections?kind=OUTGOING&limit=51')
+      .set('Authorization','Bearer '+accessTokenA)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/api/v1/exchange/connections?kind=CONNECTED')
+      .expect(401);
+    await request(app.getHttpServer())
       .post('/api/v1/exchange/relationships/' + userB.id + '/request')
       .set('Authorization', 'Bearer ' + accessTokenA)
       .expect(200)

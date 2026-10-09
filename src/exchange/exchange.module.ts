@@ -28,9 +28,11 @@ import { PostgresExchangePreferenceRepository } from './postgres-exchange.reposi
 import { PostgresExchangeConnectionRepository } from './postgres-exchange-connection.repository';
 import { InMemoryExchangeSafetyRepository } from './exchange-safety.repository';
 import { PostgresExchangeSafetyRepository } from './postgres-exchange-safety.repository';
+import { ConnectionCursorCodec } from './connection-cursor-codec';
 
 interface ExchangeRuntimeConfig {
   persistence: 'postgres' | 'memory';
+  accessSecret?: string;
 }
 
 @Module({
@@ -73,14 +75,16 @@ interface ExchangeRuntimeConfig {
       inject: [ConfigService, EXCHANGE_SAFETY_GATE],
       useFactory: (config: ConfigService, safety: ExchangeSafetyGate) => {
         const auth = config.get<ExchangeRuntimeConfig>('auth');
+        if (!auth?.accessSecret) throw new Error('Auth access secret is required for connection cursors');
+        const cursors = new ConnectionCursorCodec(auth.accessSecret);
         if (auth?.persistence === 'memory') {
-          return new InMemoryExchangeConnectionRepository(safety);
+          return new InMemoryExchangeConnectionRepository(safety,cursors);
         }
         const databaseUrl = config.get<string>('database.url');
         if (!databaseUrl) {
           throw new Error('DATABASE_URL is required for Postgres exchange persistence');
         }
-        return new PostgresExchangeConnectionRepository(new Pool({ connectionString: databaseUrl }), safety);
+        return new PostgresExchangeConnectionRepository(new Pool({ connectionString: databaseUrl }), safety,cursors);
       },
     },
     {

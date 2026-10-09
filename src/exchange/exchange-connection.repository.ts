@@ -4,10 +4,14 @@ import type {
   ExchangeConnectionRecord,
 } from './exchange-connection.types';
 import type { ExchangeSafetyReadStore } from './exchange-safety.types';
+import { ConnectionCursorCodec } from './connection-cursor-codec';
+import { connectionListQuery, connectionListMatches, connectionListItem, connectionListCursor,
+  type ConnectionListInput, type ConnectionListPage } from './exchange-connection-list';
 
 export const EXCHANGE_CONNECTION_REPOSITORY = 'EXCHANGE_CONNECTION_REPOSITORY';
 
 export interface ExchangeConnectionRepository {
+  listRelationships(actor: string, input: ConnectionListInput): Promise<ConnectionListPage>;
   findRelationship(firstUserId: string, secondUserId: string): Promise<ExchangeConnectionRecord | null>;
   requestConnection(requesterUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult>;
   acceptConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult>;
@@ -21,7 +25,26 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
   private readonly relationships = new Map<string, ExchangeConnectionRecord>();
   private operationTail: Promise<void> = Promise.resolve();
 
-  constructor(private readonly safety?: ExchangeSafetyReadStore) {}
+  constructor(private readonly safety?: ExchangeSafetyReadStore, private readonly cursors = new ConnectionCursorCodec()) {}
+
+  listRelationships(actor: string, input: ConnectionListInput): Promise<ConnectionListPage> {
+    return this.withLock(async () => {
+      const query = connectionListQuery(actor,input,this.cursors);
+      const records = [...this.relationships.values()].filter(record => connectionListMatches(record,actor,query.kind))
+        .sort((a,b) => b.updatedAt.getTime()-a.updatedAt.getTime() || b.id.localeCompare(a.id));
+      const visible: ExchangeConnectionRecord[] = [];
+      for (const record of records) {
+        if (query.cursor && (record.updatedAt.toISOString()>query.cursor.updatedAt
+          || (record.updatedAt.toISOString()===query.cursor.updatedAt && record.id>=query.cursor.id))) continue;
+        const target = record.participantAId===actor ? record.participantBId : record.participantAId;
+        if (!await this.isBlocked(actor,target)) visible.push(record);
+        if (visible.length>query.limit) break;
+      }
+      const page = visible.slice(0,query.limit);
+      return {items:page.map(record => connectionListItem(record,actor)),nextCursor:visible.length>query.limit
+        ? connectionListCursor(actor,query.kind,page[page.length-1],this.cursors) : null};
+    });
+  }
 
   findRelationship(firstUserId: string, secondUserId: string): Promise<ExchangeConnectionRecord | null> {
     return this.withLock(async () => {

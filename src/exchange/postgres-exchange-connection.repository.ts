@@ -7,12 +7,54 @@ import type { ExchangeConnectionRepository } from './exchange-connection.reposit
 import { lockExchangePair } from './exchange-safety.repository';
 import type { ExchangeSafetyReadStore } from './exchange-safety.types';
 import { authorizeConnectionPair, lockExchangeUsers } from './exchange-pair-authorization';
+import { ExchangeFailure } from './exchange.errors';
+import { ConnectionCursorCodec } from './connection-cursor-codec';
+import { connectionListQuery, connectionListMatches, connectionListItem, connectionListCursor,
+  type ConnectionListInput, type ConnectionListPage } from './exchange-connection-list';
 
 export class PostgresExchangeConnectionRepository implements ExchangeConnectionRepository {
   constructor(
     private readonly pool: Pool,
     private readonly safety?: ExchangeSafetyReadStore,
+    private readonly cursors = new ConnectionCursorCodec(),
   ) {}
+
+  async listRelationships(actor: string, input: ConnectionListInput): Promise<ConnectionListPage> {
+    const query = connectionListQuery(actor,input,this.cursors);
+    // Millisecond precision matches the wire cursor and JS Date; UUID breaks ties.
+    const result = await this.pool.query(`
+      SELECT id, participant_a_id, participant_b_id, requester_id, status, created_at, updated_at
+      FROM language_exchange_connections c
+      WHERE (participant_a_id=$1::uuid OR participant_b_id=$1::uuid)
+        AND (($2='CONNECTED' AND status='CONNECTED')
+          OR ($2='OUTGOING' AND status='PENDING' AND requester_id=$1::uuid)
+          OR ($2='INCOMING' AND status='PENDING' AND requester_id<>$1::uuid))
+        AND ($3::timestamptz IS NULL OR (date_trunc('milliseconds',updated_at),id)<($3::timestamptz,$4::uuid))
+        AND NOT EXISTS (SELECT 1 FROM language_exchange_blocks b WHERE
+          (b.blocker_user_id=c.participant_a_id AND b.blocked_user_id=c.participant_b_id)
+          OR (b.blocker_user_id=c.participant_b_id AND b.blocked_user_id=c.participant_a_id))
+      ORDER BY date_trunc('milliseconds',updated_at) DESC,id DESC LIMIT $5`,
+      [actor,query.kind,query.cursor?.updatedAt ?? null,query.cursor?.id ?? null,query.limit+1]);
+    const records = result.rows.map(row => mapRow(row)!);
+    const page = records.slice(0,query.limit);
+    const items: ConnectionListPage['items'] = [];
+    for (const record of page) {
+      const target = record.participantAId===actor ? record.participantBId : record.participantAId;
+      try {
+        const item = await this.withLockedRelationship(actor,target,async (client,current,blocked) => {
+          if (blocked || !current || !connectionListMatches(current,actor,query.kind)) return null;
+          if (current.id!==record.id || current.updatedAt.getTime()!==record.updatedAt.getTime()) return null;
+          const user = (await client.query('SELECT display_name FROM users WHERE id=$1',[target])).rows[0];
+          return {...connectionListItem(current,actor),displayName:String(user.display_name)};
+        },'ELIGIBLE');
+        if (item) items.push(item);
+      } catch (error) {
+        if (!(error instanceof ExchangeFailure && error.code==='EXCHANGE_PROFILE_UNAVAILABLE')) throw error;
+      }
+    }
+    return {items,nextCursor:records.length>query.limit
+      ? connectionListCursor(actor,query.kind,page[page.length-1],this.cursors) : null};
+  }
 
   async findRelationship(firstUserId: string, secondUserId: string): Promise<ExchangeConnectionRecord | null> {
     return this.withLockedRelationship(firstUserId, secondUserId, async (_client, current, blocked) => {
