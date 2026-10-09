@@ -10,6 +10,7 @@ import { authorizeConnectionPair, lockExchangeUsers } from './exchange-pair-auth
 import { ExchangeFailure } from './exchange.errors';
 import { ConnectionCursorCodec } from './connection-cursor-codec';
 import { consumeNewConnectionPair } from './exchange-action-limiter';
+import { enqueueConnectionNotification } from './exchange-notification-outbox';
 import { connectionListQuery, connectionListMatches, connectionListItem, connectionListCursor,
   type ConnectionListInput, type ConnectionListPage } from './exchange-connection-list';
 
@@ -86,7 +87,9 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
                 RETURNING id, participant_a_id, participant_b_id, requester_id, status, created_at, updated_at`,
               [current.id],
             );
-            return { record: mapRow(result.rows[0]), outcome: 'CONNECTED' as const };
+            const mutation={record:mapRow(result.rows[0]),outcome:'CONNECTED' as const};
+            await enqueueConnectionNotification(client,requesterUserId,mutation);
+            return mutation;
           }
           await consumeNewConnectionPair(client,requesterUserId,targetUserId);
           const result = await client.query(
@@ -102,7 +105,9 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
              RETURNING id, participant_a_id, participant_b_id, requester_id, status, created_at, updated_at`,
             [requesterUserId, targetUserId],
           );
-          return { record: mapRow(result.rows[0]), outcome: 'REQUESTED' as const };
+          const mutation={record:mapRow(result.rows[0]),outcome:'REQUESTED' as const};
+          await enqueueConnectionNotification(client,requesterUserId,mutation);
+          return mutation;
         }, 'REQUEST');
       } catch (error) {
         if (attempt === 0 && isUniqueViolation(error)) continue;
@@ -126,7 +131,9 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
           RETURNING id, participant_a_id, participant_b_id, requester_id, status, created_at, updated_at`,
         [current.id],
       );
-      return { record: mapRow(result.rows[0]), outcome: 'ACCEPTED' as const };
+      const mutation={record:mapRow(result.rows[0]),outcome:'ACCEPTED' as const};
+      await enqueueConnectionNotification(client,actorUserId,mutation);
+      return mutation;
     }, 'ELIGIBLE');
   }
 

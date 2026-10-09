@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool,PoolClient } from 'pg';
 import {
   hashNotificationIntent,
   normalizeNotificationActorProjection,
@@ -49,12 +49,22 @@ const NOTIFICATION_RETURNING_COLUMNS = NOTIFICATION_COLUMNS.replaceAll('n.', '')
 export class PostgresNotificationRepository implements NotificationRepository {
   constructor(private readonly pool: Pool) {}
 
+  // The caller owns BEGIN/COMMIT/ROLLBACK/release for atomic domain materialization.
+  async claimIntentOnClient(client:PoolClient,intent:NotificationIntent,now=new Date()):Promise<NotificationIntentClaim> {
+    return this.persistIntent(intent,now,client);
+  }
+
   async claimIntent(intent: NotificationIntent, now = new Date()): Promise<NotificationIntentClaim> {
+    return this.persistIntent(intent,now);
+  }
+
+  private async persistIntent(intent:NotificationIntent,now:Date,providedClient?:PoolClient):Promise<NotificationIntentClaim> {
     const validated = validateNotificationIntent(intent);
     const fingerprint = hashNotificationIntent(validated);
-    const client = await this.pool.connect();
+    const client = providedClient ?? await this.pool.connect();
+    const ownsTransaction = providedClient === undefined;
     try {
-      await client.query('BEGIN');
+      if(ownsTransaction) await client.query('BEGIN');
       const inserted = await client.query<Record<string, unknown>>(
         `INSERT INTO notifications (
            intent_id,
@@ -113,7 +123,7 @@ export class PostgresNotificationRepository implements NotificationRepository {
            ) VALUES ($1::uuid, $2::uuid, 'UNREAD', NULL, $3::timestamptz)`,
           [record.id, record.recipientUserId, now],
         );
-        await client.query('COMMIT');
+        if(ownsTransaction) await client.query('COMMIT');
         return { outcome: 'CREATED', record };
       }
 
@@ -128,7 +138,7 @@ export class PostgresNotificationRepository implements NotificationRepository {
       const existing = existingResult.rows[0];
       const record = mapNotificationRow(existing);
       const existingFingerprint = String(existing.intent_fingerprint);
-      await client.query('COMMIT');
+      if(ownsTransaction) await client.query('COMMIT');
       if (existingFingerprint === fingerprint) return { outcome: 'REPLAYED', record };
       return {
         outcome: 'CONFLICT',
@@ -136,10 +146,10 @@ export class PostgresNotificationRepository implements NotificationRepository {
         deduplicationKey: validated.deduplicationKey,
       };
     } catch (error) {
-      await client.query('ROLLBACK').catch(() => undefined);
+      if(ownsTransaction) await client.query('ROLLBACK').catch(() => undefined);
       throw error;
     } finally {
-      client.release();
+      if(ownsTransaction) client.release();
     }
   }
 

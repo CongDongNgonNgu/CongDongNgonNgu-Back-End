@@ -3,6 +3,32 @@ import type { Pool, PoolClient } from 'pg';
 import { PostgresExchangeConnectionRepository } from './postgres-exchange-connection.repository';
 
 describe('PostgresExchangeConnectionRepository', () => {
+  it.each([false,true])('persists the request intent before commit and rolls back enqueue failure=%s',async fail=>{
+    const calls:string[]=[];
+    const client=fakeClient(async sql=>{
+      calls.push(sql);
+      if(sql.startsWith('BEGIN') || sql==='COMMIT' || sql==='ROLLBACK') return {rows:[]};
+      if(sql.includes('FROM users') || sql.includes('SELECT p.user_id')) return {rows:accountRows()};
+      if(sql.includes('pg_advisory_xact_lock')) return {rows:[]};
+      if(sql.includes('INSERT INTO exchange_action_rate_limits')) return {rows:[{hits:1,retry_seconds:60}]};
+      if(sql.includes('FROM language_exchange_connections')) return {rows:[]};
+      if(sql.includes('INSERT INTO language_exchange_connections')) return {rows:[connectionRow('PENDING')]};
+      if(sql.includes('INSERT INTO exchange_notification_outbox')) {
+        if(fail) throw new Error('Synthetic outbox failure');
+        return {rows:[]};
+      }
+      throw new Error('Unexpected SQL: '+sql);
+    });
+    const repository=new PostgresExchangeConnectionRepository({connect:async()=>client} as unknown as Pool);
+    const mutation=repository.requestConnection(accountRows()[0].id,accountRows()[1].id);
+    if(fail) await expect(mutation).rejects.toThrow('Synthetic outbox failure');
+    else await expect(mutation).resolves.toMatchObject({outcome:'REQUESTED'});
+    const insert=calls.findIndex(sql=>sql.includes('INSERT INTO exchange_notification_outbox'));
+    expect(insert).toBeGreaterThan(calls.findIndex(sql=>sql.includes('INSERT INTO language_exchange_connections')));
+    expect(calls.at(-1)).toBe(fail?'ROLLBACK':'COMMIT');
+    if(fail) expect(calls).not.toContain('COMMIT');
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
   it('retries a unique pair race and converges the second read to connected', async () => {
     const calls: string[] = [];
     const pendingRow = connectionRow('PENDING');
@@ -30,6 +56,7 @@ describe('PostgresExchangeConnectionRepository', () => {
       if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
       if (sql.includes('FOR UPDATE')) return { rows: [pendingRow] };
       if (sql.includes('UPDATE language_exchange_connections')) return { rows: [connectedRow] };
+      if (sql.includes('INSERT INTO exchange_notification_outbox')) return {rows:[]};
       throw new Error('Unexpected retry SQL: ' + sql);
     });
     const connect = jest.fn<() => Promise<PoolClient>>();

@@ -13,7 +13,8 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
   beforeAll(async () => {
     await db.open();
     for (const migration of ['0002_language_profile.sql', '0006_language_exchange_preferences.sql',
-      '0007_language_exchange_connections.sql', '0008_language_exchange_safety.sql','0029_phase26_exchange_limits.sql']) {
+      '0007_language_exchange_connections.sql', '0008_language_exchange_safety.sql','0029_phase26_exchange_limits.sql',
+      '0030_phase26_connection_outbox.sql']) {
       await db.migration(migration);
     }
     safety = new PostgresExchangeSafetyRepository(db.pool);
@@ -40,6 +41,37 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
     }
     return ids;
   }
+
+  it.each([false,true])('persists one requested and one connected intent for crossed request=%s',async crossed=>{
+    const [a,b]=await pair();
+    const request=await connections.requestConnection(a,b);
+    await connections.requestConnection(a,b);
+    if(crossed) await connections.requestConnection(b,a);
+    else await connections.acceptConnection(b,a);
+    await connections.acceptConnection(b,a);
+    const rows=(await db.pool.query(`SELECT connection_id,event_kind,actor_id,recipient_id,occurred_at
+      FROM exchange_notification_outbox ORDER BY event_kind`)).rows;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({connection_id:request.record!.id,event_kind:'CONNECTED',actor_id:b,recipient_id:a});
+    expect(rows[1]).toMatchObject({connection_id:request.record!.id,event_kind:'REQUESTED',actor_id:a,recipient_id:b,
+      occurred_at:request.record!.createdAt});
+    await connections.disconnect(a,b);
+    expect((await db.pool.query('SELECT id FROM exchange_notification_outbox')).rows).toHaveLength(2);
+  });
+
+  it('rolls back both the connection and pair cooldown when transactional intent insertion fails',async()=>{
+    const [a,b]=await pair();
+    await db.pool.query(`ALTER TABLE exchange_notification_outbox ADD CONSTRAINT synthetic_fail CHECK(false)`);
+    try {
+      await expect(connections.requestConnection(a,b)).rejects.toMatchObject({code:'23514'});
+      expect((await db.pool.query('SELECT id FROM language_exchange_connections')).rows).toHaveLength(0);
+      expect((await db.pool.query('SELECT actor_id FROM exchange_action_rate_limits')).rows).toHaveLength(0);
+      expect((await db.pool.query('SELECT id FROM exchange_notification_outbox')).rows).toHaveLength(0);
+    } finally {
+      await db.pool.query('ALTER TABLE exchange_notification_outbox DROP CONSTRAINT synthetic_fail');
+    }
+    await expect(connections.requestConnection(a,b)).resolves.toMatchObject({outcome:'REQUESTED'});
+  });
 
   it('enforces ten hourly request attempts across replicas and commits denied attempts to the daily window',async()=>{
     const [a]=await pair();
