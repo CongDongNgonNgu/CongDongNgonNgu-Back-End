@@ -3,6 +3,17 @@ import { randomUUID } from 'node:crypto';
 import { InMemoryExchangeConnectionRepository } from './exchange-connection.repository';
 
 describe('InMemoryExchangeConnectionRepository', () => {
+  it.each(['declineConnection','cancelConnection','disconnect'] as const)(
+    'rejects absent %s without touching another pair or mutation revision',async action=>{
+      const repository=new InMemoryExchangeConnectionRepository();
+      const [a,b,c]=[randomUUID(),randomUUID(),randomUUID()];
+      await repository.requestConnection(a,b);
+      const before=await repository.findRelationship(a,b);const revision=repository.revision;
+      await expect(repository[action](c,b)).resolves.toEqual({record:null,outcome:'INVALID_ACTION'});
+      expect(await repository.findRelationship(a,b)).toEqual(before);
+      expect(repository.revision).toBe(revision);
+      await expect(repository.removeRelationshipForSafety(c,b)).resolves.toMatchObject({outcome:'NONE'});
+    });
   it('keeps the new-pair cooldown after removal and releases it exactly at expiry',async()=>{
     let now=0;const repository=new InMemoryExchangeConnectionRepository(undefined,undefined,()=>now);
     const [a,b]=[randomUUID(),randomUUID()];
@@ -62,7 +73,7 @@ describe('InMemoryExchangeConnectionRepository', () => {
       outcome: 'DECLINED',
     });
     await expect(repository.declineConnection(secondUserId, firstUserId)).resolves.toMatchObject({
-      outcome: 'NONE',
+      outcome: 'INVALID_ACTION',
     });
 
     now+=60000;
@@ -78,7 +89,7 @@ describe('InMemoryExchangeConnectionRepository', () => {
       outcome: 'DISCONNECTED',
     });
     await expect(repository.disconnect(secondUserId, firstUserId)).resolves.toMatchObject({
-      outcome: 'NONE',
+      outcome: 'INVALID_ACTION',
     });
   });
 });

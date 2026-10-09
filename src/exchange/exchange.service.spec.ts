@@ -363,7 +363,7 @@ describe('ExchangeService', () => {
       'exchange.connection.disconnected',
     ]);
     expect(eventSink.events[2]).toMatchObject({ requesterUserId: requester.id });
-    await service.disconnect(requester.id, target.id);
+    await expect(service.disconnect(requester.id, target.id)).rejects.toMatchObject({code:'EXCHANGE_CONNECTION_ACTION_INVALID',status:409});
     expect(eventTypes()).toHaveLength(3);
 
     advancePairWindow();
@@ -377,7 +377,7 @@ describe('ExchangeService', () => {
       'exchange.connection.declined',
     ]);
     expect(eventSink.events[4]).toMatchObject({ requesterUserId: requester.id });
-    await service.declineConnection(target.id, requester.id);
+    await expect(service.declineConnection(target.id, requester.id)).rejects.toMatchObject({code:'EXCHANGE_CONNECTION_ACTION_INVALID',status:409});
     expect(eventTypes()).toHaveLength(5);
 
     advancePairWindow();
@@ -393,7 +393,7 @@ describe('ExchangeService', () => {
       'exchange.connection.cancelled',
     ]);
     expect(eventSink.events[6]).toMatchObject({ requesterUserId: requester.id });
-    await service.cancelConnection(requester.id, target.id);
+    await expect(service.cancelConnection(requester.id, target.id)).rejects.toMatchObject({code:'EXCHANGE_CONNECTION_ACTION_INVALID',status:409});
     expect(eventTypes()).toHaveLength(7);
   });
 
