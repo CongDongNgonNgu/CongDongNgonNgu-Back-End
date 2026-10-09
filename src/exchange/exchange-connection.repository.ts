@@ -5,6 +5,7 @@ import type {
 } from './exchange-connection.types';
 import type { ExchangeSafetyReadStore } from './exchange-safety.types';
 import { ConnectionCursorCodec } from './connection-cursor-codec';
+import { ExchangeFailure } from './exchange.errors';
 import { connectionListQuery, connectionListMatches, connectionListItem, connectionListCursor,
   type ConnectionListInput, type ConnectionListPage } from './exchange-connection-list';
 
@@ -24,8 +25,10 @@ export interface ExchangeConnectionRepository {
 export class InMemoryExchangeConnectionRepository implements ExchangeConnectionRepository {
   private readonly relationships = new Map<string, ExchangeConnectionRecord>();
   private operationTail: Promise<void> = Promise.resolve();
+  private readonly pairResetAt = new Map<string,number>();
 
-  constructor(private readonly safety?: ExchangeSafetyReadStore, private readonly cursors = new ConnectionCursorCodec()) {}
+  constructor(private readonly safety?: ExchangeSafetyReadStore, private readonly cursors = new ConnectionCursorCodec(),
+    private readonly now:()=>number=Date.now) {}
 
   listRelationships(actor: string, input: ConnectionListInput): Promise<ConnectionListPage> {
     return this.withLock(async () => {
@@ -64,6 +67,8 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
       const key = pairKey(requesterUserId, targetUserId);
       const current = this.relationships.get(key);
       if (!current) {
+        const clock=this.now();const resetAt=this.pairResetAt.get(key) ?? 0;
+        if(resetAt>clock) throw new ExchangeFailure('EXCHANGE_RATE_LIMITED',429,'Too many Exchange actions',Math.ceil((resetAt-clock)/1000));
         const now = new Date();
         const [participantAId, participantBId] = canonicalPair(requesterUserId, targetUserId);
         const record: ExchangeConnectionRecord = {
@@ -76,6 +81,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
           updatedAt: now,
         };
         this.relationships.set(key, record);
+        this.pairResetAt.set(key,clock+60000);
         return { record: cloneRecord(record), outcome: 'REQUESTED' as const };
       }
       if (current.status === 'CONNECTED') {
@@ -97,7 +103,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
       }
       const key = pairKey(actorUserId, targetUserId);
       const current = this.relationships.get(key);
-      if (!current) return { record: null, outcome: 'NONE' as const };
+      if (!current) return { record: null, outcome: 'INVALID_ACTION' as const };
       if (current.status === 'CONNECTED') {
         return { record: cloneRecord(current), outcome: 'ALREADY_CONNECTED' as const };
       }

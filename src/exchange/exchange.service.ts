@@ -7,6 +7,7 @@ import { PROFILE_REPOSITORY } from '../profile/profile.repository';
 import type { ProfileRepository } from '../profile/profile.repository';
 import type { ProfileRecord } from '../profile/profile.types';
 import { ExchangeFailure } from './exchange.errors';
+import { EXCHANGE_ACTION_LIMITER,MemoryExchangeActionLimiter,type ExchangeActionLimiter } from './exchange-action-limiter';
 import { connectionListQuery, type ConnectionListInput, type ConnectionListPage } from './exchange-connection-list';
 import {
   ExchangeRepositoryConflictError,
@@ -151,6 +152,8 @@ export class ExchangeService {
     private readonly connections: ExchangeConnectionRepository,
     @Inject(EXCHANGE_CONNECTION_EVENT_SINK)
     private readonly connectionEvents: ExchangeConnectionEventSink,
+    @Inject(EXCHANGE_ACTION_LIMITER)
+    private readonly actionLimiter: ExchangeActionLimiter = new MemoryExchangeActionLimiter(),
   ) {}
 
   async getOwnPreferences(userId: string): Promise<ExchangePreferencesResponse> {
@@ -195,6 +198,7 @@ export class ExchangeService {
 
   async blockUser(viewerUserId: string, targetUserId: string): Promise<ExchangeBlockResponse> {
     await this.requireActiveUser(viewerUserId);
+    await this.actionLimiter.consume(viewerUserId,'TRANSITION');
     await this.requireExistingUser(targetUserId);
     this.assertDifferentUsers(viewerUserId, targetUserId);
     const result = await this.safetyGate.blockUser(viewerUserId, targetUserId);
@@ -222,6 +226,7 @@ export class ExchangeService {
 
   async unblockUser(viewerUserId: string, targetUserId: string): Promise<ExchangeBlockResponse> {
     await this.requireActiveUser(viewerUserId);
+    await this.actionLimiter.consume(viewerUserId,'TRANSITION');
     this.assertDifferentUsers(viewerUserId, targetUserId);
     const result = await this.safetyGate.unblockUser(viewerUserId, targetUserId);
     return {
@@ -237,6 +242,7 @@ export class ExchangeService {
     input: ExchangeReportSubmissionInput,
   ): Promise<ExchangeReportResponse> {
     await this.requireActiveUser(reporterUserId);
+    await this.actionLimiter.consume(reporterUserId,'REPORT');
     if (reporterUserId === targetUserId) {
       throw exchangeFailure('EXCHANGE_SELF_REPORT', 'You cannot report yourself');
     }
@@ -378,6 +384,7 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(requesterUserId);
+    await this.actionLimiter.consume(requesterUserId,'REQUEST');
     this.assertDifferentUsers(requesterUserId, targetUserId);
     await this.requireRequestParticipant(requesterUserId);
     const eligibility = await this.getEligibility(targetUserId, requesterUserId);
@@ -393,6 +400,7 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
+    await this.actionLimiter.consume(actorUserId,'TRANSITION');
     await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
@@ -412,6 +420,7 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
+    await this.actionLimiter.consume(actorUserId,'TRANSITION');
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.declineConnection(actorUserId, targetUserId);
@@ -423,6 +432,7 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
+    await this.actionLimiter.consume(actorUserId,'TRANSITION');
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.cancelConnection(actorUserId, targetUserId);
@@ -434,6 +444,7 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
+    await this.actionLimiter.consume(actorUserId,'TRANSITION');
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.disconnect(actorUserId, targetUserId);

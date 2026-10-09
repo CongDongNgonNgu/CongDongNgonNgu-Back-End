@@ -16,6 +16,14 @@ export class ApiExceptionFilter implements ExceptionFilter {
       ? exception.getStatus()
       : HttpStatus.INTERNAL_SERVER_ERROR;
     const message = this.readMessage(exception, status);
+    if(status===429 && exception instanceof HttpException) {
+      const detail=exception.getResponse();
+      if(typeof detail==='object' && detail!==null && 'retryAfterSeconds' in detail) {
+        const retry=(detail as {retryAfterSeconds?:unknown}).retryAfterSeconds;
+        if(typeof retry==='number' && Number.isInteger(retry) && retry>0 && retry<=86400)
+          response.setHeader('Retry-After',String(retry));
+      }
+    }
     const body: ApiFailure = {
       success: false,
       error: {

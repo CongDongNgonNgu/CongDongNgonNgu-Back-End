@@ -5,8 +5,9 @@ export class ExchangeFailure extends HttpException {
     readonly code: string,
     status: number,
     message: string,
+    retryAfterSeconds?: number,
   ) {
-    super({ code, message }, status);
+    super({ code, message, ...(retryAfterSeconds ? {retryAfterSeconds} : {}) }, status);
     this.name = 'ExchangeFailure';
   }
 }

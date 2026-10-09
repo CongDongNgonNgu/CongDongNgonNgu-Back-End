@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { ConnectionCursorCodec } from '../../src/exchange/connection-cursor-codec';
+import { PostgresExchangeActionLimiter } from '../../src/exchange/exchange-action-limiter';
 import { PostgresExchangeConnectionRepository } from '../../src/exchange/postgres-exchange-connection.repository';
 import { PostgresExchangeSafetyRepository } from '../../src/exchange/postgres-exchange-safety.repository';
 import { SqlHarness } from '../phase22/sql-harness';
@@ -12,7 +13,7 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
   beforeAll(async () => {
     await db.open();
     for (const migration of ['0002_language_profile.sql', '0006_language_exchange_preferences.sql',
-      '0007_language_exchange_connections.sql', '0008_language_exchange_safety.sql']) {
+      '0007_language_exchange_connections.sql', '0008_language_exchange_safety.sql','0029_phase26_exchange_limits.sql']) {
       await db.migration(migration);
     }
     safety = new PostgresExchangeSafetyRepository(db.pool);
@@ -40,6 +41,84 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
     return ids;
   }
 
+  it('enforces ten hourly request attempts across replicas and commits denied attempts to the daily window',async()=>{
+    const [a]=await pair();
+    const replicas=[new PostgresExchangeActionLimiter(db.pool),new PostgresExchangeActionLimiter(db.pool)];
+    const attempts=await Promise.allSettled(Array.from({length:20},(_,index)=>replicas[index%2].consume(a,'REQUEST')));
+    expect(attempts.filter(result=>result.status==='fulfilled')).toHaveLength(10);
+    expect(attempts.filter(result=>result.status==='rejected')).toHaveLength(10);
+    expect((await db.pool.query(`SELECT bucket,hits FROM exchange_action_rate_limits WHERE actor_id=$1 ORDER BY bucket`,[a])).rows)
+      .toEqual([{bucket:'REQUEST_DAY',hits:20},{bucket:'REQUEST_HOUR',hits:11}]);
+    await db.pool.query(`UPDATE exchange_action_rate_limits SET reset_at=clock_timestamp()-interval '1 second'
+      WHERE actor_id=$1 AND bucket='REQUEST_HOUR'`,[a]);
+    await expect(new PostgresExchangeActionLimiter(db.pool).consume(a,'REQUEST')).resolves.toBeUndefined();
+  });
+
+  it('uses a durable canonical new-pair cooldown without charging duplicate requests',async()=>{
+    const [a,b]=await pair();
+    const first=await connections.requestConnection(a,b);
+    expect(await connections.requestConnection(a,b)).toMatchObject({outcome:'ALREADY_PENDING',record:{id:first.record!.id}});
+    await connections.cancelConnection(a,b);
+    await expect(connections.requestConnection(b,a)).rejects.toMatchObject({code:'EXCHANGE_RATE_LIMITED'});
+    expect((await db.pool.query('SELECT id FROM language_exchange_connections')).rows).toHaveLength(0);
+    await db.pool.query(`UPDATE exchange_action_rate_limits SET reset_at=clock_timestamp()-interval '1 second'
+      WHERE bucket='PAIR_MINUTE'`);
+    expect(await connections.requestConnection(b,a)).toMatchObject({outcome:'REQUESTED'});
+  });
+
+  it('samples the rate clock after an observed replica wait crossing window expiry',async()=>{
+    const [a]=await pair();
+    await db.pool.query(`INSERT INTO exchange_action_rate_limits(actor_id,bucket,hits,reset_at)
+      VALUES($1,'REQUEST_HOUR',9,clock_timestamp()+interval '3 seconds')`,[a]);
+    const released=deferred();const held=deferred();
+    const firstPool=new Pool({connectionString:db.scopedUrl,max:1});
+    const name='phase26_rate_wait_'+randomUUID();
+    const secondPool=new Pool({connectionString:db.scopedUrl,max:1,application_name:name});
+    const gatedPool=new Proxy(firstPool,{get(target,key){
+      if(key==='connect') return async()=>{
+        const client=await target.connect();return new Proxy(client,{get(connection,property){
+          if(property==='query') return async(sql:string,parameters?:unknown[])=>{
+            const result=await connection.query(sql,parameters);
+            if(sql.includes('INSERT INTO exchange_action_rate_limits') && parameters?.[1]==='REQUEST_HOUR') {
+              held.resolve();await released.promise;
+            }
+            return result;
+          };
+          const value=Reflect.get(connection,property);return typeof value==='function'?value.bind(connection):value;
+        }});
+      };
+      const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;
+    }});
+    let one:Promise<unknown>|undefined;let two:Promise<unknown>|undefined;
+    try {
+      one=new PostgresExchangeActionLimiter(gatedPool).consume(a,'REQUEST').then(()=> 'ALLOWED',error=>error);
+      await held.promise;
+      two=new PostgresExchangeActionLimiter(secondPool).consume(a,'REQUEST').then(()=> 'ALLOWED',error=>error);
+      await observedLockWait(name);
+      const deadline=Date.now()+10000;let expired=false;
+      while(Date.now()<deadline) {
+        const row=(await db.pool.query(`SELECT reset_at<=clock_timestamp() AS expired
+          FROM exchange_action_rate_limits WHERE actor_id=$1 AND bucket='REQUEST_HOUR'`,[a])).rows[0];
+        if(row.expired){expired=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,25));
+      }
+      if(!expired) throw new Error('Rate window did not expire within bounded test wait');
+      released.resolve();expect(await one).toBe('ALLOWED');expect(await two).toBe('ALLOWED');
+    } finally {
+      released.resolve();await Promise.allSettled([one,two]);await firstPool.end();await secondPool.end();
+    }
+  });
+
+  it('cleans at most one hundred expired counters independently before action locks',async()=>{
+    const [a]=await pair();
+    await db.pool.query(`INSERT INTO exchange_action_rate_limits(actor_id,bucket,target_key,hits,reset_at)
+      SELECT $1,'PAIR_MINUTE',gen_random_uuid()::text,1,clock_timestamp()-interval '1 second'
+      FROM generate_series(1,120)`,[a]);
+    await new PostgresExchangeActionLimiter(db.pool).consume(a,'REQUEST');
+    expect(Number((await db.pool.query(`SELECT count(*) AS total FROM exchange_action_rate_limits
+      WHERE bucket='PAIR_MINUTE'`)).rows[0].total)).toBe(20);
+  });
+
   it('denies request when current account was disabled after a caller precheck', async () => {
     const [a,b] = await pair();
     await db.pool.query(`UPDATE users SET status='DISABLED' WHERE id=$1`, [b]);
@@ -60,6 +139,22 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
     await connections.requestConnection(a,b);
     await db.pool.query(`UPDATE users SET status='DISABLED' WHERE id=$1`,[b]);
     await expect(connections.findRelationship(a,b)).rejects.toMatchObject({code:'EXCHANGE_PROFILE_UNAVAILABLE'});
+  });
+
+  it('rejects an eligible unrelated accept without changing another pending pair', async () => {
+    const [a,b] = await pair(); const [c] = await pair();
+    await connections.requestConnection(a,b);
+    expect(await connections.acceptConnection(c,b)).toMatchObject({outcome:'INVALID_ACTION',record:null});
+    expect((await db.pool.query('SELECT status FROM language_exchange_connections')).rows).toEqual([{status:'PENDING'}]);
+  });
+
+  it('denies new requests to undiscoverable targets but permits accepting existing requests', async () => {
+    const [a,b] = await pair();
+    await connections.requestConnection(a,b);
+    await db.pool.query('UPDATE language_exchange_preferences SET discoverable=false WHERE user_id=$1',[a]);
+    expect(await connections.acceptConnection(b,a)).toMatchObject({outcome:'ACCEPTED'});
+    await connections.disconnect(a,b);
+    await expect(connections.requestConnection(b,a)).rejects.toMatchObject({code:'EXCHANGE_PROFILE_UNAVAILABLE'});
   });
 
   it('lists only actor-owned rows with stable cursor pages and no blocked routing ids', async () => {
@@ -121,8 +216,8 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
     expect(await connections.findRelationship(a,b)).toBeNull();
   });
 
-  it.each(['account', 'opt-out', 'private-language'] as const)(
-    'reauthorizes accept after waiting for committed %s revocation', async (revocation) => {
+  it.each(['account', 'opt-out', 'private-language', 'discovery'] as const)(
+    'reauthorizes pair actions after waiting for committed %s revocation', async (revocation) => {
       const [a,b] = await pair();
       await connections.requestConnection(a,b);
       const name = 'phase26_wait_' + randomUUID();
@@ -133,11 +228,13 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
         await blocker.query('BEGIN');
         await blocker.query('SELECT id FROM users WHERE id=$1 FOR UPDATE',[a]);
         const waiting = new PostgresExchangeConnectionRepository(waitingPool,safety);
-        result = waiting.acceptConnection(b,a).then(value => value,error => error);
+        result = (revocation==='discovery' ? waiting.requestConnection(b,a) : waiting.acceptConnection(b,a))
+          .then(value => value,error => error);
         await observedLockWait(name);
         if (revocation === 'account') await blocker.query(`UPDATE users SET status='DISABLED' WHERE id=$1`,[a]);
         if (revocation === 'opt-out') await blocker.query('UPDATE language_exchange_preferences SET exchange_opt_in=false WHERE user_id=$1',[a]);
         if (revocation === 'private-language') await blocker.query(`UPDATE user_languages SET visibility='PRIVATE' WHERE user_id=$1`,[a]);
+        if (revocation === 'discovery') await blocker.query('UPDATE language_exchange_preferences SET discoverable=false WHERE user_id=$1',[a]);
         await blocker.query('COMMIT');
         expect(await result).toMatchObject({code:'EXCHANGE_PROFILE_UNAVAILABLE'});
         expect((await db.pool.query('SELECT status FROM language_exchange_connections')).rows[0].status).toBe('PENDING');
@@ -148,6 +245,61 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
       }
     },
   );
+
+  it.each([
+    ['cancel','accept','CANCELLED','INVALID_ACTION',null],
+    ['accept','cancel','ACCEPTED','INVALID_ACTION','CONNECTED'],
+    ['block','accept',null,'SAFETY_BLOCKED',null],
+    ['accept','block','ACCEPTED',null,null],
+  ] as const)('serializes %s before %s using observed independent SQL lock waits', async (first,second,firstOutcome,secondOutcome,status) => {
+    const [a,b]=await pair(); await connections.requestConnection(a,b);
+    const released=deferred(); const locked=deferred();
+    const firstPool=new Pool({connectionString:db.scopedUrl,max:1});
+    const name='phase26_order_'+randomUUID();
+    const secondPool=new Pool({connectionString:db.scopedUrl,max:1,application_name:name});
+    // Pause the real repository only after its ordered account locks are held.
+    const gatedPool=new Proxy(firstPool,{get(target,key) {
+      if(key==='connect') return async()=>{
+        const client=await target.connect();
+        return new Proxy(client,{get(connection,property) {
+          if(property==='query') return async(sql:string,parameters?:unknown[])=>{
+            const result=await connection.query(sql,parameters);
+            if(sql.includes('SELECT id, status, email_verified_at FROM users')) {
+              locked.resolve(); await released.promise;
+            }
+            return result;
+          };
+          const value=Reflect.get(connection,property);return typeof value==='function'?value.bind(connection):value;
+        }});
+      };
+      const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;
+    }});
+    const perform=(pool:Pool,action:typeof first | typeof second)=>{
+      const store=new PostgresExchangeSafetyRepository(pool);
+      const repository=new PostgresExchangeConnectionRepository(pool,store);
+      if(action==='block') return store.blockUser(a,b);
+      if(action==='cancel') return repository.cancelConnection(a,b);
+      return repository.acceptConnection(b,a);
+    };
+    let one:Promise<unknown>|undefined;let two:Promise<unknown>|undefined;
+    try {
+      one=perform(gatedPool,first); await locked.promise;
+      two=perform(secondPool,second); await observedLockWait(name);
+      released.resolve();
+      const [firstResult,secondResult]=await Promise.all([one,two]);
+      if(firstOutcome) expect(firstResult).toMatchObject({outcome:firstOutcome});
+      if(secondOutcome) expect(secondResult).toMatchObject({outcome:secondOutcome});
+      expect((await db.pool.query('SELECT status FROM language_exchange_connections')).rows)
+        .toEqual(status?[{status}]:[]);
+      if(first==='block'||second==='block') expect(await safety.isBlocked(a,b)).toBe(true);
+    } finally {
+      released.resolve();await Promise.allSettled([one,two]);await firstPool.end();await secondPool.end();
+    }
+  });
+
+  function deferred() {
+    let resolve!:()=>void;const promise=new Promise<void>(finish=>{resolve=finish;});return {promise,resolve};
+  }
 
   async function observedLockWait(applicationName: string) {
     const deadline = Date.now()+10000;

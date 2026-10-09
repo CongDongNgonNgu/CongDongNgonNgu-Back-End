@@ -16,6 +16,7 @@ export async function authorizeConnectionPair(
   actor: string,
   target: string,
   eligible: boolean,
+  request = false,
 ): Promise<void> {
   const required = eligible ? [actor,target] : [actor];
   if (actor === target || required.some(id => !users.some(user =>
@@ -26,6 +27,7 @@ export async function authorizeConnectionPair(
   const result = await client.query(`
     SELECT p.user_id FROM language_exchange_preferences p
     WHERE p.user_id IN ($1::uuid,$2::uuid) AND p.exchange_opt_in
+      AND (NOT $3::boolean OR p.user_id<>$2::uuid OR p.discoverable)
       AND EXISTS (SELECT 1 FROM language_exchange_languages e WHERE e.user_id=p.user_id AND e.direction='OFFER')
       AND EXISTS (SELECT 1 FROM language_exchange_languages e WHERE e.user_id=p.user_id AND e.direction='WANT')
       AND NOT EXISTS (
@@ -35,7 +37,7 @@ export async function authorizeConnectionPair(
         WHERE e.user_id=p.user_id AND (NOT l.active OR ul.visibility<>'PUBLIC'
           OR (e.direction='OFFER' AND NOT (ul.is_native OR ul.is_known))
           OR (e.direction='WANT' AND NOT ul.is_learning))
-      )`, [actor,target]);
+      )`, [actor,target,request]);
   if (result.rows.length !== 2) throw unavailable();
 }
 

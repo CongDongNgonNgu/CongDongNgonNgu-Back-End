@@ -29,6 +29,7 @@ import { PostgresExchangeConnectionRepository } from './postgres-exchange-connec
 import { InMemoryExchangeSafetyRepository } from './exchange-safety.repository';
 import { PostgresExchangeSafetyRepository } from './postgres-exchange-safety.repository';
 import { ConnectionCursorCodec } from './connection-cursor-codec';
+import { EXCHANGE_ACTION_LIMITER,MemoryExchangeActionLimiter,PostgresExchangeActionLimiter } from './exchange-action-limiter';
 
 interface ExchangeRuntimeConfig {
   persistence: 'postgres' | 'memory';
@@ -40,6 +41,16 @@ interface ExchangeRuntimeConfig {
   controllers: [ExchangeController],
   providers: [
     ExchangeService,
+    {
+      provide: EXCHANGE_ACTION_LIMITER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        if(config.get<ExchangeRuntimeConfig>('auth')?.persistence==='memory') return new MemoryExchangeActionLimiter();
+        const databaseUrl=config.get<string>('database.url');
+        if(!databaseUrl) throw new Error('DATABASE_URL is required for Exchange action limits');
+        return new PostgresExchangeActionLimiter(new Pool({connectionString:databaseUrl}));
+      },
+    },
     {
       provide: EXCHANGE_SAFETY_GATE,
       inject: [ConfigService],

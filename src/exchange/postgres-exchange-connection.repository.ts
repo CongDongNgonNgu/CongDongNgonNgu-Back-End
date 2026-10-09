@@ -9,6 +9,7 @@ import type { ExchangeSafetyReadStore } from './exchange-safety.types';
 import { authorizeConnectionPair, lockExchangeUsers } from './exchange-pair-authorization';
 import { ExchangeFailure } from './exchange.errors';
 import { ConnectionCursorCodec } from './connection-cursor-codec';
+import { consumeNewConnectionPair } from './exchange-action-limiter';
 import { connectionListQuery, connectionListMatches, connectionListItem, connectionListCursor,
   type ConnectionListInput, type ConnectionListPage } from './exchange-connection-list';
 
@@ -87,6 +88,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
             );
             return { record: mapRow(result.rows[0]), outcome: 'CONNECTED' as const };
           }
+          await consumeNewConnectionPair(client,requesterUserId,targetUserId);
           const result = await client.query(
             `INSERT INTO language_exchange_connections (
                participant_a_id, participant_b_id, requester_id, status
@@ -101,7 +103,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
             [requesterUserId, targetUserId],
           );
           return { record: mapRow(result.rows[0]), outcome: 'REQUESTED' as const };
-        }, 'ELIGIBLE');
+        }, 'REQUEST');
       } catch (error) {
         if (attempt === 0 && isUniqueViolation(error)) continue;
         throw error;
@@ -113,7 +115,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   acceptConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
     return this.withLockedRelationship(actorUserId, targetUserId, async (client, current, blocked) => {
       if (blocked) return { record: null, outcome: 'SAFETY_BLOCKED' as const };
-      if (!current) return { record: null, outcome: 'NONE' as const };
+      if (!current) return { record: null, outcome: 'INVALID_ACTION' as const };
       if (current.status === 'CONNECTED') return { record: current, outcome: 'ALREADY_CONNECTED' as const };
       if (current.requesterId === actorUserId) return { record: current, outcome: 'INVALID_ACTION' as const };
       const result = await client.query(
@@ -210,7 +212,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
       current: ExchangeConnectionRecord | null,
       blocked: boolean,
     ) => Promise<T>,
-    authorization: 'READ' | 'ACTOR' | 'ELIGIBLE' = 'ACTOR',
+    authorization: 'READ' | 'ACTOR' | 'ELIGIBLE' | 'REQUEST' = 'ACTOR',
   ): Promise<T> {
     const client = await this.pool.connect();
     try {
@@ -221,7 +223,8 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
         ? await this.safety.isBlockedOnClient(client, firstUserId, secondUserId)
         : false;
       if (!blocked) {
-        await authorizeConnectionPair(client, users, firstUserId, secondUserId, authorization === 'ELIGIBLE');
+        await authorizeConnectionPair(client, users, firstUserId, secondUserId,
+          authorization === 'ELIGIBLE' || authorization === 'REQUEST', authorization === 'REQUEST');
         if (authorization === 'READ') {
           await authorizeConnectionPair(client, users, secondUserId, firstUserId, false);
         }

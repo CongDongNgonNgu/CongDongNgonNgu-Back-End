@@ -13,6 +13,7 @@ describe('PostgresExchangeConnectionRepository', () => {
       if (sql.includes('FROM users')) return { rows: accountRows() };
       if (sql.includes('SELECT p.user_id')) return { rows: accountRows() };
       if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
+      if (sql.includes('INSERT INTO exchange_action_rate_limits')) return { rows: [{hits:1,retry_seconds:60}] };
       if (sql.includes('FOR UPDATE')) return { rows: [] };
       if (sql.includes('INSERT INTO language_exchange_connections')) {
         const error = new Error('duplicate pair') as Error & { code: string };

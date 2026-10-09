@@ -198,7 +198,7 @@ describe('ExchangeService', () => {
   });
 
   it('enforces the relationship lifecycle and rejects self or ineligible requests', async () => {
-    const { identity, profiles, service } = createService();
+    const { identity, profiles, service, advancePairWindow } = createService();
     const requester = await createNamedUser(identity, 'Requester');
     const target = await createNamedUser(identity, 'Target');
     await prepareExchangePair(identity, profiles, service, requester.id, target.id);
@@ -225,8 +225,10 @@ describe('ExchangeService', () => {
       .rejects.toMatchObject({ code: 'EXCHANGE_CONNECTION_ACTION_INVALID' });
     await expect(service.declineConnection(target.id, requester.id)).resolves.toMatchObject({ state: 'NONE' });
 
+    advancePairWindow();
     await service.requestConnection(requester.id, target.id);
     await expect(service.cancelConnection(requester.id, target.id)).resolves.toMatchObject({ state: 'NONE' });
+    advancePairWindow();
     await service.requestConnection(requester.id, target.id);
     await expect(service.acceptConnection(target.id, requester.id)).resolves.toMatchObject({
       state: 'CONNECTED',
@@ -334,7 +336,7 @@ describe('ExchangeService', () => {
 
   it('publishes one event per lifecycle transition and suppresses idempotent retries', async () => {
     const eventSink = new RecordingExchangeConnectionEventSink();
-    const { identity, profiles, service } = createService(eventSink);
+    const { identity, profiles, service, advancePairWindow } = createService(eventSink);
     const requester = await createNamedUser(identity, 'Event requester');
     const target = await createNamedUser(identity, 'Event target');
     await prepareExchangePair(identity, profiles, service, requester.id, target.id);
@@ -364,6 +366,7 @@ describe('ExchangeService', () => {
     await service.disconnect(requester.id, target.id);
     expect(eventTypes()).toHaveLength(3);
 
+    advancePairWindow();
     await service.requestConnection(requester.id, target.id);
     await service.declineConnection(target.id, requester.id);
     expect(eventTypes()).toEqual([
@@ -377,6 +380,7 @@ describe('ExchangeService', () => {
     await service.declineConnection(target.id, requester.id);
     expect(eventTypes()).toHaveLength(5);
 
+    advancePairWindow();
     await service.requestConnection(requester.id, target.id);
     await service.cancelConnection(requester.id, target.id);
     expect(eventTypes()).toEqual([
@@ -583,20 +587,23 @@ function createService(eventSink: ExchangeConnectionEventSink = new NoopExchange
   profiles: InMemoryProfileRepository;
   repository: InMemoryExchangePreferenceRepository;
   service: ExchangeService;
+  advancePairWindow:()=>void;
 } {
   const identity = new InMemoryIdentityRepository();
   const profiles = new InMemoryProfileRepository();
   const repository = new InMemoryExchangePreferenceRepository();
+  let pairClock=Date.now();
   return {
     identity,
     profiles,
     repository,
+    advancePairWindow:()=>{pairClock+=60000;},
     service: new ExchangeService(
       repository,
       profiles,
       identity,
       new NoopExchangeSafetyGate(),
-      new InMemoryExchangeConnectionRepository(),
+      new InMemoryExchangeConnectionRepository(undefined,undefined,()=>pairClock),
       eventSink,
     ),
   };

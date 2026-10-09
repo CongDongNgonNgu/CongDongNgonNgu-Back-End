@@ -7,7 +7,8 @@ import { configureApp } from '../src/app.setup';
 import { SessionService } from '../src/auth/session/session.service';
 import { IDENTITY_REPOSITORY } from '../src/identity/identity.module';
 import type { IdentityRepository } from '../src/identity/identity.repository';
-import { EXCHANGE_CONNECTION_REPOSITORY } from '../src/exchange/exchange-connection.repository';
+import { EXCHANGE_CONNECTION_REPOSITORY, InMemoryExchangeConnectionRepository } from '../src/exchange/exchange-connection.repository';
+import { EXCHANGE_SAFETY_GATE,type ExchangeSafetyGate } from '../src/exchange/exchange.service';
 import type { ExchangeConnectionRepository } from '../src/exchange/exchange-connection.repository';
 
 describe('language exchange API', () => {
@@ -19,9 +20,14 @@ describe('language exchange API', () => {
   let accessTokenA: string;
   let accessTokenB: string;
   let accessTokenC: string;
+  let pairClock=Date.now();
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(EXCHANGE_CONNECTION_REPOSITORY).useFactory({
+        factory:(safety:ExchangeSafetyGate)=>new InMemoryExchangeConnectionRepository(safety,undefined,()=>pairClock),
+        inject:[EXCHANGE_SAFETY_GATE],
+      }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app);
     await app.init();
@@ -255,6 +261,15 @@ describe('language exchange API', () => {
     await request(app.getHttpServer())
       .post('/api/v1/exchange/relationships/' + userA.id + '/request')
       .set('Authorization', 'Bearer ' + accessTokenB)
+      .expect(429)
+      .expect(({body,headers})=>{
+        expect(body.error.code).toBe('EXCHANGE_RATE_LIMITED');
+        expect(headers['retry-after']).toBe('60');
+      });
+    pairClock+=60000;
+    await request(app.getHttpServer())
+      .post('/api/v1/exchange/relationships/' + userA.id + '/request')
+      .set('Authorization', 'Bearer ' + accessTokenB)
       .expect(200);
     await request(app.getHttpServer())
       .post('/api/v1/exchange/relationships/' + userA.id + '/cancel')
@@ -262,6 +277,7 @@ describe('language exchange API', () => {
       .expect(200)
       .expect(({ body }) => expect(body.data).toMatchObject({ state: 'NONE' }));
 
+    pairClock+=60000;
     await request(app.getHttpServer())
       .post('/api/v1/exchange/relationships/' + userA.id + '/request')
       .set('Authorization', 'Bearer ' + accessTokenB)
@@ -283,6 +299,7 @@ describe('language exchange API', () => {
       .expect(200)
       .expect(({ body }) => expect(body.data.state).toBe('NONE'));
 
+    pairClock+=60000;
     const crossing = await Promise.all([
       request(app.getHttpServer())
         .post('/api/v1/exchange/relationships/' + userB.id + '/request')

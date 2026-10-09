@@ -11,7 +11,9 @@ import { ExchangeService } from './exchange.service';
 
 describe('ExchangeService safety reconciliation', () => {
   it('removes relationships, hides the pair, and does not restore state after unblock', async () => {
-    const { identity, profiles, service, connections } = createHarness();
+    let now=0;const safety=new InMemoryExchangeSafetyRepository();
+    const { identity, profiles, service, connections } = createHarness(undefined,safety,
+      new InMemoryExchangeConnectionRepository(safety,undefined,()=>now));
     const first = await createUser(identity, 'safety-first@example.com', 'First');
     const second = await createUser(identity, 'safety-second@example.com', 'Second');
     await preparePair(identity, profiles, service, first.id, second.id);
@@ -31,6 +33,8 @@ describe('ExchangeService safety reconciliation', () => {
 
     await expect(service.unblockUser(first.id, second.id)).resolves.toMatchObject({ blocked: false });
     await expect(connections.findRelationship(first.id, second.id)).resolves.toBeNull();
+    await expect(service.requestConnection(first.id,second.id)).rejects.toMatchObject({code:'EXCHANGE_RATE_LIMITED'});
+    now=60000;
     await expect(service.requestConnection(first.id, second.id)).resolves.toMatchObject({
       state: 'OUTGOING_PENDING',
     });
