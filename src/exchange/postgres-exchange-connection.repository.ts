@@ -140,7 +140,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   declineConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
     return this.withLockedRelationship(actorUserId, targetUserId, async (client, current, blocked) => {
       if (blocked) return { record: null, outcome: 'SAFETY_BLOCKED' as const };
-      if (!current) return { record: null, outcome: 'NONE' as const };
+      if (!current) return { record: null, outcome: 'INVALID_ACTION' as const };
       if (current.status !== 'PENDING' || current.requesterId === actorUserId) {
         return { record: current, outcome: 'INVALID_ACTION' as const };
       }
@@ -152,7 +152,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   cancelConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
     return this.withLockedRelationship(actorUserId, targetUserId, async (client, current, blocked) => {
       if (blocked) return { record: null, outcome: 'SAFETY_BLOCKED' as const };
-      if (!current) return { record: null, outcome: 'NONE' as const };
+      if (!current) return { record: null, outcome: 'INVALID_ACTION' as const };
       if (current.status !== 'PENDING' || current.requesterId !== actorUserId) {
         return { record: current, outcome: 'INVALID_ACTION' as const };
       }
@@ -164,7 +164,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   disconnect(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
     return this.withLockedRelationship(actorUserId, targetUserId, async (client, current, blocked) => {
       if (blocked) return { record: null, outcome: 'SAFETY_BLOCKED' as const };
-      if (!current) return { record: null, outcome: 'NONE' as const };
+      if (!current) return { record: null, outcome: 'INVALID_ACTION' as const };
       if (current.status !== 'CONNECTED') {
         return { record: current, outcome: 'INVALID_ACTION' as const };
       }

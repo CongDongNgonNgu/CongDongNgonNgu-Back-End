@@ -52,6 +52,22 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
     return ids;
   }
 
+  it('rejects unrelated cleanup and preserves the canonical pair and outbox',async()=>{
+    const [a,b]=await pair();const [c]=await pair();
+    await connections.requestConnection(a,b);
+    const before=await connections.findRelationship(a,b);
+    const intents=(await db.pool.query('SELECT * FROM exchange_notification_outbox ORDER BY id')).rows;
+    for(const action of ['acceptConnection','declineConnection','cancelConnection','disconnect'] as const) {
+      expect(await connections[action](c,b)).toEqual({record:null,outcome:'INVALID_ACTION'});
+      expect(await connections.findRelationship(a,b)).toEqual(before);
+      expect((await db.pool.query('SELECT * FROM exchange_notification_outbox ORDER BY id')).rows).toEqual(intents);
+    }
+    expect((await connections.declineConnection(a,b)).outcome).toBe('INVALID_ACTION');
+    expect((await connections.cancelConnection(b,a)).outcome).toBe('INVALID_ACTION');
+    expect((await connections.removeRelationshipForSafety(c,b)).outcome).toBe('NONE');
+    expect(await connections.findRelationship(a,b)).toEqual(before);
+  });
+
   function notificationIntent(row:LeasedConnectionIntent) {
     const event=createNotificationDomainEvent({eventId:row.id,
       eventType:row.eventKind==='CONNECTED'?'exchange.connection.connected':'exchange.connection.requested',

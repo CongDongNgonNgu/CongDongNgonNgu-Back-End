@@ -40,6 +40,14 @@ describe('Phase26 authenticated connection notification integration',()=>{
     const claim=jest.spyOn(repository,'claimIntent').mockRejectedValueOnce(new Error('Synthetic notification persistence failure')).mockImplementation(original);
     await request(server).post(`/api/v1/exchange/relationships/${b.id}/request`).set('Authorization','Bearer '+a.token).expect(200)
       .expect(({body})=>expect(body.data.state).toBe('OUTGOING_PENDING'));
+    const outbox=app.get(MemoryConnectionOutbox);const enqueue=jest.spyOn(outbox,'enqueue');
+    for(const action of ['accept','decline','cancel','disconnect']) {
+      await request(server).post(`/api/v1/exchange/relationships/${b.id}/${action}`)
+        .set('Authorization','Bearer '+c.token).expect(409);
+    }
+    await request(server).post(`/api/v1/exchange/relationships/${b.id}/decline`).set('Authorization','Bearer '+a.token).expect(409);
+    await request(server).post(`/api/v1/exchange/relationships/${a.id}/cancel`).set('Authorization','Bearer '+b.token).expect(409);
+    expect(enqueue).not.toHaveBeenCalled();enqueue.mockRestore();
     expect(claim).not.toHaveBeenCalled();expect(await worker.runOnce()).toEqual({processed:0,failed:1});
     await request(server).get(`/api/v1/exchange/relationships/${b.id}`).set('Authorization','Bearer '+a.token).expect(200)
       .expect(({body})=>expect(body.data.state).toBe('OUTGOING_PENDING'));

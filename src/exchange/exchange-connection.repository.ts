@@ -150,7 +150,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
       }
       const key = pairKey(actorUserId, targetUserId);
       const current = this.relationships.get(key);
-      if (!current) return { record: null, outcome: 'NONE' as const };
+      if (!current) return { record: null, outcome: 'INVALID_ACTION' as const };
       if (current.status !== 'PENDING' || current.requesterId !== actorUserId) {
         return { record: cloneRecord(current), outcome: 'INVALID_ACTION' as const };
       }
@@ -167,7 +167,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
       }
       const key = pairKey(actorUserId, targetUserId);
       const current = this.relationships.get(key);
-      if (!current) return { record: null, outcome: 'NONE' as const };
+      if (!current) return { record: null, outcome: 'INVALID_ACTION' as const };
       if (current.status !== 'CONNECTED') {
         return { record: cloneRecord(current), outcome: 'INVALID_ACTION' as const };
       }
@@ -203,7 +203,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
   ): ExchangeConnectionMutationResult {
     const key = pairKey(actorUserId, targetUserId);
     const current = this.relationships.get(key);
-    if (!current) return { record: null, outcome: 'NONE' };
+    if (!current) return { record: null, outcome: 'INVALID_ACTION' };
     if (current.status !== 'PENDING' || current.requesterId === actorUserId) {
       return { record: cloneRecord(current), outcome: 'INVALID_ACTION' };
     }

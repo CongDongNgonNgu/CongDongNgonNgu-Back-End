@@ -255,8 +255,8 @@ describe('language exchange API', () => {
     await request(app.getHttpServer())
       .post('/api/v1/exchange/relationships/' + userA.id + '/decline')
       .set('Authorization', 'Bearer ' + accessTokenB)
-      .expect(200)
-      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'NONE' }));
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('EXCHANGE_CONNECTION_ACTION_INVALID'));
 
     await request(app.getHttpServer())
       .post('/api/v1/exchange/relationships/' + userA.id + '/request')
