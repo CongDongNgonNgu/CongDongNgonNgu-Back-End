@@ -132,6 +132,7 @@ export class PostgresProfileRepository implements ProfileRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [userId]);
       await client.query(
         `INSERT INTO user_profiles (user_id, timezone)
          VALUES ($1, $2)

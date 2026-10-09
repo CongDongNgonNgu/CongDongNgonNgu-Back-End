@@ -202,8 +202,8 @@ describe('language exchange API', () => {
     await request(app.getHttpServer())
       .post('/api/v1/exchange/relationships/' + userB.id + '/accept')
       .set('Authorization', 'Bearer ' + accessTokenC)
-      .expect(200)
-      .expect(({ body }) => expect(body.data).toMatchObject({ state: 'NONE' }));
+      .expect(404)
+      .expect(({ body }) => expect(body.error.code).toBe('EXCHANGE_PROFILE_UNAVAILABLE'));
     await request(app.getHttpServer())
       .post('/api/v1/exchange/relationships/' + userB.id + '/accept')
       .set('Authorization', 'Bearer ' + accessTokenA)

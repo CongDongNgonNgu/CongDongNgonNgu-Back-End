@@ -6,6 +6,7 @@ import type {
 import type { ExchangeConnectionRepository } from './exchange-connection.repository';
 import { lockExchangePair } from './exchange-safety.repository';
 import type { ExchangeSafetyReadStore } from './exchange-safety.types';
+import { authorizeConnectionPair, lockExchangeUsers } from './exchange-pair-authorization';
 
 export class PostgresExchangeConnectionRepository implements ExchangeConnectionRepository {
   constructor(
@@ -16,7 +17,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   async findRelationship(firstUserId: string, secondUserId: string): Promise<ExchangeConnectionRecord | null> {
     return this.withLockedRelationship(firstUserId, secondUserId, async (_client, current, blocked) => {
       return blocked ? null : current;
-    });
+    }, 'READ');
   }
 
   async requestConnection(
@@ -58,7 +59,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
             [requesterUserId, targetUserId],
           );
           return { record: mapRow(result.rows[0]), outcome: 'REQUESTED' as const };
-        });
+        }, 'ELIGIBLE');
       } catch (error) {
         if (attempt === 0 && isUniqueViolation(error)) continue;
         throw error;
@@ -82,7 +83,7 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
         [current.id],
       );
       return { record: mapRow(result.rows[0]), outcome: 'ACCEPTED' as const };
-    });
+    }, 'ELIGIBLE');
   }
 
   declineConnection(actorUserId: string, targetUserId: string): Promise<ExchangeConnectionMutationResult> {
@@ -127,7 +128,8 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
   ): Promise<ExchangeConnectionMutationResult> {
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN');
+      await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+      await lockExchangeUsers(client, firstUserId, secondUserId);
       await lockExchangePair(client, firstUserId, secondUserId);
       const currentResult = await client.query(
         `SELECT id, participant_a_id, participant_b_id, requester_id, status, created_at, updated_at
@@ -166,14 +168,22 @@ export class PostgresExchangeConnectionRepository implements ExchangeConnectionR
       current: ExchangeConnectionRecord | null,
       blocked: boolean,
     ) => Promise<T>,
+    authorization: 'READ' | 'ACTOR' | 'ELIGIBLE' = 'ACTOR',
   ): Promise<T> {
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN');
+      await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+      const users = await lockExchangeUsers(client, firstUserId, secondUserId);
       await lockExchangePair(client, firstUserId, secondUserId);
       const blocked = this.safety
         ? await this.safety.isBlockedOnClient(client, firstUserId, secondUserId)
         : false;
+      if (!blocked) {
+        await authorizeConnectionPair(client, users, firstUserId, secondUserId, authorization === 'ELIGIBLE');
+        if (authorization === 'READ') {
+          await authorizeConnectionPair(client, users, secondUserId, firstUserId, false);
+        }
+      }
       const currentResult = await client.query(
         `SELECT id, participant_a_id, participant_b_id, requester_id, status, created_at, updated_at
            FROM language_exchange_connections

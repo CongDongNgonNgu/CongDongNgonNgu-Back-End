@@ -9,7 +9,9 @@ describe('PostgresExchangeConnectionRepository', () => {
     const connectedRow = connectionRow('CONNECTED');
     const firstClient = fakeClient(async (sql: string) => {
       calls.push(sql);
-      if (sql === 'BEGIN' || sql === 'ROLLBACK') return { rows: [] };
+      if (sql.startsWith('BEGIN') || sql === 'ROLLBACK') return { rows: [] };
+      if (sql.includes('FROM users')) return { rows: accountRows() };
+      if (sql.includes('SELECT p.user_id')) return { rows: accountRows() };
       if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
       if (sql.includes('FOR UPDATE')) return { rows: [] };
       if (sql.includes('INSERT INTO language_exchange_connections')) {
@@ -21,7 +23,9 @@ describe('PostgresExchangeConnectionRepository', () => {
     });
     const secondClient = fakeClient(async (sql: string) => {
       calls.push(sql);
-      if (sql === 'BEGIN' || sql === 'COMMIT') return { rows: [] };
+      if (sql.startsWith('BEGIN') || sql === 'COMMIT') return { rows: [] };
+      if (sql.includes('FROM users')) return { rows: accountRows() };
+      if (sql.includes('SELECT p.user_id')) return { rows: accountRows() };
       if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
       if (sql.includes('FOR UPDATE')) return { rows: [pendingRow] };
       if (sql.includes('UPDATE language_exchange_connections')) return { rows: [connectedRow] };
@@ -39,19 +43,24 @@ describe('PostgresExchangeConnectionRepository', () => {
 
     expect(result).toMatchObject({ outcome: 'CONNECTED', record: { status: 'CONNECTED' } });
     expect(pool.connect).toHaveBeenCalledTimes(2);
-    expect(calls.filter((sql) => sql === 'BEGIN')).toHaveLength(2);
+    expect(calls.filter((sql) => sql.startsWith('BEGIN'))).toHaveLength(2);
     expect(calls.filter((sql) => sql === 'ROLLBACK')).toHaveLength(1);
-    expect(calls.filter((sql) => sql.includes('FOR UPDATE'))).toHaveLength(2);
+    expect(calls.filter((sql) => sql.includes('FOR UPDATE'))).toHaveLength(4);
     expect(calls.filter((sql) => sql.includes('pg_advisory_xact_lock'))).toHaveLength(2);
     expect(calls.filter((sql) => sql.includes('INSERT INTO language_exchange_connections'))).toHaveLength(1);
     expect(calls.filter((sql) => sql.includes('UPDATE language_exchange_connections'))).toHaveLength(1);
     expect(calls.every((sql) => !sql.includes('SELECT *'))).toBe(true);
-    expect(calls.filter((sql) => sql.includes('FOR UPDATE'))[0]).toEqual(expect.stringContaining('LEAST($1::uuid, $2::uuid)'));
-    expect(calls.filter((sql) => sql.includes('FOR UPDATE'))[0]).toEqual(expect.stringContaining('GREATEST($1::uuid, $2::uuid)'));
+    expect(calls.filter((sql) => sql.includes('FROM language_exchange_connections'))[0]).toEqual(expect.stringContaining('LEAST($1::uuid, $2::uuid)'));
+    expect(calls.filter((sql) => sql.includes('FROM language_exchange_connections'))[0]).toEqual(expect.stringContaining('GREATEST($1::uuid, $2::uuid)'));
     expect(firstClient.release).toHaveBeenCalledTimes(1);
     expect(secondClient.release).toHaveBeenCalledTimes(1);
   });
 });
+
+function accountRows() {
+  return ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']
+    .map(id => ({ id, status: 'ACTIVE', email_verified_at: new Date() }));
+}
 
 function fakeClient(query: (sql: string) => Promise<{ rows: Array<Record<string, unknown>> }>): PoolClient {
   return {

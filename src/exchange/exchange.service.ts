@@ -378,6 +378,13 @@ export class ExchangeService {
     await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
+    const participants = await Promise.all([
+      this.getContactParticipant(actorUserId),
+      this.getContactParticipant(targetUserId),
+    ]);
+    if (participants.some((participant) => !participant)) {
+      throw new ExchangeFailure('EXCHANGE_PROFILE_UNAVAILABLE', 404, 'Buddy profile was not found');
+    }
     const result = await this.connections.acceptConnection(actorUserId, targetUserId);
     return this.completeConnectionMutation(actorUserId, targetUserId, result);
   }
@@ -387,7 +394,6 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
-    await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.declineConnection(actorUserId, targetUserId);
@@ -399,7 +405,6 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
-    await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.cancelConnection(actorUserId, targetUserId);
@@ -411,7 +416,6 @@ export class ExchangeService {
     targetUserId: string,
   ): Promise<ExchangeRelationshipResponse> {
     await this.requireActiveUser(actorUserId);
-    await this.requireActiveUser(targetUserId);
     this.assertDifferentUsers(actorUserId, targetUserId);
     await this.assertPairAvailable(actorUserId, targetUserId);
     const result = await this.connections.disconnect(actorUserId, targetUserId);

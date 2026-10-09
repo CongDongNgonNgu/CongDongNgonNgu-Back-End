@@ -241,6 +241,37 @@ describe('ExchangeService', () => {
       .rejects.toMatchObject({ code: 'EXCHANGE_PROFILE_UNAVAILABLE' });
   });
 
+  it.each(['cancelConnection', 'declineConnection', 'disconnect'] as const)(
+    'allows %s cleanup after the other participant is disabled',
+    async (action) => {
+      const { identity, profiles, service } = createService();
+      const requester = await createNamedUser(identity, 'Cleanup requester');
+      const recipient = await createNamedUser(identity, 'Cleanup recipient');
+      await prepareExchangePair(identity, profiles, service, requester.id, recipient.id);
+      await service.requestConnection(requester.id, recipient.id);
+      if (action === 'disconnect') await service.acceptConnection(recipient.id, requester.id);
+      const actor = action === 'declineConnection' ? recipient : requester;
+      const target = action === 'declineConnection' ? requester : recipient;
+      await identity.updateUser(target.id, { status: 'DISABLED' });
+
+      await expect(service[action](actor.id, target.id)).resolves.toMatchObject({ state: 'NONE' });
+    },
+  );
+
+  it('denies acceptance when the requester has opted out after sending', async () => {
+    const { identity, profiles, service } = createService();
+    const requester = await createNamedUser(identity, 'Opted out requester');
+    const recipient = await createNamedUser(identity, 'Accepting recipient');
+    await prepareExchangePair(identity, profiles, service, requester.id, recipient.id);
+    await service.requestConnection(requester.id, recipient.id);
+    await service.updateOwnPreferences(requester.id, { exchangeOptIn: false, discoverable: false });
+
+    await expect(service.acceptConnection(recipient.id, requester.id))
+      .rejects.toMatchObject({ code: 'EXCHANGE_PROFILE_UNAVAILABLE', status: 404 });
+    await expect(service.getRelationship(recipient.id, requester.id))
+      .resolves.toMatchObject({ state: 'INCOMING_PENDING' });
+  });
+
   it('converges reciprocal requests to one connected relationship', async () => {
     const { identity, profiles, service } = createService();
     const first = await createNamedUser(identity, 'First');

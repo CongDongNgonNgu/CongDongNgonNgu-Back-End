@@ -1,0 +1,7 @@
+{
+  "rootDir": "../..",
+  "testEnvironment": "node",
+  "testMatch": ["<rootDir>/test/phase26/*.sql-spec.ts"],
+  "transform": { "^.+\\.(t|j)s$": "ts-jest" },
+  "testTimeout": 60000
+}
