@@ -3,6 +3,16 @@ import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { AuthModule } from '../auth/auth.module';
 import { IdentityModule } from '../identity/identity.module';
+import { IDENTITY_REPOSITORY } from '../identity/identity.module';
+import type { IdentityRepository } from '../identity/identity.repository';
+import { ProfileModule } from '../profile/profile.module';
+import { PROFILE_REPOSITORY,type ProfileRepository } from '../profile/profile.repository';
+import { ExchangePersistenceModule } from '../exchange/exchange-persistence.module';
+import { EXCHANGE_PREFERENCE_REPOSITORY,type ExchangePreferenceRepository } from '../exchange/exchange.repository';
+import { EXCHANGE_CONNECTION_REPOSITORY,InMemoryExchangeConnectionRepository } from '../exchange/exchange-connection.repository';
+import { CONNECTION_NOTIFICATION_ACCESS } from './connection-notification-access';
+import { MemoryConnectionNotificationAccess } from './memory-connection-notification-access';
+import { PostgresConnectionNotificationAccess } from './postgres-connection-notification-access';
 import { NotificationController } from './notification.controller';
 import { NOTIFICATION_REPOSITORY, InMemoryNotificationRepository } from './notification.repository';
 import { NotificationService } from './notification.service';
@@ -24,13 +34,25 @@ interface NotificationRuntimeConfig {
 }
 
 @Module({
-  imports: [AuthModule, IdentityModule],
+  imports: [AuthModule, IdentityModule,ProfileModule,ExchangePersistenceModule],
   controllers: [NotificationController],
   providers: [
     NotificationService,
     NotificationRealtimeService,
     NotificationPreferenceService,
     NotificationDomainEventIntegrationService,
+    {provide:CONNECTION_NOTIFICATION_ACCESS,
+      inject:[ConfigService,IDENTITY_REPOSITORY,PROFILE_REPOSITORY,EXCHANGE_PREFERENCE_REPOSITORY,EXCHANGE_CONNECTION_REPOSITORY,NotificationPreferenceService],
+      useFactory:(config:ConfigService,identities:IdentityRepository,profiles:ProfileRepository,preferences:ExchangePreferenceRepository,
+        connections:InMemoryExchangeConnectionRepository,notificationPreferences:NotificationPreferenceService)=>{
+        if(config.get<NotificationRuntimeConfig>('auth')?.persistence==='memory') {
+          if(!(connections instanceof InMemoryExchangeConnectionRepository)) throw new Error('Memory connection access requires shared memory persistence');
+          return new MemoryConnectionNotificationAccess(identities,profiles,preferences,connections,notificationPreferences);
+        }
+        const connectionString=config.get<string>('database.url');
+        if(!connectionString) throw new Error('DATABASE_URL is required for current notification access');
+        return new PostgresConnectionNotificationAccess(new Pool({connectionString}));
+      }},
     {
       provide: NOTIFICATION_DOMAIN_EVENT_SINK,
       useExisting: NotificationDomainEventIntegrationService,
@@ -69,6 +91,7 @@ interface NotificationRuntimeConfig {
     NOTIFICATION_DOMAIN_EVENT_SINK,
     NOTIFICATION_PREFERENCE_REPOSITORY,
     NotificationPreferenceService,
+    CONNECTION_NOTIFICATION_ACCESS,
   ],
 })
 export class NotificationModule {}

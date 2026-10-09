@@ -135,7 +135,7 @@ interface NotificationEventMapping {
   readonly retention: NotificationRetentionPolicy;
 }
 
-function mapNotificationEvent(event: NotificationDomainEvent): NotificationEventMapping {
+export function mapNotificationEvent(event: NotificationDomainEvent): NotificationEventMapping {
   switch (event.eventType) {
     case 'community.comment.created':
       assertAggregate(event, 'COMMUNITY_COMMENT');
@@ -154,9 +154,10 @@ function mapNotificationEvent(event: NotificationDomainEvent): NotificationEvent
         retention: { mode: 'DAYS', days: 365 },
       };
     case 'exchange.connection.requested':
+    case 'exchange.connection.connected':
       assertAggregate(event, 'EXCHANGE_CONNECTION');
       return {
-        notificationType: 'BUDDY_REQUEST',
+        notificationType: event.eventType==='exchange.connection.connected'?'BUDDY_CONNECTED':'BUDDY_REQUEST',
         category: 'EXCHANGE',
         priority: 'NORMAL',
         retention: { mode: 'UNTIL_READ', maxDays: 180 },

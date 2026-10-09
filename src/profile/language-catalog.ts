@@ -105,6 +105,7 @@ export class ProfileRepositoryConflictError extends Error {
 }
 
 export interface LanguageCatalogRepository {
+  readonly revision?:number;
   listActive(search?: string, limit?: number): Promise<LanguageCatalogRecord[]>;
   findBySlug(slug: string): Promise<LanguageCatalogRecord | null>;
   findByCodes(codes: readonly string[]): Promise<LanguageCatalogRecord[]>;
@@ -112,6 +113,8 @@ export interface LanguageCatalogRepository {
 }
 
 export class InMemoryLanguageCatalogRepository implements LanguageCatalogRepository {
+  protected mutationRevision=0;
+  get revision():number {return this.mutationRevision;}
   protected readonly languagesByCode = new Map<string, LanguageCatalogRecord>();
   protected readonly codesBySlug = new Map<string, string>();
 
@@ -165,6 +168,7 @@ export class InMemoryLanguageCatalogRepository implements LanguageCatalogReposit
     if (!language) return;
     language.active = active;
     language.updatedAt = new Date();
+    this.mutationRevision+=1;
   }
 
   private seedSync(seeds: readonly LanguageCatalogSeed[]): void {
@@ -213,6 +217,7 @@ export class InMemoryLanguageCatalogRepository implements LanguageCatalogReposit
       }
       this.languagesByCode.set(code, record);
       this.codesBySlug.set(slug, code);
+      this.mutationRevision+=1;
     }
   }
 }

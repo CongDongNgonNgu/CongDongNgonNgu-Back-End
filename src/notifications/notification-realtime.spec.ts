@@ -1,4 +1,9 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
+import { ConfigService } from '@nestjs/config';
+import type { Response } from 'express';
+import { InMemoryIdentityRepository } from '../identity/identity.repository';
+import { AccessTokenService } from '../auth/crypto/access-token';
+import { SessionService } from '../auth/session/session.service';
 import type { NotificationDomainEvent } from './notification.contracts';
 import { createNotificationIntent } from './notification.contracts';
 import { InMemoryNotificationRepository } from './notification.repository';
@@ -14,6 +19,72 @@ const ACTOR_ID = '33333333-3333-4333-8333-333333333333';
 const POST_ID = '44444444-4444-4444-8444-444444444444';
 
 describe('notification realtime delivery', () => {
+  it('queues live events until initial asynchronous authentication emits ready', async () => {
+    const repository = new InMemoryNotificationRepository();
+    const service = new NotificationRealtimeService(repository);
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const events: NotificationRealtimeEvent[] = [];
+    const subscription = service.stream(USER_A, undefined, () => pending).subscribe(event => events.push(event));
+    const claim = await repository.claimIntent(buildIntent(USER_A));
+    if (claim.outcome !== 'CREATED') throw new Error('Synthetic fixture failed');
+    service.publish(claim.record);
+    await flushAsyncWork();
+    expect(events).toHaveLength(0);
+    release();
+    await flushAsyncWork();
+    expect(events.map(event => event.type)).toEqual(['ready', 'notification']);
+    subscription.unsubscribe();
+  });
+
+  it.each(['logout', 'revocation', 'expiry'])('closes an open stream before live emission after session %s', async (reason) => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+    try {
+    const identities = new InMemoryIdentityRepository();
+    const config = new ConfigService({ app: { environment: 'test', corsOrigins: ['http://localhost:5173'] },
+      auth: { accessSecret: 'synthetic-stream-access-secret-at-least-32-chars', accessTtlSeconds: 900,
+        refreshSecret: 'synthetic-stream-refresh-secret-at-least-32-chars', refreshTtlSeconds: 2592000,
+        refreshCookieName: 'cdn_refresh', csrfCookieName: 'cdn_csrf' } });
+    const sessions = new SessionService(identities, new AccessTokenService(config), config);
+    const owner = await identities.createUser({ email: 'stream-session@example.invalid', displayName: 'Synthetic owner',
+      passwordHash: null, status: 'ACTIVE', emailVerifiedAt: new Date() });
+    const response = { append: () => undefined } as unknown as Response;
+    const issued = await sessions.issue(owner, response);
+    const repository = new InMemoryNotificationRepository();
+    const service = new NotificationRealtimeService(repository);
+    const authorize = async () => { await sessions.authenticate(issued.accessToken); };
+    const events: NotificationRealtimeEvent[] = [];
+    const subscription = service.stream(owner.id, undefined, authorize).subscribe(event => events.push(event));
+    await flushAsyncWork();
+    if (reason === 'logout') await sessions.logout(issued.sessionId, response);
+    else if (reason === 'revocation') await identities.revokeAllSessions(owner.id, new Date());
+    else jest.setSystemTime(issued.accessTokenExpiresAt);
+    const claim = await repository.claimIntent(buildIntent(owner.id));
+    if (claim.outcome !== 'CREATED') throw new Error('Synthetic fixture failed');
+    service.publish(claim.record);
+    await flushAsyncWork();
+    expect(events.filter(isNotification)).toHaveLength(0);
+    expect(subscription.closed).toBe(true);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it('closes an idle stream on the first heartbeat after session revocation', async () => {
+    jest.useFakeTimers();
+    try {
+      let active = true;
+      const events: NotificationRealtimeEvent[] = [];
+      const service = new NotificationRealtimeService(new InMemoryNotificationRepository());
+      const subscription = service.stream(USER_A, undefined, async () => {
+        if (!active) throw new Error('Session unavailable');
+      }).subscribe(event => events.push(event));
+      await jest.advanceTimersByTimeAsync(0);
+      active = false;
+      await jest.advanceTimersByTimeAsync(25_000);
+      expect(subscription.closed).toBe(true);
+      expect(events.some(event => event.type === 'keepalive')).toBe(false);
+    } finally { jest.useRealTimers(); }
+  });
+
   it('authenticates by owner at the stream boundary and broadcasts only to that owner', async () => {
     const repository = new InMemoryNotificationRepository();
     const service = new NotificationRealtimeService(repository);

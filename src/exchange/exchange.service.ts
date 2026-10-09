@@ -58,6 +58,7 @@ import {
 } from './exchange.types';
 import {
   EXCHANGE_REPORT_CATEGORIES,
+  EXCHANGE_SAFETY_GATE,
   type ExchangeReportInput,
   type ExchangeSafetyRepository,
 } from './exchange-safety.types';
@@ -98,7 +99,7 @@ export interface ExchangeDiscoveryInput {
   pageSize?: unknown;
 }
 
-export const EXCHANGE_SAFETY_GATE = 'EXCHANGE_SAFETY_GATE';
+export { EXCHANGE_SAFETY_GATE } from './exchange-safety.types';
 
 export interface ExchangeSafetyGate extends ExchangeSafetyRepository {}
 

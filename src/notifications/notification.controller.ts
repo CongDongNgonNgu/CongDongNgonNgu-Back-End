@@ -15,7 +15,7 @@ import {
 } from '@nestjs/common';
 import type { Observable } from 'rxjs';
 import { AccessTokenGuard, type AuthenticatedRequest } from '../auth/guards/access-token.guard';
-import { SessionService } from '../auth/session/session.service';
+import { SessionFailure, SessionService } from '../auth/session/session.service';
 import { success } from '../common/http/api-response';
 import { ListNotificationsQueryDto, MarkNotificationsReadDto } from './notification.dto';
 import { UpdateNotificationPreferencesDto } from './notification-preference.dto';
@@ -87,7 +87,15 @@ export class NotificationController {
     @Req() request: AuthenticatedRequest,
     @Headers('last-event-id') lastEventId?: string,
   ): Observable<NotificationRealtimeEvent> {
-    return this.realtime.stream(request.user!.user.id, lastEventId);
+    const userId = request.user!.user.id;
+    const sessionId = request.user!.claims.sid;
+    const token = request.headers.authorization!.slice('Bearer '.length).trim();
+    return this.realtime.stream(userId, lastEventId, async () => {
+      const current = await this.sessions.authenticate(token);
+      if (current.user.id !== userId || current.claims.sid !== sessionId) {
+        throw new SessionFailure('AUTH_SESSION_EXPIRED');
+      }
+    });
   }
 
   @Post('read')

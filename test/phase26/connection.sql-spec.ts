@@ -4,6 +4,15 @@ import { ConnectionCursorCodec } from '../../src/exchange/connection-cursor-code
 import { PostgresExchangeActionLimiter } from '../../src/exchange/exchange-action-limiter';
 import { PostgresExchangeConnectionRepository } from '../../src/exchange/postgres-exchange-connection.repository';
 import { PostgresExchangeSafetyRepository } from '../../src/exchange/postgres-exchange-safety.repository';
+import { PostgresConnectionOutbox,type LeasedConnectionIntent } from '../../src/exchange/postgres-connection-outbox';
+import { PostgresNotificationRepository } from '../../src/notifications/postgres-notification.repository';
+import { createNotificationIntent } from '../../src/notifications/notification.contracts';
+import { createNotificationDomainEvent,mapNotificationEvent } from '../../src/notifications/notification-event-integration';
+import { materializeConnectionNotification } from '../../src/exchange/connection-notification-materializer';
+import { PostgresConnectionNotificationAccess } from '../../src/notifications/postgres-connection-notification-access';
+import { NotificationService } from '../../src/notifications/notification.service';
+import { NotificationRealtimeService,type NotificationRealtimeEvent } from '../../src/notifications/notification-realtime.service';
+import { ConnectionNotificationWorker } from '../../src/exchange/connection-notification-worker';
 import { SqlHarness } from '../phase22/sql-harness';
 
 describe('Phase26 connection PostgreSQL authorization and races', () => {
@@ -14,7 +23,8 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
     await db.open();
     for (const migration of ['0002_language_profile.sql', '0006_language_exchange_preferences.sql',
       '0007_language_exchange_connections.sql', '0008_language_exchange_safety.sql','0029_phase26_exchange_limits.sql',
-      '0030_phase26_connection_outbox.sql']) {
+      '0030_phase26_connection_outbox.sql','0016_phase12_notifications_read_state.sql',
+      '0017_phase12_notification_preferences.sql','0031_phase26_connected_notification.sql']) {
       await db.migration(migration);
     }
     safety = new PostgresExchangeSafetyRepository(db.pool);
@@ -41,6 +51,235 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
     }
     return ids;
   }
+
+  function notificationIntent(row:LeasedConnectionIntent) {
+    const event=createNotificationDomainEvent({eventId:row.id,
+      eventType:row.eventKind==='CONNECTED'?'exchange.connection.connected':'exchange.connection.requested',
+      aggregateType:'EXCHANGE_CONNECTION',aggregateId:row.connectionId,actor:{kind:'USER',userId:row.actorId},
+      recipientUserId:row.recipientId,occurredAt:row.occurredAt,
+      idempotencyKey:`exchange.connection.${row.eventKind.toLowerCase()}:${row.connectionId}:v1`,
+      target:{kind:'EXCHANGE_CONNECTION',id:row.connectionId,path:'/exchange/connections'},variables:{}});
+    return createNotificationIntent({event,...mapNotificationEvent(event),actor:{kind:'DELETED',label:'Deleted member'}});
+  }
+
+  it('PostgreSQL worker retries failed materialization and publishes only after canonical commit',async()=>{
+    const [a,b]=await pair();const request=await connections.requestConnection(a,b);
+    class FailingOnceNotifications extends PostgresNotificationRepository {
+      private fail=true;
+      override async claimIntentOnClient(...args:Parameters<PostgresNotificationRepository['claimIntentOnClient']>) {
+        if(this.fail){this.fail=false;throw new Error('Synthetic SQL worker materialization failure');}
+        return super.claimIntentOnClient(...args);
+      }
+    }
+    const notifications=new FailingOnceNotifications(db.pool);const queue=new PostgresConnectionOutbox(db.pool);
+    const projections:Promise<unknown>[]=[];
+    const worker=new ConnectionNotificationWorker(queue,notifications,new PostgresConnectionNotificationAccess(db.pool),
+      {publish:record=>{projections.push(db.pool.query(`SELECT o.status,n.id FROM exchange_notification_outbox o
+        JOIN notifications n ON n.source_aggregate_id=o.connection_id AND n.recipient_user_id=o.recipient_id
+        WHERE n.id=$1::uuid`,[record.id]).then(result=>result.rows));}});
+    expect(await worker.runOnce()).toEqual({processed:0,failed:1});
+    expect((await connections.findRelationship(a,b))?.id).toBe(request.record!.id);expect(projections).toHaveLength(0);
+    expect((await db.pool.query('SELECT id FROM notifications')).rows).toHaveLength(0);
+    await db.pool.query(`UPDATE exchange_notification_outbox SET available_at=clock_timestamp()-interval '1 second'`);
+    expect(await worker.runOnce()).toEqual({processed:1,failed:0});
+    expect(projections).toHaveLength(1);expect(await projections[0]).toEqual([{status:'DELIVERED',id:expect.any(String)}]);
+    expect(await worker.runOnce()).toEqual({processed:0,failed:0});await worker.onModuleDestroy();
+  });
+
+  it.each(['BLOCK','REMOVE','OPT_OUT','DISABLE','PRIVATE_LANGUAGE','IN_APP_OFF','DISCOVERY_OFF','NO_CONTACT','SSE_OFF'] as const)
+    ('current notification read/count projection reflects %s after materialization',async reason=>{
+      const [a,b]=await pair();await connections.requestConnection(a,b);
+      const queue=new PostgresConnectionOutbox(db.pool);const notification=new PostgresNotificationRepository(db.pool);
+      await queue.process((await queue.lease())[0],(client,row)=>materializeConnectionNotification(client,row,notification));
+      const access=new PostgresConnectionNotificationAccess(db.pool);
+      const service=new NotificationService(notification,undefined,undefined,access);
+      const first=await service.list(b);
+      expect(first.unreadCount).toBe(1);expect(first.items[0]).toMatchObject({actor:{kind:'USER',displayName:'Synthetic connection actor'},
+        target:{path:'/exchange/connections'},variables:{}});
+      await db.pool.query(`UPDATE users SET display_name='Current synthetic display name' WHERE id=$1`,[a]);
+      expect((await service.list(b)).items[0].actor).toMatchObject({kind:'USER',displayName:'Current synthetic display name'});
+      if(reason==='BLOCK') await safety.blockUser(b,a);
+      if(reason==='REMOVE') await connections.cancelConnection(a,b);
+      if(reason==='OPT_OUT') await db.pool.query('UPDATE language_exchange_preferences SET exchange_opt_in=false WHERE user_id=$1',[a]);
+      if(reason==='DISABLE') await db.pool.query(`UPDATE users SET status='DISABLED' WHERE id=$1`,[a]);
+      if(reason==='PRIVATE_LANGUAGE') await db.pool.query(`UPDATE user_languages SET visibility='PRIVATE' WHERE user_id=$1`,[a]);
+      if(reason==='IN_APP_OFF') await db.pool.query(`INSERT INTO notification_preferences(user_id,category,channel,enabled) VALUES($1,'EXCHANGE','IN_APP',false)`,[b]);
+      if(reason==='SSE_OFF') await db.pool.query(`INSERT INTO notification_preferences(user_id,category,channel,enabled) VALUES($1,'EXCHANGE','SSE',false)`,[b]);
+      if(reason==='DISCOVERY_OFF') await db.pool.query('UPDATE language_exchange_preferences SET discoverable=false WHERE user_id=$1',[a]);
+      if(reason==='NO_CONTACT') await db.pool.query(`UPDATE language_exchange_preferences SET contact_permission='NO_CONTACT' WHERE user_id=$1`,[a]);
+      const visible=reason==='DISCOVERY_OFF'||reason==='NO_CONTACT'||reason==='SSE_OFF';
+      const page=await service.list(b);
+      expect(page.unreadCount).toBe(visible?1:0);expect(await service.unreadCount(b)).toEqual({unreadCount:visible?1:0});
+      expect(page.items[0]).toMatchObject(visible?{actor:{kind:'USER'},target:{path:'/exchange/connections'}}:
+        {actor:{kind:'DELETED'},target:null,variables:{}});
+      expect((await notification.listForUser(b,{limit:20,status:'ALL'})).items[0].record.actor).toEqual({kind:'DELETED',label:'Deleted member'});
+      expect(Boolean(await access.resolve((await notification.listForUser(b,{limit:20,status:'ALL'})).items[0].record,'SSE')))
+        .toBe(visible && reason!=='SSE_OFF');
+    });
+
+  it.each(['LIVE','REPLAY'] as const)('current PostgreSQL projection suppresses blocked %s delivery',async mode=>{
+    const [a,b]=await pair();await connections.requestConnection(a,b);
+    const queue=new PostgresConnectionOutbox(db.pool);const notification=new PostgresNotificationRepository(db.pool);
+    await queue.process((await queue.lease())[0],(client,row)=>materializeConnectionNotification(client,row,notification));
+    const record=(await notification.listForUser(b,{limit:20,status:'ALL'})).items[0].record;
+    const anchorEvent=createNotificationDomainEvent({eventId:randomUUID(),eventType:'community.comment.created',aggregateType:'COMMUNITY_COMMENT',
+      aggregateId:randomUUID(),actor:{kind:'SYSTEM',code:'SYNTHETIC'},recipientUserId:b,occurredAt:'2026-01-01T00:00:00.000Z',
+      idempotencyKey:'synthetic-replay-anchor',target:{kind:'SYSTEM',id:randomUUID(),path:'/notifications'},variables:{}});
+    const anchor=await notification.claimIntent(createNotificationIntent({event:anchorEvent,notificationType:'COMMENT_REPLY',category:'COMMUNITY',
+      priority:'NORMAL',actor:{kind:'SYSTEM',label:'System'},retention:{mode:'DAYS',days:180}}));
+    if(anchor.outcome!=='CREATED') throw new Error('Synthetic replay anchor failed');
+    await safety.blockUser(b,a);
+    const access=new PostgresConnectionNotificationAccess(db.pool);const finished=deferred();
+    const realtime=new NotificationRealtimeService(notification,{resolve:async(notice,channel)=>{
+      try{return await access.resolve(notice,channel);}finally{finished.resolve();}
+    },countUnread:(user,repository)=>access.countUnread(user,repository)});
+    const events:NotificationRealtimeEvent[]=[];
+    const subscription=realtime.stream(b,mode==='REPLAY'?anchor.record.id:undefined).subscribe(event=>events.push(event));
+    try {
+      if(mode==='LIVE') realtime.publish(record);
+      await finished.promise;await new Promise(resolve=>setImmediate(resolve));
+      expect(events.filter(event=>event.type==='notification')).toHaveLength(0);
+    } finally {subscription.unsubscribe();}
+  });
+
+  it.each(['BLOCK','REMOVE','OPT_OUT','DISABLE','IN_APP_OFF','ACCEPTED_REQUEST'] as const)
+    ('outbox materializer suppresses current revocation %s',async reason=>{
+      const [a,b]=await pair();await connections.requestConnection(a,b);
+      const queue=new PostgresConnectionOutbox(db.pool);const notification=new PostgresNotificationRepository(db.pool);
+      const leased=(await queue.lease())[0];
+      if(reason==='BLOCK') await safety.blockUser(b,a);
+      if(reason==='REMOVE') await connections.cancelConnection(a,b);
+      if(reason==='OPT_OUT') await db.pool.query('UPDATE language_exchange_preferences SET exchange_opt_in=false WHERE user_id=$1',[b]);
+      if(reason==='DISABLE') await db.pool.query(`UPDATE users SET status='DISABLED' WHERE id=$1`,[a]);
+      if(reason==='IN_APP_OFF') await db.pool.query(`INSERT INTO notification_preferences(user_id,category,channel,enabled) VALUES($1,'EXCHANGE','IN_APP',false)`,[b]);
+      if(reason==='ACCEPTED_REQUEST') await connections.acceptConnection(b,a);
+      await queue.process(leased,(client,row)=>materializeConnectionNotification(client,row,notification));
+      expect((await db.pool.query('SELECT status FROM exchange_notification_outbox WHERE id=$1',[leased.id])).rows[0]).toEqual({status:'SUPPRESSED'});
+      expect((await db.pool.query('SELECT id FROM notifications')).rows).toHaveLength(0);
+    });
+
+  it('outbox materializer creates redacted stable request and connected intents without actor snapshots',async()=>{
+    const [a,b]=await pair();await connections.requestConnection(a,b);
+    const queue=new PostgresConnectionOutbox(db.pool);const notification=new PostgresNotificationRepository(db.pool);
+    await queue.process((await queue.lease())[0],(client,row)=>materializeConnectionNotification(client,row,notification));
+    await connections.acceptConnection(b,a);
+    await queue.process((await queue.lease())[0],(client,row)=>materializeConnectionNotification(client,row,notification));
+    const rows=(await db.pool.query('SELECT notification_type,actor,variables,target FROM notifications ORDER BY notification_type')).rows;
+    expect(rows.map(row=>row.notification_type)).toEqual(['BUDDY_CONNECTED','BUDDY_REQUEST']);
+    for(const row of rows) {
+      expect(row.actor).toEqual({kind:'DELETED',label:'Deleted member'});expect(row.variables).toEqual({});
+      expect(row.target.path).toBe('/exchange/connections');
+    }
+  });
+
+  it.each(['EXACT','WRONG_SOURCE_HASH','WRONG_PROFILE','WRONG_RETENTION','WRONG_FINGERPRINT'] as const)
+    ('outbox materializer reconciles legacy request only for %s',async variant=>{
+    const [a,b]=await pair();const request=await connections.requestConnection(a,b);
+    const queue=new PostgresConnectionOutbox(db.pool);const notification=new PostgresNotificationRepository(db.pool);
+    const event=createNotificationDomainEvent({eventId:request.record!.id,eventType:'exchange.connection.requested',
+      aggregateType:'EXCHANGE_CONNECTION',aggregateId:request.record!.id,actor:{kind:'USER',userId:a},recipientUserId:b,
+      occurredAt:request.record!.createdAt,idempotencyKey:`exchange.connection.requested:${request.record!.id}:v1`,
+      target:{kind:'EXCHANGE_CONNECTION',id:request.record!.id,path:'/exchange'},variables:{relationship:'BUDDY_REQUEST'}});
+    const legacy=await notification.claimIntent(createNotificationIntent({event,...mapNotificationEvent(event),
+      actor:{kind:'USER',displayName:'Synthetic preceding actor',profilePath:`/profiles/${a}`}}));
+    expect(legacy.outcome).toBe('CREATED');
+    if(variant==='WRONG_SOURCE_HASH') await db.pool.query(`UPDATE notifications SET source_payload_hash=$1`,['0'.repeat(64)]);
+    if(variant==='WRONG_PROFILE') await db.pool.query(`UPDATE notifications SET actor=jsonb_set(actor,'{profilePath}',to_jsonb($1::text))`,[`/profiles/${b}`]);
+    if(variant==='WRONG_RETENTION') await db.pool.query(`UPDATE notifications SET retention='{"mode":"DAYS","days":180}'::jsonb`);
+    if(variant==='WRONG_FINGERPRINT') await db.pool.query(`UPDATE notifications SET intent_fingerprint=$1`,['0'.repeat(64)]);
+    const process=queue.process((await queue.lease())[0],(client,row)=>materializeConnectionNotification(client,row,notification));
+    if(variant==='EXACT') await process;
+    else await expect(process).rejects.toThrow('Connection notification idempotency conflict');
+    expect((await db.pool.query('SELECT id FROM notifications')).rows).toHaveLength(1);
+    expect((await db.pool.query('SELECT status FROM exchange_notification_outbox')).rows)
+      .toEqual([{status:variant==='EXACT'?'DELIVERED':'PENDING'}]);
+  });
+
+  it('outbox materializer leaves unexpected fingerprint conflicts pending for retry',async()=>{
+    const [a,b]=await pair();await connections.requestConnection(a,b);
+    const queue=new PostgresConnectionOutbox(db.pool);const notification=new PostgresNotificationRepository(db.pool);
+    const row=(await queue.lease())[0];
+    const base=notificationIntent(row);
+    // Match canonical event identity, but supply a conflicting actor snapshot.
+    const event=createNotificationDomainEvent({eventId:row.connectionId,eventType:'exchange.connection.requested',
+      aggregateType:'EXCHANGE_CONNECTION',aggregateId:row.connectionId,actor:{kind:'USER',userId:a},recipientUserId:b,
+      occurredAt:row.occurredAt,idempotencyKey:base.sourceEvent.idempotencyKey,target:base.target,variables:{}});
+    await notification.claimIntent(createNotificationIntent({event,...mapNotificationEvent(event),
+      actor:{kind:'USER',displayName:'Conflicting synthetic actor',profilePath:`/profiles/${a}`}}));
+    await expect(queue.process(row,(client,current)=>materializeConnectionNotification(client,current,notification)))
+      .rejects.toThrow('Connection notification idempotency conflict');
+    expect((await db.pool.query('SELECT status,lease_token FROM exchange_notification_outbox')).rows).toEqual([{status:'PENDING',lease_token:null}]);
+    expect((await db.pool.query('SELECT id FROM notifications')).rows).toHaveLength(1);
+  });
+
+  it.each(['BLOCK','REMOVE','NO_CONTACT','DISCOVERY_OFF'] as const)('outbox materializer rechecks connected access for %s',async reason=>{
+    const [a,b]=await pair();await connections.requestConnection(a,b);await connections.acceptConnection(b,a);
+    const queue=new PostgresConnectionOutbox(db.pool);const notification=new PostgresNotificationRepository(db.pool);
+    const connected=(await queue.lease()).find(row=>row.eventKind==='CONNECTED')!;
+    if(reason==='BLOCK') await safety.blockUser(a,b);
+    if(reason==='REMOVE') await connections.disconnect(b,a);
+    if(reason==='NO_CONTACT') await db.pool.query(`UPDATE language_exchange_preferences SET contact_permission='NO_CONTACT' WHERE user_id=$1`,[a]);
+    if(reason==='DISCOVERY_OFF') await db.pool.query('UPDATE language_exchange_preferences SET discoverable=false WHERE user_id=$1',[a]);
+    await queue.process(connected,(client,row)=>materializeConnectionNotification(client,row,notification));
+    const available=reason==='NO_CONTACT'||reason==='DISCOVERY_OFF';
+    expect((await db.pool.query('SELECT status FROM exchange_notification_outbox WHERE id=$1',[connected.id])).rows[0])
+      .toEqual({status:available?'DELIVERED':'SUPPRESSED'});
+    expect((await db.pool.query('SELECT id FROM notifications')).rows).toHaveLength(available?1:0);
+  });
+
+  it('outbox replicas lease distinct rows and recover an expired lease without stale delivery',async()=>{
+    const [a,b]=await pair();await connections.requestConnection(a,b);await connections.acceptConnection(b,a);
+    const queues=[new PostgresConnectionOutbox(db.pool),new PostgresConnectionOutbox(db.pool)];
+    const batches=await Promise.all(queues.map(queue=>queue.lease(1)));
+    const rows=batches.flat();expect(rows).toHaveLength(2);expect(new Set(rows.map(row=>row.id)).size).toBe(2);
+    expect(await queues[0].lease()).toHaveLength(0);
+    await db.pool.query(`UPDATE exchange_notification_outbox SET leased_until=clock_timestamp()-interval '1 second' WHERE id=$1`,[rows[0].id]);
+    const recovered=(await queues[1].lease())[0];expect(recovered).toMatchObject({id:rows[0].id,attempts:2});
+    expect(recovered.leaseToken).not.toBe(rows[0].leaseToken);
+    let staleCalled=false;
+    await queues[0].process(rows[0],async()=>{staleCalled=true;return 'DELIVERED';});
+    expect(staleCalled).toBe(false);
+    await queues[1].process(recovered,async()=> 'SUPPRESSED');
+    expect((await db.pool.query('SELECT status,lease_token FROM exchange_notification_outbox WHERE id=$1',[recovered.id])).rows[0])
+      .toEqual({status:'SUPPRESSED',lease_token:null});
+  });
+
+  it('outbox failure rolls back notification/read state and retries the committed domain intent exactly once',async()=>{
+    const [a,b]=await pair();const request=await connections.requestConnection(a,b);
+    const queue=new PostgresConnectionOutbox(db.pool);const notification=new PostgresNotificationRepository(db.pool);
+    const leased=(await queue.lease())[0];
+    await expect(queue.process(leased,async(client,row)=>{
+      await notification.claimIntentOnClient(client,notificationIntent(row));throw new Error('Synthetic post-materialization failure');
+    })).rejects.toThrow('Synthetic post-materialization failure');
+    expect((await connections.findRelationship(a,b))?.id).toBe(request.record!.id);
+    expect((await db.pool.query('SELECT id FROM notifications')).rows).toHaveLength(0);
+    expect((await db.pool.query('SELECT notification_id FROM notification_read_states')).rows).toHaveLength(0);
+    expect((await db.pool.query('SELECT status,lease_token,available_at>clock_timestamp() AS backed_off FROM exchange_notification_outbox')).rows[0])
+      .toEqual({status:'PENDING',lease_token:null,backed_off:true});
+    await db.pool.query(`UPDATE exchange_notification_outbox SET available_at=clock_timestamp()-interval '1 second'`);
+    const retry=(await queue.lease())[0];
+    await queue.process(retry,async(client,row)=>{
+      expect(await notification.claimIntentOnClient(client,notificationIntent(row))).toMatchObject({outcome:'CREATED'});
+      return 'DELIVERED';
+    });
+    expect((await db.pool.query('SELECT id FROM notifications')).rows).toHaveLength(1);
+    expect((await db.pool.query('SELECT notification_id FROM notification_read_states')).rows).toHaveLength(1);
+    expect(await queue.lease()).toHaveLength(0);
+  });
+
+  it('outbox connected notification schema retains new rows when rollback is incompatible',async()=>{
+    const [a,b]=await pair();await connections.requestConnection(a,b);await connections.acceptConnection(b,a);
+    const queue=new PostgresConnectionOutbox(db.pool);const notification=new PostgresNotificationRepository(db.pool);
+    const connected=(await queue.lease()).find(row=>row.eventKind==='CONNECTED')!;
+    await queue.process(connected,async(client,row)=>{
+      expect(await notification.claimIntentOnClient(client,notificationIntent(row))).toMatchObject({outcome:'CREATED',record:{notificationType:'BUDDY_CONNECTED'}});
+      return 'DELIVERED';
+    });
+    await expect(db.migration('0031_phase26_connected_notification.down.sql')).rejects.toMatchObject({code:'23514'});
+    expect((await db.pool.query('SELECT notification_type FROM notifications')).rows).toEqual([{notification_type:'BUDDY_CONNECTED'}]);
+    expect((await db.pool.query(`SELECT 1 FROM pg_constraint WHERE conname='notifications_type_check'
+      AND connamespace=$1::regnamespace`,[db.schema])).rows).toHaveLength(1);
+  });
 
   it.each([false,true])('persists one requested and one connected intent for crossed request=%s',async crossed=>{
     const [a,b]=await pair();

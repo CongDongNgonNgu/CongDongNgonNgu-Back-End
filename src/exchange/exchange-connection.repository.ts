@@ -6,6 +6,7 @@ import type {
 import type { ExchangeSafetyReadStore } from './exchange-safety.types';
 import { ConnectionCursorCodec } from './connection-cursor-codec';
 import { ExchangeFailure } from './exchange.errors';
+import type { MemoryConnectionOutbox } from './memory-connection-outbox';
 import { connectionListQuery, connectionListMatches, connectionListItem, connectionListCursor,
   type ConnectionListInput, type ConnectionListPage } from './exchange-connection-list';
 
@@ -23,12 +24,14 @@ export interface ExchangeConnectionRepository {
 }
 
 export class InMemoryExchangeConnectionRepository implements ExchangeConnectionRepository {
+  private mutationRevision=0;
+  get revision():number {return this.mutationRevision+(this.safety?.revision??0);}
   private readonly relationships = new Map<string, ExchangeConnectionRecord>();
   private operationTail: Promise<void> = Promise.resolve();
   private readonly pairResetAt = new Map<string,number>();
 
   constructor(private readonly safety?: ExchangeSafetyReadStore, private readonly cursors = new ConnectionCursorCodec(),
-    private readonly now:()=>number=Date.now) {}
+    private readonly now:()=>number=Date.now,private readonly outbox?:MemoryConnectionOutbox) {}
 
   listRelationships(actor: string, input: ConnectionListInput): Promise<ConnectionListPage> {
     return this.withLock(async () => {
@@ -56,6 +59,15 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
     });
   }
 
+  findRelationshipById(userId:string,id:string):Promise<ExchangeConnectionRecord|null> {
+    return this.withLock(async()=>{
+      const record=[...this.relationships.values()].find(item=>item.id===id
+        && (item.participantAId===userId || item.participantBId===userId));
+      if(!record || await this.isBlocked(record.participantAId,record.participantBId)) return null;
+      return cloneRecord(record);
+    });
+  }
+
   requestConnection(
     requesterUserId: string,
     targetUserId: string,
@@ -80,7 +92,9 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
           createdAt: now,
           updatedAt: now,
         };
+        this.outbox?.enqueue(requesterUserId,{record,outcome:'REQUESTED'});
         this.relationships.set(key, record);
+        this.mutationRevision+=1;
         this.pairResetAt.set(key,clock+60000);
         return { record: cloneRecord(record), outcome: 'REQUESTED' as const };
       }
@@ -91,7 +105,9 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
         return { record: cloneRecord(current), outcome: 'ALREADY_PENDING' as const };
       }
       const connected = { ...current, status: 'CONNECTED' as const, updatedAt: new Date() };
+      this.outbox?.enqueue(requesterUserId,{record:connected,outcome:'CONNECTED'});
       this.relationships.set(key, connected);
+      this.mutationRevision+=1;
       return { record: cloneRecord(connected), outcome: 'CONNECTED' as const };
     });
   }
@@ -111,7 +127,9 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
         return { record: cloneRecord(current), outcome: 'INVALID_ACTION' as const };
       }
       const connected = { ...current, status: 'CONNECTED' as const, updatedAt: new Date() };
+      this.outbox?.enqueue(actorUserId,{record:connected,outcome:'ACCEPTED'});
       this.relationships.set(key, connected);
+      this.mutationRevision+=1;
       return { record: cloneRecord(connected), outcome: 'ACCEPTED' as const };
     });
   }
@@ -137,6 +155,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
         return { record: cloneRecord(current), outcome: 'INVALID_ACTION' as const };
       }
       this.relationships.delete(key);
+      this.mutationRevision+=1;
       return { record: null, connectionId: current.id, requesterUserId: current.requesterId, outcome: 'CANCELLED' as const };
     });
   }
@@ -153,6 +172,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
         return { record: cloneRecord(current), outcome: 'INVALID_ACTION' as const };
       }
       this.relationships.delete(key);
+      this.mutationRevision+=1;
       return { record: null, connectionId: current.id, requesterUserId: current.requesterId, outcome: 'DISCONNECTED' as const };
     });
   }
@@ -166,6 +186,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
       const current = this.relationships.get(key);
       if (!current) return { record: null, outcome: 'NONE' as const };
       this.relationships.delete(key);
+      this.mutationRevision+=1;
       return {
         record: null,
         connectionId: current.id,
@@ -187,6 +208,7 @@ export class InMemoryExchangeConnectionRepository implements ExchangeConnectionR
       return { record: cloneRecord(current), outcome: 'INVALID_ACTION' };
     }
     this.relationships.delete(key);
+    this.mutationRevision+=1;
     return { record: null, connectionId: current.id, requesterUserId: current.requesterId, outcome };
   }
 

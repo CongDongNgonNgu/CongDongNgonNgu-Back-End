@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable,Optional } from '@nestjs/common';
 import { Observable, type Subscriber } from 'rxjs';
 import type {
   NotificationRecord,
@@ -10,6 +10,7 @@ import {
   type NotificationRepository,
 } from './notification.repository';
 import { toNotificationResponse, type NotificationResponse } from './notification.projection';
+import { CONNECTION_NOTIFICATION_ACCESS,isConnectionNotification,projectCurrentNotification,type ConnectionNotificationAccess } from './connection-notification-access';
 
 type ReplayUnavailableReason = 'LAST_EVENT_NOT_AVAILABLE' | 'REPLAY_WINDOW_EXCEEDED' | 'LIVE_QUEUE_OVERFLOW';
 
@@ -46,8 +47,10 @@ interface NotificationSubscriber {
   readonly observer: Subscriber<NotificationRealtimeEvent>;
   readonly seenNotificationIds: Set<string>;
   readonly pendingRecords: NotificationRecord[];
+  readonly reauthorize?: () => Promise<void>;
   replaying: boolean;
   pendingOverflow: boolean;
+  draining:boolean;
   heartbeat: ReturnType<typeof setInterval>;
 }
 
@@ -62,9 +65,10 @@ const INITIAL_RETRY_MS = 1_000;
 export class NotificationRealtimeService {
   private readonly subscribersByUser = new Map<string, Set<NotificationSubscriber>>();
 
-  constructor(@Inject(NOTIFICATION_REPOSITORY) private readonly repository: NotificationRepository) {}
+  constructor(@Inject(NOTIFICATION_REPOSITORY) private readonly repository: NotificationRepository,
+    @Optional() @Inject(CONNECTION_NOTIFICATION_ACCESS) private readonly connectionAccess?:ConnectionNotificationAccess) {}
 
-  stream(userId: string, lastEventId?: string): Observable<NotificationRealtimeEvent> {
+  stream(userId: string, lastEventId?: string, reauthorize?: () => Promise<void>): Observable<NotificationRealtimeEvent> {
     assertUuid(userId, 'NOTIFICATION_INVALID_OWNER', 'Notification owner is invalid');
     const normalizedLastEventId = normalizeLastEventId(lastEventId);
 
@@ -84,10 +88,12 @@ export class NotificationRealtimeService {
         observer,
         seenNotificationIds: new Set(normalizedLastEventId ? [normalizedLastEventId] : []),
         pendingRecords: [],
-        replaying: Boolean(normalizedLastEventId),
+        reauthorize,
+        replaying: true,
         pendingOverflow: false,
+        draining:false,
         heartbeat: setInterval(() => {
-          if (!observer.closed) observer.next({ type: 'keepalive', data: '' });
+          void this.emitHeartbeat(connection);
         }, HEARTBEAT_INTERVAL_MS),
       };
       connection.heartbeat.unref?.();
@@ -104,12 +110,17 @@ export class NotificationRealtimeService {
         else subscriber.pendingOverflow = true;
         continue;
       }
-      this.emitRecord(subscriber, record);
+      if(subscriber.reauthorize || this.connectionAccess || isConnectionNotification(record)) {
+        if(subscriber.pendingRecords.length<MAX_PENDING_RECORDS) subscriber.pendingRecords.push(record);
+        else subscriber.pendingOverflow=true;
+        void this.drainPending(subscriber);
+      } else this.emitRecord(subscriber, record);
     }
   }
 
   private async replay(connection: NotificationSubscriber, lastEventId: string | undefined): Promise<void> {
     try {
+      if (connection.reauthorize && !await this.authorize(connection)) return;
       let replay: 'NOT_REQUESTED' | 'AVAILABLE' | 'UNAVAILABLE' = 'NOT_REQUESTED';
       let replayed: { readonly record: NotificationRecord; readonly readState: NotificationReadState }[] = [];
       let replayHasMore = false;
@@ -125,6 +136,7 @@ export class NotificationRealtimeService {
         }
       }
 
+      if (connection.reauthorize && !await this.authorize(connection)) return;
       if (connection.observer.closed) return;
       connection.observer.next({
         type: 'ready',
@@ -141,7 +153,7 @@ export class NotificationRealtimeService {
       } else {
         for (const item of replayed) {
           if (connection.observer.closed) return;
-          this.emitRecord(connection, item.record, item.readState);
+          await this.emitRecord(connection, item.record, item.readState);
         }
         if (replayHasMore) this.emitReplayUnavailable(connection, 'REPLAY_WINDOW_EXCEEDED');
       }
@@ -150,14 +162,25 @@ export class NotificationRealtimeService {
         this.emitReplayUnavailable(connection, 'LIVE_QUEUE_OVERFLOW');
         connection.pendingRecords.length = 0;
       }
-      const pending = connection.pendingRecords.splice(0);
-      for (const record of pending) {
-        if (connection.observer.closed) return;
-        this.emitRecord(connection, record);
-      }
+      await this.drainPending(connection);
     } catch (error) {
       if (!connection.observer.closed) connection.observer.error(error);
     }
+  }
+
+  private async drainPending(connection:NotificationSubscriber):Promise<void> {
+    if(connection.draining || connection.replaying) return;
+    connection.draining=true;
+    try {
+      while(!connection.observer.closed && connection.pendingRecords.length) {
+        await this.emitRecord(connection,connection.pendingRecords.shift()!);
+        if(connection.pendingOverflow) {
+          this.emitReplayUnavailable(connection,'LIVE_QUEUE_OVERFLOW');
+          connection.pendingRecords.length=0;connection.pendingOverflow=false;
+        }
+      }
+    } catch(error) {if(!connection.observer.closed) connection.observer.error(error);}
+    finally {connection.draining=false;}
   }
 
   private emitReplayUnavailable(connection: NotificationSubscriber, reason: ReplayUnavailableReason): void {
@@ -190,17 +213,43 @@ export class NotificationRealtimeService {
     connection: NotificationSubscriber,
     record: NotificationRecord,
     readState?: NotificationReadState,
-  ): void {
+  ): void|Promise<void> {
     if (connection.observer.closed || connection.seenNotificationIds.has(record.id)) return;
-    connection.seenNotificationIds.add(record.id);
+    if(connection.reauthorize || this.connectionAccess || isConnectionNotification(record)) {
+      return projectCurrentNotification(record,readState?.status==='READ',readState?.readAt??null,this.connectionAccess,'SSE')
+        .then(async ({response,available})=>{
+          if (available && await this.authorize(connection)) this.emitResponse(connection,record.id,response);
+        });
+    }
+    this.emitResponse(connection,record.id,toNotificationResponse(record,readState?.status==='READ',readState?.readAt??null));
+  }
+
+  private async authorize(connection: NotificationSubscriber): Promise<boolean> {
+    if (connection.observer.closed) return false;
+    try {
+      await connection.reauthorize?.();
+      return !connection.observer.closed;
+    } catch {
+      connection.observer.complete();
+      return false;
+    }
+  }
+
+  private async emitHeartbeat(connection: NotificationSubscriber): Promise<void> {
+    if (await this.authorize(connection)) connection.observer.next({ type: 'keepalive', data: '' });
+  }
+
+  private emitResponse(connection:NotificationSubscriber,id:string,response:NotificationResponse):void {
+    if(connection.observer.closed || connection.seenNotificationIds.has(id)) return;
+    connection.seenNotificationIds.add(id);
     if (connection.seenNotificationIds.size > MAX_SEEN_EVENT_IDS) {
       const oldest = connection.seenNotificationIds.values().next().value as string | undefined;
       if (oldest) connection.seenNotificationIds.delete(oldest);
     }
     connection.observer.next({
-      id: record.id,
+      id,
       type: 'notification',
-      data: toNotificationResponse(record, readState?.status === 'READ', readState?.readAt ?? null),
+      data:response,
     });
   }
 }

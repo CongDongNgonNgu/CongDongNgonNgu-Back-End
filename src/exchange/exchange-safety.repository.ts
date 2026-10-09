@@ -11,6 +11,8 @@ export const EXCHANGE_SAFETY_REPOSITORY = 'EXCHANGE_SAFETY_REPOSITORY';
 const BLOCK_KEY_SEPARATOR = ':';
 
 export class InMemoryExchangeSafetyRepository implements ExchangeSafetyRepository {
+  private mutationRevision=0;
+  get revision():number {return this.mutationRevision;}
   private readonly blocks = new Map<string, Date>();
   private readonly reports = new Set<string>();
 
@@ -35,7 +37,7 @@ export class InMemoryExchangeSafetyRepository implements ExchangeSafetyRepositor
     if (blockerUserId === blockedUserId) throw new Error('An exchange user cannot block themselves');
     const key = blockKey(blockerUserId, blockedUserId);
     const exists = this.blocks.has(key);
-    if (!exists) this.blocks.set(key, new Date());
+    if (!exists) {this.blocks.set(key, new Date());this.mutationRevision+=1;}
     return {
       targetUserId: blockedUserId,
       outcome: exists ? 'ALREADY_BLOCKED' : 'CREATED',
@@ -45,6 +47,7 @@ export class InMemoryExchangeSafetyRepository implements ExchangeSafetyRepositor
 
   async unblockUser(blockerUserId: string, blockedUserId: string): Promise<ExchangeBlockMutationResult> {
     const removed = this.blocks.delete(blockKey(blockerUserId, blockedUserId));
+    if(removed) this.mutationRevision+=1;
     return {
       targetUserId: blockedUserId,
       outcome: removed ? 'REMOVED' : 'NOT_BLOCKED',
