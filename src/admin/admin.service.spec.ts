@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { InMemoryCommunityRepository } from '../community/community.repository';
 import { CommunityModerationService } from '../community/community.moderation.service';
 import { InMemoryIdentityRepository } from '../identity/identity.repository';
@@ -12,7 +12,9 @@ import { AdminService } from './admin.service';
 import { InMemoryAdminAuditRepository } from './admin-audit.repository';
 
 describe('AdminService', () => {
+  afterEach(() => { jest.useRealTimers(); });
   it('orchestrates reporter-redacted cases and records assignment/transition audits', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-10T00:00:00Z') });
     const identities = new InMemoryIdentityRepository();
     const community = new InMemoryCommunityRepository();
     const library = new InMemoryLibraryRepository();
@@ -39,6 +41,8 @@ describe('AdminService', () => {
     await expect(service.assignReport(moderator, report.id, moderator.userId)).resolves.toMatchObject({
       assignedToUserId: moderator.userId,
     });
+    // Equal timestamps sort by UUID; chronological expectations need distinct times.
+    jest.advanceTimersByTime(1);
     await expect(service.resolveReport(moderator, report.id, 'DISMISSED', 'Insufficient evidence')).resolves.toMatchObject({
       state: 'DISMISSED',
     });
