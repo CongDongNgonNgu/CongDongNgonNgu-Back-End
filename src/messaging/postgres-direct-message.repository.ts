@@ -2,7 +2,8 @@ import type { Pool, PoolClient } from 'pg';
 import { MessageFailure } from './message-failure';
 import { normalizeMessageText, parseSequence } from './message-validation';
 import { PostgresDirectConversationRepository } from './postgres-direct-conversation.repository';
-import type { DirectMessage } from './direct-conversation.types';
+import type { DirectMessage, MessageHistoryInput, MessageHistoryPage } from './direct-conversation.types';
+import { MessageCursorCodec } from './message-cursor';
 
 interface MessageRow {
   id: string; conversation_id: string; sender_user_id: string; sequence: string;
@@ -10,7 +11,56 @@ interface MessageRow {
 }
 
 export class PostgresDirectMessageRepository {
-  constructor(private readonly pool: Pool, private readonly conversations: PostgresDirectConversationRepository) {}
+  constructor(private readonly pool: Pool, private readonly conversations: PostgresDirectConversationRepository,
+    private readonly cursors?: MessageCursorCodec) {}
+
+  async history(actor: string, conversationId: string, input: MessageHistoryInput): Promise<MessageHistoryPage> {
+    const cursors = this.cursors;
+    if (!cursors) throw new Error('Messaging cursor configuration is required');
+    const limit = input.limit ?? 30;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50 || (input.before !== undefined && input.after !== undefined)) {
+      throw new MessageFailure('MESSAGE_INVALID_PAGINATION', 400, 'Message pagination is invalid');
+    }
+    const ascending = input.after !== undefined;
+    const supplied = input.after ?? input.before;
+    const boundary = supplied === undefined ? null : cursors.readHistory(supplied, actor, conversationId);
+    return this.conversations.withConversation(actor, conversationId, async (client, row) => {
+      const result = await client.query<MessageRow>(`SELECT * FROM direct_messages
+        WHERE conversation_id=$1 AND ($2::bigint IS NULL OR
+          ($3::boolean AND sequence>$2::bigint) OR (NOT $3::boolean AND sequence<$2::bigint))
+        ORDER BY sequence ${ascending ? 'ASC' : 'DESC'} LIMIT $4`, [conversationId, boundary, ascending, limit + 1]);
+      const selected = result.rows.slice(0, limit);
+      if (!ascending) selected.reverse();
+      const items = selected.map(project);
+      const first = items[0]?.sequence ?? boundary ?? row.next_sequence;
+      const last = items[items.length - 1]?.sequence ?? (ascending ? boundary ?? '0'
+        : (parseSequence(row.next_sequence) - 1n).toString());
+      const beforeCursor = cursors.history(actor, conversationId, first);
+      const afterCursor = cursors.history(actor, conversationId, last);
+      return { items, beforeCursor, afterCursor,
+        nextCursor: result.rows.length > limit ? (ascending ? afterCursor : beforeCursor) : null };
+    });
+  }
+
+  async markRead(actor: string, conversationId: string, input: string): Promise<void> {
+    const sequence = parseSequence(input);
+    await this.conversations.withConversation(actor, conversationId, async (client, row) => {
+      if (sequence >= parseSequence(row.next_sequence) || (sequence > 0n &&
+        !(await client.query('SELECT id FROM direct_messages WHERE conversation_id=$1 AND sequence=$2::bigint',
+          [conversationId, sequence.toString()])).rowCount)) {
+        throw new MessageFailure('MESSAGE_INVALID_READ', 400, 'Read position is invalid');
+      }
+      const lastRead = actor === row.participant_a_id ? row.last_read_a : row.last_read_b;
+      if (sequence <= parseSequence(lastRead)) return;
+      if (parseSequence(row.change_version) === 9223372036854775807n) {
+        throw new MessageFailure('MESSAGE_CAPACITY_REACHED', 409, 'Conversation capacity reached');
+      }
+      await client.query(`UPDATE direct_conversations SET
+        last_read_a=CASE WHEN participant_a_id=$2 THEN $3::bigint ELSE last_read_a END,
+        last_read_b=CASE WHEN participant_b_id=$2 THEN $3::bigint ELSE last_read_b END,
+        change_version=change_version+1 WHERE id=$1`, [conversationId, actor, sequence.toString()]);
+    });
+  }
 
   async send(actor: string, conversationId: string,
     input: { clientMessageId: string; text: string }): Promise<DirectMessage> {

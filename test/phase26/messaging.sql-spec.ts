@@ -4,6 +4,7 @@ import path from 'node:path';
 import { SqlHarness } from '../phase22/sql-harness';
 import { PostgresDirectConversationRepository } from '../../src/messaging/postgres-direct-conversation.repository';
 import { PostgresDirectMessageRepository } from '../../src/messaging/postgres-direct-message.repository';
+import { MessageCursorCodec } from '../../src/messaging/message-cursor';
 
 describe('Phase26 direct messaging PostgreSQL constraints', () => {
   const db = new SqlHarness();
@@ -167,6 +168,71 @@ describe('Phase26 direct messaging PostgreSQL constraints', () => {
       await db.pool.query('ALTER TABLE direct_message_notification_intents DROP CONSTRAINT synthetic_intent_failure');
     }
     expect((await messages.send(a, opened.id, { clientMessageId: randomUUID(), text: 'Retry' })).sequence).toBe('1');
+  });
+
+  async function populatedHistory() {
+    const [a, b, c] = await eligiblePair();
+    const conversations = new PostgresDirectConversationRepository(db.pool);
+    const opened = await conversations.open(a, b);
+    await db.pool.query(`INSERT INTO direct_messages(conversation_id,participant_a_id,participant_b_id,
+      sender_user_id,sequence,text,client_message_id,created_at)
+      SELECT $1,$2,$3,CASE WHEN n%2=1 THEN $2::uuid ELSE $3::uuid END,n,'Message '||n,
+        gen_random_uuid(),'2026-10-10T00:00:00Z' FROM generate_series(1,70) n`, [opened.id, a, b]);
+    await db.pool.query('UPDATE direct_conversations SET next_sequence=71,change_version=70 WHERE id=$1', [opened.id]);
+    const messages = new PostgresDirectMessageRepository(db.pool, conversations,
+      new MessageCursorCodec('synthetic-messaging-history-secret'));
+    return { a, b, c, conversations, messages, id: opened.id };
+  }
+
+  it('history is sequence ordered, bounded and exclusive in both directions', async () => {
+    const { a, messages, id } = await populatedHistory();
+    const newest = await messages.history(a, id, {});
+    expect(newest.items.map(item => item.sequence)).toEqual(Array.from({ length: 30 }, (_, i) => String(i + 41)));
+    const older = await messages.history(a, id, { before: newest.beforeCursor, limit: 50 });
+    expect(older.items.map(item => item.sequence)).toEqual(Array.from({ length: 40 }, (_, i) => String(i + 1)));
+    expect(older.nextCursor).toBeNull();
+    let after = older.afterCursor;
+    const recovered: string[] = [];
+    for (let page = 0; page < 4; page += 1) {
+      const current = await messages.history(a, id, { after, limit: 12 });
+      recovered.push(...current.items.map(item => item.sequence));
+      after = current.afterCursor;
+      if (!current.nextCursor) break;
+    }
+    expect(recovered).toEqual(Array.from({ length: 30 }, (_, i) => String(i + 41)));
+    expect(new Set(recovered).size).toBe(30);
+  });
+
+  it('history rejects foreign/malformed/conflicting cursors and revoked access', async () => {
+    const { a, b, c, messages, id } = await populatedHistory();
+    const newest = await messages.history(a, id, {});
+    const codec = new MessageCursorCodec('synthetic-messaging-history-secret');
+    for (const input of [{ limit: 51 }, { before: 'bad!' },
+      { before: newest.beforeCursor, after: newest.afterCursor },
+      { after: codec.history(a, randomUUID(), '1') },
+      { before: codec.history(c, id, '1') }]) {
+      await expect(messages.history(a, id, input)).rejects.toMatchObject({ code: expect.stringMatching(/^MESSAGE_INVALID_/) });
+    }
+    await expect(messages.history(c, id, {})).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+    await db.pool.query(`UPDATE language_exchange_preferences SET contact_permission='NO_CONTACT' WHERE user_id=$1`, [b]);
+    await expect(messages.history(a, id, { before: newest.beforeCursor })).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+  });
+
+  it('read state is actor-owned, monotonic and excludes own messages from unread', async () => {
+    const { a, b, c, conversations, messages, id } = await populatedHistory();
+    expect((await conversations.get(a, id)).unreadCount).toBe('35');
+    await Promise.all(['10', '50', '30'].map(sequence => messages.markRead(a, id, sequence)));
+    const current = await conversations.get(a, id);
+    expect(current.lastReadSequence).toBe('50');
+    expect(current.unreadCount).toBe('10');
+    expect((await conversations.get(b, id)).lastReadSequence).toBe('0');
+    expect((await conversations.get(b, id)).unreadCount).toBe('35');
+    await messages.markRead(a, id, '10');
+    expect((await conversations.get(a, id)).changeVersion).toBe(current.changeVersion);
+    await expect(messages.markRead(a, id, '71')).rejects.toMatchObject({ code: 'MESSAGE_INVALID_READ' });
+    await expect(messages.markRead(c, id, '50')).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+    await db.pool.query('DELETE FROM language_exchange_connections');
+    await expect(messages.markRead(a, id, '70')).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
   });
 
   it.each(['REMOVE', 'BLOCK', 'NO_CONTACT', 'OPT_OUT', 'DISABLE', 'PRIVATE_LANGUAGE', 'UNVERIFIED'] as const)

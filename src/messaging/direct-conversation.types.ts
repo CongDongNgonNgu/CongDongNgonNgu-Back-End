@@ -28,3 +28,11 @@ export interface DirectMessage {
   clientMessageId: string;
   createdAt: string;
 }
+
+export interface MessageHistoryInput { limit?: number; before?: string; after?: string }
+export interface MessageHistoryPage {
+  items: DirectMessage[];
+  nextCursor: string | null;
+  beforeCursor: string;
+  afterCursor: string;
+}
