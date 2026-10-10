@@ -13,7 +13,9 @@ export interface ConnectionNotificationAccess {
 }
 
 export function isConnectionNotification(record:NotificationRecord):boolean {
-  return record.notificationType==='BUDDY_REQUEST' || record.notificationType==='BUDDY_CONNECTED';
+  // Includes communication notices whose lifetime depends on this current pair.
+  return record.notificationType==='BUDDY_REQUEST' || record.notificationType==='BUDDY_CONNECTED'
+    || record.notificationType==='DIRECT_MESSAGE';
 }
 
 export async function countCurrentUnread(userId:string,repository:NotificationRepository,access?:ConnectionNotificationAccess):Promise<number> {
@@ -43,6 +45,14 @@ export async function projectCurrentNotification(
   let actor:NotificationActorProjection|null=null;
   try {actor=access?await access.resolve(record,channel):null;}
   catch(error) {if(!(error instanceof CurrentConnectionAccessChangedError)) throw error;}
+  if(record.notificationType==='DIRECT_MESSAGE') {
+    const id=record.target?.id;
+    const available=Boolean(actor && record.target?.kind==='DIRECT_CONVERSATION' && id
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(id));
+    return {available,response:{...response,
+      actor:available?{kind:'SYSTEM',label:'System'}:{kind:'DELETED',label:'Deleted member'},
+      target:available?{kind:'DIRECT_CONVERSATION',path:`/exchange/conversations/${id}`}:null,variables:{}}};
+  }
   return {available:Boolean(actor),response:{...response,
     actor:actor??{kind:'DELETED',label:'Deleted member'},
     target:actor?{kind:'EXCHANGE_CONNECTION',path:'/exchange/connections'}:null,variables:{}}};

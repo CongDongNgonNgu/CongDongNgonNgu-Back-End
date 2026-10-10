@@ -44,7 +44,7 @@ export class PostgresConnectionNotificationAccess implements ConnectionNotificat
     const result=await this.pool.query(`SELECT count(*)::int AS count
       FROM notification_read_states r JOIN notifications n ON n.id=r.notification_id AND n.recipient_user_id=r.recipient_user_id
       WHERE r.recipient_user_id=$1::uuid AND r.status='UNREAD' AND (
-        n.notification_type NOT IN ('BUDDY_REQUEST','BUDDY_CONNECTED') OR EXISTS (
+        n.notification_type NOT IN ('BUDDY_REQUEST','BUDDY_CONNECTED','DIRECT_MESSAGE') OR EXISTS (
           SELECT 1 FROM language_exchange_connections c WHERE c.id::text=n.target->>'id'
             AND n.target->>'kind'='EXCHANGE_CONNECTION'
             AND (c.participant_a_id=$1::uuid OR c.participant_b_id=$1::uuid)

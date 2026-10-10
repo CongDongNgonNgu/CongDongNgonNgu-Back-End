@@ -137,6 +137,12 @@ interface NotificationEventMapping {
 
 export function mapNotificationEvent(event: NotificationDomainEvent): NotificationEventMapping {
   switch (event.eventType) {
+    case 'messaging.direct.unread':
+      assertAggregate(event, 'DIRECT_CONVERSATION');
+      return {
+        notificationType: 'DIRECT_MESSAGE', category: 'EXCHANGE', priority: 'NORMAL',
+        retention: { mode: 'UNTIL_READ', maxDays: 180 },
+      };
     case 'community.comment.created':
       assertAggregate(event, 'COMMUNITY_COMMENT');
       return {
