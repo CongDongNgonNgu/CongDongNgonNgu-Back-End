@@ -2,11 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { SqlHarness } from '../phase22/sql-harness';
+import { PostgresDirectConversationRepository } from '../../src/messaging/postgres-direct-conversation.repository';
 
 describe('Phase26 direct messaging PostgreSQL constraints', () => {
   const db = new SqlHarness();
   beforeAll(async () => {
     await db.open();
+    for (const migration of ['0002_language_profile.sql', '0006_language_exchange_preferences.sql',
+      '0007_language_exchange_connections.sql', '0008_language_exchange_safety.sql']) {
+      await db.migration(migration);
+    }
     await db.migration('0032_phase26_direct_messaging.sql');
   });
   afterAll(async () => { await db.close(); });
@@ -25,6 +30,69 @@ describe('Phase26 direct messaging PostgreSQL constraints', () => {
     return (await db.pool.query(`INSERT INTO direct_conversations(participant_a_id,participant_b_id)
       VALUES($1,$2) RETURNING id`, [a, b])).rows[0].id as string;
   }
+
+  async function eligiblePair() {
+    const [a, b, c] = await actors();
+    const language = (await db.pool.query(`INSERT INTO languages(code,slug,native_name,english_name,vietnamese_name)
+      VALUES('en','english','English','English','English') ON CONFLICT(code) DO UPDATE SET active=true
+      RETURNING id`)).rows[0].id;
+    for (const actor of [a, b, c]) {
+      await db.pool.query(`INSERT INTO language_exchange_preferences(user_id,exchange_opt_in,discoverable,contact_permission)
+        VALUES($1,true,true,'RELATIONSHIP_GATED')`, [actor]);
+      const relation = (await db.pool.query(`INSERT INTO user_languages(user_id,language_id,is_known,is_learning,declared_proficiency)
+        VALUES($1,$2,true,true,'B1') RETURNING id`, [actor, language])).rows[0].id;
+      await db.pool.query(`INSERT INTO language_exchange_languages(user_id,user_language_id,direction)
+        VALUES($1,$2,'OFFER'),($1,$2,'WANT')`, [actor, relation]);
+    }
+    await db.pool.query(`INSERT INTO language_exchange_connections(participant_a_id,participant_b_id,requester_id,status)
+      VALUES($1,$2,$1,'CONNECTED')`, [a, b]);
+    return [a, b, c];
+  }
+
+  it('concurrent opposite-participant opens produce one stable authorized conversation', async () => {
+    const [a, b, c] = await eligiblePair();
+    const first = new PostgresDirectConversationRepository(db.pool);
+    const replica = new PostgresDirectConversationRepository(db.pool);
+    const [ab, ba] = await Promise.all([first.open(a, b), replica.open(b, a)]);
+    expect(ab.id).toBe(ba.id);
+    expect(ab).toMatchObject({ headSequence: '0', changeVersion: '0', lastReadSequence: '0', unreadCount: '0',
+      partner: { userId: b, displayName: 'Synthetic messaging actor' } });
+    expect((await first.open(a, b)).id).toBe(ab.id);
+    await expect(first.open(c, b)).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+    await expect(first.get(c, ab.id)).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+    expect((await db.pool.query('SELECT id FROM direct_conversations')).rows).toEqual([{ id: ab.id }]);
+  });
+
+  it.each(['REMOVE', 'BLOCK', 'NO_CONTACT', 'OPT_OUT', 'DISABLE', 'PRIVATE_LANGUAGE', 'UNVERIFIED'] as const)
+    ('current %s revocation denies retained conversation get and open', async reason => {
+      const [a, b] = await eligiblePair();
+      const repository = new PostgresDirectConversationRepository(db.pool);
+      const opened = await repository.open(a, b);
+      if (reason === 'REMOVE') await db.pool.query('DELETE FROM language_exchange_connections');
+      if (reason === 'BLOCK') await db.pool.query(`INSERT INTO language_exchange_blocks(blocker_user_id,blocked_user_id)
+        VALUES($1,$2)`, [b, a]);
+      if (reason === 'NO_CONTACT') await db.pool.query(`UPDATE language_exchange_preferences SET contact_permission='NO_CONTACT' WHERE user_id=$1`, [b]);
+      if (reason === 'OPT_OUT') await db.pool.query('UPDATE language_exchange_preferences SET exchange_opt_in=false WHERE user_id=$1', [b]);
+      if (reason === 'DISABLE') await db.pool.query(`UPDATE users SET status='DISABLED' WHERE id=$1`, [b]);
+      if (reason === 'PRIVATE_LANGUAGE') await db.pool.query(`UPDATE user_languages SET visibility='PRIVATE' WHERE user_id=$1`, [b]);
+      if (reason === 'UNVERIFIED') await db.pool.query('UPDATE users SET email_verified_at=NULL WHERE id=$1', [b]);
+      await expect(repository.get(a, opened.id)).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+      await expect(repository.open(a, b)).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+      expect((await db.pool.query('SELECT id FROM direct_conversations')).rows).toEqual([{ id: opened.id }]);
+    });
+
+  it('discovery opt-out preserves messaging while a fresh connection reuses retained history identity', async () => {
+    const [a, b] = await eligiblePair();
+    const repository = new PostgresDirectConversationRepository(db.pool);
+    const opened = await repository.open(a, b);
+    await db.pool.query('UPDATE language_exchange_preferences SET discoverable=false WHERE user_id=$1', [b]);
+    expect((await repository.get(a, opened.id)).id).toBe(opened.id);
+    await db.pool.query('DELETE FROM language_exchange_connections');
+    await expect(repository.open(a, b)).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+    await db.pool.query(`INSERT INTO language_exchange_connections(participant_a_id,participant_b_id,requester_id,status)
+      VALUES($1,$2,$2,'CONNECTED')`, [a, b]);
+    expect((await repository.open(b, a)).id).toBe(opened.id);
+  });
 
   const insertMessage = `INSERT INTO direct_messages(conversation_id,participant_a_id,participant_b_id,
     sender_user_id,sequence,text,client_message_id) VALUES($1,$2,$3,$4,$5,$6,$7)`;
