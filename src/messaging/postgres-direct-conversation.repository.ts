@@ -1,12 +1,51 @@
 import type { Pool, PoolClient } from 'pg';
 import { lockExchangeUsers, EXCHANGE_ELIGIBLE_PREFERENCE_PREDICATE } from '../exchange/exchange-pair-authorization';
 import { lockExchangePair } from '../exchange/exchange-safety.repository';
-import { conversationUnavailable } from './message-failure';
+import { conversationUnavailable, MessageFailure } from './message-failure';
+import { MessageCursorCodec } from './message-cursor';
 import { parseSequence } from './message-validation';
-import type { DirectConversationRow, DirectConversationSummary } from './direct-conversation.types';
+import type { DirectConversationRow, DirectConversationSummary, DirectConversationListInput,
+  DirectConversationPage } from './direct-conversation.types';
+
+const EXACT_UPDATED_AT = `to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
 export class PostgresDirectConversationRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pool, private readonly cursors?: MessageCursorCodec) {}
+
+  async list(actor: string, input: DirectConversationListInput = {}): Promise<DirectConversationPage> {
+    if (!this.cursors) throw new Error('Messaging cursor codec is required');
+    const limit = input.limit ?? 20;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50)
+      throw new MessageFailure('MESSAGE_INVALID_PAGE', 400, 'Conversation page is invalid');
+    const position = input.cursor === undefined ? null : this.cursors.readList(input.cursor, actor);
+    // Candidates contain identifiers only and never authorize a projection. Limit
+    // work even when retained conversations are no longer accessible.
+    const candidates = (await this.pool.query<{ id: string; updatedAt: string }>(`SELECT id,
+      ${EXACT_UPDATED_AT} AS "updatedAt" FROM direct_conversations
+      WHERE (participant_a_id=$1::uuid OR participant_b_id=$1::uuid)
+        AND ($2::timestamptz IS NULL OR (updated_at,id)<($2::timestamptz,$3::uuid))
+      ORDER BY updated_at DESC,id DESC LIMIT 101`, [actor, position?.updatedAt ?? null, position?.id ?? null])).rows;
+    const items: DirectConversationSummary[] = [];
+    let processed = 0;
+    for (const candidate of candidates.slice(0, 100)) {
+      processed++;
+      try {
+        const summary = await this.withConversation(actor, candidate.id, async (client, row) => {
+          const current = (await client.query<{ updatedAt: string }>(`SELECT ${EXACT_UPDATED_AT} AS "updatedAt"
+            FROM direct_conversations WHERE id=$1`, [row.id])).rows[0];
+          // Reordering while waiting for locks must not project a new position
+          // beneath the old scan cursor. A refresh can pick it up at its new key.
+          return current.updatedAt === candidate.updatedAt ? this.summary(client, actor, row) : null;
+        });
+        if (summary) items.push(summary);
+      } catch (error) {
+        if (!(error instanceof MessageFailure) || error.code !== 'CONVERSATION_UNAVAILABLE') throw error;
+      }
+      if (items.length === limit) break;
+    }
+    return { items, nextCursor: processed > 0 && processed < candidates.length
+      ? this.cursors.list(actor, candidates[processed - 1]) : null };
+  }
 
   async open(actor: string, partner: string): Promise<DirectConversationSummary> {
     return this.withPair(actor, partner, async client => {

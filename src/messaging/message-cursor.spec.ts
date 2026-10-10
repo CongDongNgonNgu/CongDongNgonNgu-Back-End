@@ -35,4 +35,14 @@ describe('Private direct message cursors', () => {
     expect(() => codec.readHistory(cursor, actor, conversation)).toThrow();
     expect(() => codec.readList(codec.history(actor, conversation, '1'), actor)).toThrow();
   });
+
+  it('preserves PostgreSQL microseconds and rejects impossible calendar positions', () => {
+    const position = { id: conversation, updatedAt: '2026-10-10T01:02:03.004987Z' };
+    expect(codec.readList(codec.list(actor, position), actor)).toEqual(position);
+    for (const updatedAt of ['2026-02-30T01:02:03.004987Z', '2026-10-10T01:02:03.004987+00:00',
+      '2026-10-10T01:02:03.00498Z', '2026-10-10T01:02:03.0049879Z']) {
+      expect(() => codec.readList(codec.list(actor, { id: conversation, updatedAt }), actor))
+        .toThrow(expect.objectContaining({ code: 'MESSAGE_INVALID_CURSOR' }));
+    }
+  });
 });

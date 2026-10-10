@@ -66,6 +66,96 @@ describe('Phase26 direct messaging PostgreSQL constraints', () => {
     expect((await db.pool.query('SELECT id FROM direct_conversations')).rows).toEqual([{ id: ab.id }]);
   });
 
+  it('lists current authorized conversations with bounded exact microsecond keyset pages', async () => {
+    const [a, b, c] = await eligiblePair();
+    const codec = new MessageCursorCodec('synthetic-list-cursor-key');
+    const repository = new PostgresDirectConversationRepository(db.pool, codec);
+    const partners = Array.from({ length: 22 }, () => randomUUID());
+    await db.pool.query(`INSERT INTO users(id,email,normalized_email,display_name,status,email_verified_at)
+      SELECT id,id::text||'@phase26.invalid',id::text||'@phase26.invalid','Synthetic list partner','ACTIVE',now()
+      FROM unnest($1::uuid[]) id`, [partners]);
+    await db.pool.query(`INSERT INTO language_exchange_preferences(user_id,exchange_opt_in,discoverable,contact_permission)
+      SELECT id,true,true,'RELATIONSHIP_GATED' FROM unnest($1::uuid[]) id`, [partners]);
+    await db.pool.query(`INSERT INTO user_languages(user_id,language_id,is_known,is_learning,declared_proficiency)
+      SELECT id,(SELECT language_id FROM user_languages WHERE user_id=$2 LIMIT 1),true,true,'B1'
+      FROM unnest($1::uuid[]) id`, [partners, a]);
+    await db.pool.query(`INSERT INTO language_exchange_languages(user_id,user_language_id,direction)
+      SELECT u.user_id,u.id,d::exchange_language_direction FROM user_languages u CROSS JOIN (VALUES('OFFER'),('WANT')) directions(d)
+      WHERE u.user_id=ANY($1::uuid[])`, [partners]);
+    await db.pool.query(`INSERT INTO language_exchange_connections(participant_a_id,participant_b_id,requester_id,status)
+      SELECT LEAST($2::uuid,id),GREATEST($2::uuid,id),$2,'CONNECTED' FROM unnest($1::uuid[]) id`, [partners, a]);
+    await db.pool.query(`INSERT INTO direct_conversations(participant_a_id,participant_b_id,updated_at)
+      SELECT LEAST($2::uuid,id),GREATEST($2::uuid,id),
+        '2026-10-10T01:02:03.004000Z'::timestamptz + n * interval '1 microsecond'
+      FROM unnest($1::uuid[]) WITH ORDINALITY partners(id,n)`, [partners, a]);
+    await repository.open(a, b);
+    await db.pool.query(`UPDATE language_exchange_preferences SET contact_permission='NO_CONTACT' WHERE user_id=$1`, [b]);
+    const expected = (await db.pool.query(`SELECT id FROM direct_conversations
+      WHERE participant_a_id<>$1 AND participant_b_id<>$1 ORDER BY updated_at DESC,id DESC`, [b])).rows.map(row => row.id);
+    const first = await repository.list(a);
+    expect(first.items.map(row => row.id)).toEqual(expected.slice(0, 20));
+    expect(first.items.every(row => !('text' in row) && !('preview' in row))).toBe(true);
+    expect(first.nextCursor).not.toBeNull();
+    const second = await repository.list(a, { cursor: first.nextCursor!, limit: 50 });
+    expect(second.items.map(row => row.id)).toEqual(expected.slice(20));
+    expect(second.nextCursor).toBeNull();
+    expect(await repository.list(c)).toEqual({ items: [], nextCursor: null });
+    await expect(repository.list(c, { cursor: first.nextCursor! })).rejects.toMatchObject({ code: 'MESSAGE_INVALID_CURSOR' });
+    await expect(repository.list(a, { limit: 51 })).rejects.toMatchObject({ code: 'MESSAGE_INVALID_PAGE' });
+    await expect(repository.list(a, { cursor: 'malformed!' })).rejects.toMatchObject({ code: 'MESSAGE_INVALID_CURSOR' });
+  }, 120_000);
+
+  it('continues beyond a full bounded scan of retained inaccessible conversations', async () => {
+    const [a, b] = await eligiblePair();
+    const repository = new PostgresDirectConversationRepository(db.pool, new MessageCursorCodec('synthetic-list-key'));
+    const accessible = await repository.open(a, b);
+    await db.pool.query(`UPDATE direct_conversations SET updated_at='2026-01-01T00:00:00Z' WHERE id=$1`, [accessible.id]);
+    const revoked = Array.from({ length: 100 }, () => randomUUID());
+    await db.pool.query(`INSERT INTO users(id,email,normalized_email,display_name,status,email_verified_at)
+      SELECT id,id::text||'@phase26.invalid',id::text||'@phase26.invalid','Retained unavailable actor','ACTIVE',now()
+      FROM unnest($1::uuid[]) id`, [revoked]);
+    await db.pool.query(`INSERT INTO direct_conversations(participant_a_id,participant_b_id,updated_at)
+      SELECT LEAST($2::uuid,id),GREATEST($2::uuid,id),'2026-02-01T00:00:00Z'::timestamptz
+      FROM unnest($1::uuid[]) id`, [revoked, a]);
+    const first = await repository.list(a);
+    expect(first.items).toEqual([]);
+    expect(first.nextCursor).not.toBeNull();
+    const second = await repository.list(a, { cursor: first.nextCursor! });
+    expect(second.items.map(row => row.id)).toEqual([accessible.id]);
+    expect(second.nextCursor).toBeNull();
+  }, 240_000);
+
+  it('omits a candidate reordered while list authorization waits for shared account locks', async () => {
+    const [a, b] = await eligiblePair();
+    const repository = new PostgresDirectConversationRepository(db.pool, new MessageCursorCodec('synthetic-race-list-key'));
+    const opened = await repository.open(a, b);
+    const writer = await db.pool.connect();
+    let outcome: Promise<unknown> | undefined;
+    try {
+      await writer.query('BEGIN');
+      await writer.query('SELECT id FROM users WHERE id IN ($1,$2) ORDER BY id FOR UPDATE', [a, b]);
+      const pid = (await writer.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      outcome = repository.list(a);
+      const deadline = Date.now() + 5000;
+      let waiting = false;
+      while (Date.now() < deadline) {
+        waiting = (await db.pool.query(`SELECT 1 FROM pg_stat_activity
+          WHERE $1=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock'`, [pid])).rowCount === 1;
+        if (waiting) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+      await writer.query(`UPDATE direct_conversations SET updated_at=updated_at+interval '1 microsecond' WHERE id=$1`, [opened.id]);
+      await writer.query('COMMIT');
+      expect(await outcome).toEqual({ items: [], nextCursor: null });
+    } finally {
+      await writer.query('ROLLBACK');
+      writer.release();
+      await outcome;
+    }
+    expect((await repository.list(a)).items.map(row => row.id)).toEqual([opened.id]);
+  });
+
   it('serializes opposite senders and duplicate retries with one immutable logical message', async () => {
     const [a, b] = await eligiblePair();
     const conversations = new PostgresDirectConversationRepository(db.pool);

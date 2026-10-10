@@ -31,8 +31,7 @@ export class MessageCursorCodec {
     try {
       const value = this.decode(cursor);
       if (value.kind !== 'LIST' || value.actor !== actor || typeof value.id !== 'string' || !UUID.test(value.id)
-        || typeof value.updatedAt !== 'string' || !Number.isFinite(Date.parse(value.updatedAt))
-        || new Date(value.updatedAt).toISOString() !== value.updatedAt) throw invalid();
+        || typeof value.updatedAt !== 'string' || !validTimestamp(value.updatedAt)) throw invalid();
       return { id: value.id, updatedAt: value.updatedAt };
     } catch { throw invalid(); }
   }
@@ -58,4 +57,10 @@ export class MessageCursorCodec {
 
 function invalid(): MessageFailure {
   return new MessageFailure('MESSAGE_INVALID_CURSOR', 400, 'Message cursor is invalid');
+}
+
+function validTimestamp(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(?:\d{3})?Z$/.test(value)) return false;
+  const milliseconds = value.length === 27 ? value.slice(0, 23) + 'Z' : value;
+  return Number.isFinite(Date.parse(milliseconds)) && new Date(milliseconds).toISOString() === milliseconds;
 }

@@ -8,6 +8,9 @@ export interface DirectConversationSummary {
   updatedAt: string;
 }
 
+export interface DirectConversationListInput { limit?: number; cursor?: string }
+export interface DirectConversationPage { items: DirectConversationSummary[]; nextCursor: string | null }
+
 export interface DirectConversationRow {
   id: string;
   participant_a_id: string;
