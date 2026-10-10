@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { SqlHarness } from '../phase22/sql-harness';
 import { PostgresDirectConversationRepository } from '../../src/messaging/postgres-direct-conversation.repository';
+import { PostgresDirectMessageRepository } from '../../src/messaging/postgres-direct-message.repository';
 
 describe('Phase26 direct messaging PostgreSQL constraints', () => {
   const db = new SqlHarness();
@@ -13,6 +14,7 @@ describe('Phase26 direct messaging PostgreSQL constraints', () => {
       await db.migration(migration);
     }
     await db.migration('0032_phase26_direct_messaging.sql');
+    await db.migration('0033_phase26_message_intents_limits.sql');
   });
   afterAll(async () => { await db.close(); });
   beforeEach(async () => { await db.reset(); });
@@ -61,6 +63,110 @@ describe('Phase26 direct messaging PostgreSQL constraints', () => {
     await expect(first.open(c, b)).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
     await expect(first.get(c, ab.id)).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
     expect((await db.pool.query('SELECT id FROM direct_conversations')).rows).toEqual([{ id: ab.id }]);
+  });
+
+  it('serializes opposite senders and duplicate retries with one immutable logical message', async () => {
+    const [a, b] = await eligiblePair();
+    const conversations = new PostgresDirectConversationRepository(db.pool);
+    const messages = new PostgresDirectMessageRepository(db.pool, conversations);
+    const replica = new PostgresDirectMessageRepository(db.pool, new PostgresDirectConversationRepository(db.pool));
+    const opened = await conversations.open(a, b);
+    const key = randomUUID();
+    const [one, duplicate, reply] = await Promise.all([
+      messages.send(a, opened.id, { clientMessageId: key, text: '  Học 🌏  ' }),
+      replica.send(a, opened.id, { clientMessageId: key, text: 'Học 🌏' }),
+      replica.send(b, opened.id, { clientMessageId: randomUUID(), text: 'Reply' }),
+    ]);
+    expect(one).toEqual(duplicate);
+    expect(one.text).toBe('Học 🌏');
+    expect([one.sequence, reply.sequence].sort()).toEqual(['1', '2']);
+    await expect(messages.send(a, opened.id, { clientMessageId: key, text: 'Changed' }))
+      .rejects.toMatchObject({ code: 'MESSAGE_IDEMPOTENCY_CONFLICT' });
+    expect((await conversations.get(a, opened.id)).unreadCount).toBe('1');
+    expect((await conversations.get(b, opened.id)).unreadCount).toBe('1');
+    expect((await db.pool.query('SELECT next_sequence,change_version FROM direct_conversations')).rows)
+      .toEqual([{ next_sequence: '3', change_version: '2' }]);
+    expect((await db.pool.query(`SELECT hits FROM direct_message_rate_limits WHERE actor_id=$1 ORDER BY bucket`, [a])).rows)
+      .toEqual([{ hits: 1 }, { hits: 1 }]);
+    expect((await db.pool.query('SELECT generation FROM direct_message_notification_intents')).rows)
+      .toEqual([{ generation: '1' }, { generation: '1' }]);
+    const secondKey = randomUUID();
+    const second = await messages.send(a, opened.id, { clientMessageId: secondKey, text: 'Second' });
+    expect(await replica.send(a, opened.id, { clientMessageId: secondKey, text: 'Second' })).toEqual(second);
+    expect((await db.pool.query(`SELECT generation FROM direct_message_notification_intents
+      WHERE recipient_user_id=$1`, [b])).rows).toEqual([{ generation: '2' }]);
+  });
+
+  it('commits both denied send counters without a message, version, sequence or intent change', async () => {
+    const [a, b] = await eligiblePair();
+    const conversations = new PostgresDirectConversationRepository(db.pool);
+    const messages = new PostgresDirectMessageRepository(db.pool, conversations);
+    const opened = await conversations.open(a, b);
+    const key = randomUUID();
+    const first = await messages.send(a, opened.id, { clientMessageId: key, text: 'First' });
+    await db.pool.query(`UPDATE direct_message_rate_limits SET hits=CASE bucket WHEN 'SEND_MINUTE' THEN 60 ELSE 1000 END
+      WHERE actor_id=$1`, [a]);
+    expect(await messages.send(a, opened.id, { clientMessageId: key, text: 'First' })).toEqual(first);
+    await expect(messages.send(a, opened.id, { clientMessageId: randomUUID(), text: 'Denied' }))
+      .rejects.toMatchObject({ code: 'MESSAGE_RATE_LIMITED' });
+    expect((await db.pool.query(`SELECT hits FROM direct_message_rate_limits WHERE actor_id=$1 ORDER BY bucket`, [a])).rows)
+      .toEqual([{ hits: 1001 }, { hits: 61 }]);
+    expect((await db.pool.query('SELECT next_sequence,change_version FROM direct_conversations')).rows)
+      .toEqual([{ next_sequence: '2', change_version: '1' }]);
+    expect((await db.pool.query('SELECT id FROM direct_messages')).rowCount).toBe(1);
+    expect((await db.pool.query('SELECT generation FROM direct_message_notification_intents')).rows)
+      .toEqual([{ generation: '1' }]);
+  });
+
+  it.each(['REMOVE', 'BLOCK'] as const)('send waits for account locks and denies after %s wins', async reason => {
+    const [a, b] = await eligiblePair();
+    const conversations = new PostgresDirectConversationRepository(db.pool);
+    const messages = new PostgresDirectMessageRepository(db.pool, conversations);
+    const opened = await conversations.open(a, b);
+    const revoker = await db.pool.connect();
+    try {
+      await revoker.query('BEGIN');
+      await revoker.query('SELECT id FROM users WHERE id IN ($1,$2) ORDER BY id FOR UPDATE', [a, b]);
+      const pid = (await revoker.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      const outcome = messages.send(b, opened.id, { clientMessageId: randomUUID(), text: 'Must be denied' })
+        .then(() => null, (error: unknown) => error);
+      const deadline = Date.now() + 5000;
+      let waiting = false;
+      while (Date.now() < deadline) {
+        waiting = (await db.pool.query(`SELECT 1 FROM pg_stat_activity
+          WHERE $1=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock'`, [pid])).rowCount === 1;
+        if (waiting) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+      if (reason === 'BLOCK') await revoker.query(`INSERT INTO language_exchange_blocks(blocker_user_id,blocked_user_id)
+        VALUES($1,$2)`, [a, b]);
+      if (reason === 'REMOVE') await revoker.query('DELETE FROM language_exchange_connections');
+      await revoker.query('COMMIT');
+      expect(await outcome).toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+    } finally { await revoker.query('ROLLBACK'); revoker.release(); }
+    expect((await db.pool.query('SELECT id FROM direct_messages')).rowCount).toBe(0);
+    expect((await db.pool.query('SELECT conversation_id FROM direct_message_notification_intents')).rowCount).toBe(0);
+    expect(await conversations.withConversation(a, opened.id, async () => null).catch(() => 'DENIED')).toBe('DENIED');
+  });
+
+  it('rolls back sequence, budget and message when the atomic intent insert fails', async () => {
+    const [a, b] = await eligiblePair();
+    const conversations = new PostgresDirectConversationRepository(db.pool);
+    const messages = new PostgresDirectMessageRepository(db.pool, conversations);
+    const opened = await conversations.open(a, b);
+    await db.pool.query(`ALTER TABLE direct_message_notification_intents ADD CONSTRAINT synthetic_intent_failure CHECK(false)`);
+    try {
+      await expect(messages.send(a, opened.id, { clientMessageId: randomUUID(), text: 'Rollback' }))
+        .rejects.toMatchObject({ code: '23514' });
+      expect((await db.pool.query('SELECT id FROM direct_messages')).rowCount).toBe(0);
+      expect((await db.pool.query('SELECT actor_id FROM direct_message_rate_limits')).rowCount).toBe(0);
+      expect((await db.pool.query('SELECT next_sequence,change_version FROM direct_conversations')).rows)
+        .toEqual([{ next_sequence: '1', change_version: '0' }]);
+    } finally {
+      await db.pool.query('ALTER TABLE direct_message_notification_intents DROP CONSTRAINT synthetic_intent_failure');
+    }
+    expect((await messages.send(a, opened.id, { clientMessageId: randomUUID(), text: 'Retry' })).sequence).toBe('1');
   });
 
   it.each(['REMOVE', 'BLOCK', 'NO_CONTACT', 'OPT_OUT', 'DISABLE', 'PRIVATE_LANGUAGE', 'UNVERIFIED'] as const)
@@ -157,10 +263,12 @@ describe('Phase26 direct messaging PostgreSQL constraints', () => {
     await expect(db.migration('0032_phase26_direct_messaging.down.sql')).rejects.toMatchObject({ code: 'P0001' });
     expect((await db.pool.query('SELECT id FROM direct_conversations')).rows).toEqual([{ id }]);
     await db.reset();
+    await db.migration('0033_phase26_message_intents_limits.down.sql');
     await db.migration('0032_phase26_direct_messaging.down.sql');
     expect((await db.pool.query(`SELECT to_regclass($1) AS table_name`, [db.schema + '.direct_messages'])).rows)
       .toEqual([{ table_name: null }]);
     await db.migration('0032_phase26_direct_messaging.sql');
+    await db.migration('0033_phase26_message_intents_limits.sql');
   });
 
   it('checks rollback emptiness after excluding a concurrent writer', async () => {

@@ -18,3 +18,13 @@ export interface DirectConversationRow {
   last_read_b: string;
   updated_at: Date;
 }
+
+export interface DirectMessage {
+  id: string;
+  conversationId: string;
+  senderUserId: string;
+  sequence: string;
+  text: string;
+  clientMessageId: string;
+  createdAt: string;
+}
