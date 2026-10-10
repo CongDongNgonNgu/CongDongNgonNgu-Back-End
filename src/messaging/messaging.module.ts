@@ -9,10 +9,15 @@ import { PostgresDirectConversationRepository } from './postgres-direct-conversa
 import { PostgresDirectMessageRepository } from './postgres-direct-message.repository';
 import { PostgresMessageStreamRepository } from './postgres-message-stream.repository';
 import { MessageStreamService } from './message-stream.service';
+import { LibraryModule } from '../library/library.module';
+import { LibraryService } from '../library/library.service';
+import { CommunityModule } from '../community/community.module';
+import { CommunityService } from '../community/community.service';
+import { MessageContextResolver } from './message-context-resolver';
 
 export const MESSAGING_POOL = 'MESSAGING_POOL';
 @Module({
-  imports: [AuthModule], controllers: [MessagingController],
+  imports: [AuthModule, LibraryModule, CommunityModule], controllers: [MessagingController],
   providers: [
     { provide: MESSAGING_POOL, inject: [ConfigService], useFactory: (config: ConfigService) => {
       const connectionString = config.get<string>('database.url');
@@ -28,9 +33,11 @@ export const MESSAGING_POOL = 'MESSAGING_POOL';
     } },
     { provide: PostgresDirectConversationRepository, inject: [MESSAGING_POOL, MessageCursorCodec],
       useFactory: (pool: Pool, cursors: MessageCursorCodec) => new PostgresDirectConversationRepository(pool, cursors) },
-    { provide: PostgresDirectMessageRepository, inject: [MESSAGING_POOL, PostgresDirectConversationRepository, MessageCursorCodec],
-      useFactory: (pool: Pool, conversations: PostgresDirectConversationRepository, cursors: MessageCursorCodec) =>
-        new PostgresDirectMessageRepository(pool, conversations, cursors) },
+    { provide: MessageContextResolver, inject: [LibraryService, CommunityService],
+      useFactory: (library: LibraryService, community: CommunityService) => new MessageContextResolver(library, community) },
+    { provide: PostgresDirectMessageRepository, inject: [MESSAGING_POOL, PostgresDirectConversationRepository, MessageCursorCodec, MessageContextResolver],
+      useFactory: (pool: Pool, conversations: PostgresDirectConversationRepository, cursors: MessageCursorCodec, contexts: MessageContextResolver) =>
+        new PostgresDirectMessageRepository(pool, conversations, cursors, contexts) },
     { provide: PostgresMessageStreamRepository, inject: [MESSAGING_POOL, PostgresDirectConversationRepository],
       useFactory: (pool: Pool, conversations: PostgresDirectConversationRepository) => new PostgresMessageStreamRepository(pool, conversations) },
     { provide: MessageStreamService, inject: [PostgresMessageStreamRepository],

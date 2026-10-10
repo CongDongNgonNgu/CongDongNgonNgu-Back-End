@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from 'class-validator';
 
 export class OpenDirectConversationDto {
   @IsUUID('4') partnerUserId!: string;
@@ -29,7 +29,9 @@ export class SendDirectMessageDto {
   @IsUUID() clientMessageId!: string;
   // Normalize NFC/trim before counting4000 code points in the domain boundary.
   // The native bounded JSON body parser caps raw wire input.
-  @IsString() text!: string;
+  @IsOptional() @IsString() text?: string;
+  @IsOptional() @IsIn(['LIBRARY_RESOURCE', 'COMMUNITY_POST']) contextType?: string;
+  @IsOptional() @IsUUID() contextId?: string;
 }
 
 export class MarkDirectMessageReadDto {
