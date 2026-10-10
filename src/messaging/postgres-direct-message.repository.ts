@@ -50,6 +50,17 @@ export class PostgresDirectMessageRepository {
     });
   }
 
+  async context(actor: string, conversationId: string, messageId: string): Promise<{
+    messageId: string; context: MessageContextCard | null;
+  }> {
+    return this.conversations.withConversation(actor, conversationId, async client => {
+      const message = (await client.query<MessageRow>(`SELECT * FROM direct_messages
+        WHERE conversation_id=$1 AND id=$2`, [conversationId, messageId])).rows[0];
+      if (!message) throw new MessageFailure('MESSAGE_UNAVAILABLE', 404, 'Message is not available');
+      return { messageId: message.id, context: await this.resolveContext(actor, reference(message)) };
+    });
+  }
+
   async markRead(actor: string, conversationId: string, input: string): Promise<void> {
     const sequence = parseSequence(input);
     await this.conversations.withConversation(actor, conversationId, async (client, row) => {

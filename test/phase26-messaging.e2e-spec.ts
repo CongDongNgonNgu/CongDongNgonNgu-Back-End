@@ -29,6 +29,7 @@ describe('Phase26 messaging HTTP and native authenticated SSE transport', () => 
     id: randomUUID(), conversationId: id, senderUserId: actor, sequence: '9007199254740993',
     text: normalizeMessagePayload(input).text, clientMessageId: input.clientMessageId, createdAt: new Date().toISOString() })),
     history: jest.fn().mockResolvedValue({ items: [], nextCursor: null, beforeCursor: 'synthetic-before', afterCursor: 'synthetic-after' }),
+    context: jest.fn(async (_actor: string, _id: string, messageId: string) => ({ messageId, context: { availability: 'UNAVAILABLE' } })),
     markRead: jest.fn().mockResolvedValue(undefined) };
   const streams = { acquire: jest.fn(async (actor: string, id: string, sessionId: string) => ({
     id: randomUUID(), ownerToken: randomUUID(), actor, conversationId: id, sessionId })),
@@ -111,6 +112,17 @@ describe('Phase26 messaging HTTP and native authenticated SSE transport', () => 
     for (const payload of [{}, { contextType: 'LIBRARY_RESOURCE' }, { contextId: randomUUID() }])
       await request(app.getHttpServer()).post(path() + '/messages').set('Authorization', auth())
         .send({ clientMessageId: randomUUID(), ...payload }).expect(400);
+  });
+
+  it('reauthorizes individual cards with native bearer and actor-scoped UUIDs without private caching', async () => {
+    const messageId = randomUUID();
+    const contextPath = path() + '/messages/' + messageId + '/context';
+    await request(app.getHttpServer()).get(contextPath).expect(401);
+    await request(app.getHttpServer()).get(contextPath).set('Authorization', auth())
+      .expect(200).expect('Cache-Control', 'private, no-store')
+      .expect(({ body }) => expect(body.data).toEqual({ messageId, context: { availability: 'UNAVAILABLE' } }));
+    expect(messages.context).toHaveBeenLastCalledWith(actors[0].id, conversationId, messageId);
+    await request(app.getHttpServer()).get(path() + '/messages/not-a-uuid/context').set('Authorization', auth()).expect(400);
   });
 
   it('validates list/history query boundaries and disables private response caching', async () => {

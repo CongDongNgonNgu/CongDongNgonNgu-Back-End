@@ -115,4 +115,22 @@ describe('Phase26 context send and current history SQL integration', () => {
     await expect(messages.send(c, room.id, payload)).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
     expect(library.getPublicResource).not.toHaveBeenCalled();
   });
+
+  it('refreshes only a conversation-owned message card under current pair authorization without mutation', async () => {
+    const { a, b, c, room, messages, payload, revoke, library } = await fixture();
+    const shared = await messages.send(a, room.id, payload);
+    const plain = await messages.send(a, room.id, { clientMessageId: randomUUID(), text: 'plain' });
+    const before = (await db.pool.query('SELECT next_sequence,change_version FROM direct_conversations')).rows;
+    expect(await messages.context(b, room.id, shared.id)).toEqual({ messageId: shared.id, context: shared.context });
+    expect(await messages.context(b, room.id, plain.id)).toEqual({ messageId: plain.id, context: null });
+    revoke();
+    expect(await messages.context(b, room.id, shared.id))
+      .toEqual({ messageId: shared.id, context: { availability: 'UNAVAILABLE' } });
+    library.getPublicResource.mockClear();
+    await expect(messages.context(b, room.id, randomUUID())).rejects.toMatchObject({ code: 'MESSAGE_UNAVAILABLE' });
+    await expect(messages.context(c, room.id, shared.id)).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+    await expect(messages.context(b, randomUUID(), shared.id)).rejects.toMatchObject({ code: 'CONVERSATION_UNAVAILABLE' });
+    expect(library.getPublicResource).not.toHaveBeenCalled();
+    expect((await db.pool.query('SELECT next_sequence,change_version FROM direct_conversations')).rows).toEqual(before);
+  });
 });
