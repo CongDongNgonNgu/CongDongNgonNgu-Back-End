@@ -1,9 +1,10 @@
-import type { Pool, PoolClient } from 'pg';
+import type { Pool } from 'pg';
 import { MessageFailure } from './message-failure';
 import { normalizeMessageText, parseSequence } from './message-validation';
 import { PostgresDirectConversationRepository } from './postgres-direct-conversation.repository';
 import type { DirectMessage, MessageHistoryInput, MessageHistoryPage } from './direct-conversation.types';
 import { MessageCursorCodec } from './message-cursor';
+import { consumeMessageBudget } from './message-rate-limit';
 
 interface MessageRow {
   id: string; conversation_id: string; sender_user_id: string; sequence: string;
@@ -81,8 +82,8 @@ export class PostgresDirectMessageRepository {
         if (existing.text !== text) throw new MessageFailure('MESSAGE_IDEMPOTENCY_CONFLICT', 409, 'Message retry conflicts');
         return { message: project(existing), retryAfter: 0 };
       }
-      const minute = await consume(client, actor, 'SEND_MINUTE', 60, 60);
-      const hour = await consume(client, actor, 'SEND_HOUR', 1000, 3600);
+      const minute = await consumeMessageBudget(client, actor, 'SEND_MINUTE', 60, 60);
+      const hour = await consumeMessageBudget(client, actor, 'SEND_HOUR', 1000, 3600);
       if (minute || hour) return { message: null, retryAfter: Math.max(minute, hour) };
       const sequence = parseSequence(row.next_sequence);
       const version = parseSequence(row.change_version);
@@ -106,21 +107,6 @@ export class PostgresDirectMessageRepository {
     if (!result.message) throw new MessageFailure('MESSAGE_RATE_LIMITED', 429, 'Too many messages', result.retryAfter);
     return result.message;
   }
-}
-
-async function consume(client: PoolClient, actor: string, bucket: string, limit: number, seconds: number): Promise<number> {
-  const row = (await client.query<{ hits: number; retry_seconds: number }>(`
-    WITH instant AS MATERIALIZED (SELECT clock_timestamp() AS now)
-    INSERT INTO direct_message_rate_limits(actor_id,bucket,hits,reset_at)
-    SELECT $1,$2,1,instant.now+make_interval(secs=>$4) FROM instant WHERE true
-    ON CONFLICT(actor_id,bucket) DO UPDATE SET
-      hits=CASE WHEN direct_message_rate_limits.reset_at<=(SELECT now FROM instant) THEN 1
-        ELSE LEAST(direct_message_rate_limits.hits+1,$3+1) END,
-      reset_at=CASE WHEN direct_message_rate_limits.reset_at<=(SELECT now FROM instant)
-        THEN (SELECT now FROM instant)+make_interval(secs=>$4) ELSE direct_message_rate_limits.reset_at END
-    RETURNING hits,GREATEST(1,CEIL(EXTRACT(EPOCH FROM reset_at-(SELECT now FROM instant))))::int AS retry_seconds`,
-  [actor, bucket, limit, seconds])).rows[0];
-  return row.hits > limit ? row.retry_seconds : 0;
 }
 
 function project(row: MessageRow): DirectMessage {
