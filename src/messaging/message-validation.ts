@@ -3,12 +3,12 @@ import { MessageFailure } from './message-failure';
 export const MAX_MESSAGE_CODE_POINTS = 4000;
 const MAX_POSTGRES_BIGINT = 9223372036854775807n;
 
-export function normalizeMessageText(input: unknown): string {
+export function normalizeMessageText(input: unknown, allowEmpty = false): string {
   if (typeof input !== 'string') throw invalidText();
   const text = input.normalize('NFC').trim();
   // PostgreSQL text excludes NUL; lone surrogates are not Unicode scalar values.
   // Unicode mode leaves legitimate astral characters outside the surrogate class.
-  if (!text || /[\u0000\uD800-\uDFFF]/u.test(text)
+  if ((!text && !allowEmpty) || /[\u0000\uD800-\uDFFF]/u.test(text)
     || [...text].length > MAX_MESSAGE_CODE_POINTS) throw invalidText();
   return text;
 }
