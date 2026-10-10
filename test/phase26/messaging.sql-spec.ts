@@ -16,6 +16,7 @@ describe('Phase26 direct messaging PostgreSQL constraints', () => {
     }
     await db.migration('0032_phase26_direct_messaging.sql');
     await db.migration('0033_phase26_message_intents_limits.sql');
+    await db.migration('0035_phase26_message_context.sql');
   });
   afterAll(async () => { await db.close(); });
   beforeEach(async () => { await db.reset(); });

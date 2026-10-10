@@ -1,3 +1,5 @@
+import type { MessageContextCard } from './message-context-resolver';
+
 export interface DirectConversationSummary {
   id: string;
   partner: { userId: string; displayName: string };
@@ -30,6 +32,7 @@ export interface DirectMessage {
   text: string;
   clientMessageId: string;
   createdAt: string;
+  context?: MessageContextCard | null;
 }
 
 export interface MessageHistoryInput { limit?: number; before?: string; after?: string }

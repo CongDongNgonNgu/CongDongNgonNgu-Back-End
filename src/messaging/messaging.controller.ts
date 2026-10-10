@@ -48,6 +48,13 @@ export class MessagingController {
     return success(await this.messages.send(request.user!.user.id, id, input));
   }
 
+  @Get(':conversationId/messages/:messageId/context')
+  async context(@Req() request: AuthenticatedRequest,
+    @Param('conversationId', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Param('messageId', new ParseUUIDPipe({ version: '4' })) messageId: string) {
+    return success(await this.messages.context(request.user!.user.id, id, messageId));
+  }
+
   @Post(':conversationId/read')
   @HttpCode(200)
   async read(@Req() request: AuthenticatedRequest, @Body() input: MarkDirectMessageReadDto,
