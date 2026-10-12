@@ -22,6 +22,7 @@ import { StudyGroupService } from "./study-group.service";
 import {
   AcceptStudyGroupInvitationDto,
   CreateStudyGroupDto,
+  ConnectedPartnerInvitationDto,
   EmptyStudyGroupDto,
   GroupPageDto,
   StudyGroupOwnershipDto,
@@ -99,6 +100,18 @@ export class StudyGroupController {
     return success(
       await this.groups.issueInvitation(this.actor(request, true), groupId),
     );
+  }
+
+  @Post(":groupId/invitations/connected-partner")
+  @HttpCode(200)
+  async issueConnectedPartnerInvitation(
+    @Param("groupId", uuidPipe) groupId: string,
+    @Body() input: ConnectedPartnerInvitationDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(await this.groups.issueConnectedPartnerInvitation(
+      this.actor(request, true), groupId, input.partnerUserId,
+    ));
   }
 
   @Get(":groupId/invitations")

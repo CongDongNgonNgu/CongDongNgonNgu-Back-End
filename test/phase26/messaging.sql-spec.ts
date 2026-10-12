@@ -17,6 +17,10 @@ describe('Phase26 direct messaging PostgreSQL constraints', () => {
     await db.migration('0032_phase26_direct_messaging.sql');
     await db.migration('0033_phase26_message_intents_limits.sql');
     await db.migration('0035_phase26_message_context.sql');
+    await db.migration('0016_phase12_notifications_read_state.sql');
+    await db.migration('0017_phase12_notification_preferences.sql');
+    await db.migration('0031_phase26_connected_notification.sql');
+    await db.migration('0036_phase26_message_notifications.sql');
   });
   afterAll(async () => { await db.close(); });
   beforeEach(async () => { await db.reset(); });
@@ -420,12 +424,14 @@ describe('Phase26 direct messaging PostgreSQL constraints', () => {
     await expect(db.migration('0032_phase26_direct_messaging.down.sql')).rejects.toMatchObject({ code: 'P0001' });
     expect((await db.pool.query('SELECT id FROM direct_conversations')).rows).toEqual([{ id }]);
     await db.reset();
+    await db.migration('0036_phase26_message_notifications.down.sql');
     await db.migration('0033_phase26_message_intents_limits.down.sql');
     await db.migration('0032_phase26_direct_messaging.down.sql');
     expect((await db.pool.query(`SELECT to_regclass($1) AS table_name`, [db.schema + '.direct_messages'])).rows)
       .toEqual([{ table_name: null }]);
     await db.migration('0032_phase26_direct_messaging.sql');
     await db.migration('0033_phase26_message_intents_limits.sql');
+    await db.migration('0036_phase26_message_notifications.sql');
   });
 
   it('checks rollback emptiness after excluding a concurrent writer', async () => {

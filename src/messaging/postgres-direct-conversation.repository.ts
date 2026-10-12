@@ -1,6 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
-import { lockExchangeUsers, EXCHANGE_ELIGIBLE_PREFERENCE_PREDICATE } from '../exchange/exchange-pair-authorization';
-import { lockExchangePair } from '../exchange/exchange-safety.repository';
+import { lockMessagingPair } from './messaging-pair-authorization';
 import { conversationUnavailable, MessageFailure } from './message-failure';
 import { MessageCursorCodec } from './message-cursor';
 import { parseSequence } from './message-validation';
@@ -86,20 +85,7 @@ export class PostgresDirectConversationRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
-      const users = await lockExchangeUsers(client, actor, partner);
-      await lockExchangePair(client, actor, partner);
-      if (actor === partner || users.length !== 2
-        || users.some(user => user.status !== 'ACTIVE' || !user.email_verified_at)) throw conversationUnavailable();
-      const eligible = await client.query(`SELECT p.user_id FROM language_exchange_preferences p
-        WHERE p.user_id IN ($1::uuid,$2::uuid) AND ${EXCHANGE_ELIGIBLE_PREFERENCE_PREDICATE}
-          AND p.contact_permission<>'NO_CONTACT'`, [actor, partner]);
-      if (eligible.rowCount !== 2) throw conversationUnavailable();
-      const relationship = await client.query(`SELECT id FROM language_exchange_connections c
-        WHERE c.participant_a_id=LEAST($1::uuid,$2::uuid) AND c.participant_b_id=GREATEST($1::uuid,$2::uuid)
-          AND c.status='CONNECTED' AND NOT EXISTS (SELECT 1 FROM language_exchange_blocks b
-            WHERE (b.blocker_user_id=$1::uuid AND b.blocked_user_id=$2::uuid)
-              OR (b.blocker_user_id=$2::uuid AND b.blocked_user_id=$1::uuid))`, [actor, partner]);
-      if (relationship.rowCount !== 1) throw conversationUnavailable();
+      await lockMessagingPair(client, actor, partner);
       const result = await operation(client);
       await client.query('COMMIT');
       return result;

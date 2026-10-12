@@ -9,3 +9,13 @@ The module middleware sets private,no-store before authentication. The controlle
 Migration 0027 is additive; its down file is disposable TEST/development only. Do not execute db:migrate against an unclassified connection. Real SQL tests under test/phase22 prove database behavior; migration text tests only guard scope. Actual production release and real private-data collection remain held by Workspace policy.
 
 The frozen pilot requires every affected account to be ACTIVE. A disabled member remains a retained active membership and consumes capacity; it cannot be removed or promoted while disabled. A disabled owner cannot transfer ownership until account recovery or a separately reviewed safety policy exists. Disabled accounts receive no protected group access. This is a disclosed TEST limitation, not a platform-role bypass.
+
+Phase26 adds `POST /study-groups/:groupId/invitations/connected-partner`
+with `{partnerUserId}`. The same transaction locks both accounts, the Exchange
+pair, then the group and verifies current messaging eligibility and ownership.
+It reuses the ordinary invitation budget, cap, 24-hour expiry and digest-only
+storage. The response is the existing `{id,token,expiresAt}` bearer shown once
+for explicit copying and delivery outside chat. Issuance grants no membership
+or group access and sends no message/notification. The partner selection does
+not bind the bearer: existing explicit manual acceptance remains one-use and
+unbound. Later Exchange blocks do not revoke issued bearers or group membership.

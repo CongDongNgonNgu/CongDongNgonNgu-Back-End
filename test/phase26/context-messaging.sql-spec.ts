@@ -13,7 +13,9 @@ describe('Phase26 context send and current history SQL integration', () => {
     for (const file of ['0002_language_profile.sql', '0006_language_exchange_preferences.sql',
       '0007_language_exchange_connections.sql', '0008_language_exchange_safety.sql',
       '0032_phase26_direct_messaging.sql', '0033_phase26_message_intents_limits.sql',
-      '0035_phase26_message_context.sql']) await db.migration(file);
+      '0035_phase26_message_context.sql', '0016_phase12_notifications_read_state.sql',
+      '0017_phase12_notification_preferences.sql', '0031_phase26_connected_notification.sql',
+      '0036_phase26_message_notifications.sql']) await db.migration(file);
   });
   afterAll(async () => { await db.close(); });
   beforeEach(async () => { await db.reset(); });

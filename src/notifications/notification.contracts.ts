@@ -10,6 +10,7 @@ export const NOTIFICATION_DOMAIN_EVENT_TYPES = [
   'community.response.accepted',
   'exchange.connection.requested',
   'exchange.connection.connected',
+  'messaging.direct.unread',
   'reputation.milestone.achieved',
   'membership.subscription.activated',
   'membership.subscription.expired',
@@ -19,6 +20,7 @@ export const NOTIFICATION_DOMAIN_EVENT_TYPES = [
 export type NotificationDomainEventType = typeof NOTIFICATION_DOMAIN_EVENT_TYPES[number];
 
 export const NOTIFICATION_AGGREGATE_TYPES = [
+  'DIRECT_CONVERSATION',
   'COMMUNITY_POST',
   'COMMUNITY_COMMENT',
   'CORRECTION_RESPONSE',
@@ -30,6 +32,7 @@ export const NOTIFICATION_AGGREGATE_TYPES = [
 export type NotificationAggregateType = typeof NOTIFICATION_AGGREGATE_TYPES[number];
 
 export const NOTIFICATION_TARGET_KINDS = [
+  'DIRECT_CONVERSATION',
   'COMMUNITY_POST',
   'COMMUNITY_COMMENT',
   'CORRECTION_RESPONSE',
@@ -46,6 +49,7 @@ export const NOTIFICATION_TYPES = [
   'ANSWER_ACCEPTED',
   'BUDDY_REQUEST',
   'BUDDY_CONNECTED',
+  'DIRECT_MESSAGE',
   'ROOM_INVITE',
   'EVENT_REMINDER',
   'REPUTATION_MILESTONE',

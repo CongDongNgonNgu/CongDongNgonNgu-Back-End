@@ -26,7 +26,7 @@ it('preserves every prior notification type through0031 up/down on the complete 
       idempotencyKey:`exchange.connection.requested:${connection}:v1`,
       target:{kind:'EXCHANGE_CONNECTION',id:connection,path:'/exchange'},variables:{}});
     const repository=new PostgresNotificationRepository(db.pool);
-    const previousTypes=NOTIFICATION_TYPES.filter(type=>type!=='BUDDY_CONNECTED');
+    const previousTypes=NOTIFICATION_TYPES.filter(type=>type!=='BUDDY_CONNECTED'&&type!=='DIRECT_MESSAGE');
     for(const notificationType of previousTypes) await repository.claimIntent(createNotificationIntent({event,notificationType,
       category:'EXCHANGE',priority:'NORMAL',actor:{kind:'SYSTEM',label:'System'},retention:{mode:'DAYS',days:180}}));
     const assertPreserved=async()=>expect((await db.pool.query('SELECT notification_type FROM notifications ORDER BY notification_type')).rows

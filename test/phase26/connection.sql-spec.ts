@@ -24,7 +24,8 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
     for (const migration of ['0002_language_profile.sql', '0006_language_exchange_preferences.sql',
       '0007_language_exchange_connections.sql', '0008_language_exchange_safety.sql','0029_phase26_exchange_limits.sql',
       '0030_phase26_connection_outbox.sql','0016_phase12_notifications_read_state.sql',
-      '0017_phase12_notification_preferences.sql','0031_phase26_connected_notification.sql']) {
+      '0017_phase12_notification_preferences.sql','0031_phase26_connected_notification.sql',
+      '0032_phase26_direct_messaging.sql']) {
       await db.migration(migration);
     }
     safety = new PostgresExchangeSafetyRepository(db.pool);

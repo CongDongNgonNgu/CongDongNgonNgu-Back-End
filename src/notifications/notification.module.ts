@@ -13,6 +13,8 @@ import { EXCHANGE_CONNECTION_REPOSITORY,InMemoryExchangeConnectionRepository } f
 import { CONNECTION_NOTIFICATION_ACCESS } from './connection-notification-access';
 import { MemoryConnectionNotificationAccess } from './memory-connection-notification-access';
 import { PostgresConnectionNotificationAccess } from './postgres-connection-notification-access';
+import { DirectMessageNotificationWorker } from '../messaging/direct-message-notification-worker';
+import { PostgresDirectConversationRepository } from '../messaging/postgres-direct-conversation.repository';
 import { NotificationController } from './notification.controller';
 import { NOTIFICATION_REPOSITORY, InMemoryNotificationRepository } from './notification.repository';
 import { NotificationService } from './notification.service';
@@ -41,6 +43,23 @@ interface NotificationRuntimeConfig {
     NotificationRealtimeService,
     NotificationPreferenceService,
     NotificationDomainEventIntegrationService,
+    {
+      provide: DirectMessageNotificationWorker,
+      inject: [ConfigService, NOTIFICATION_REPOSITORY, NotificationRealtimeService],
+      useFactory: (config: ConfigService, repository: InMemoryNotificationRepository | PostgresNotificationRepository,
+        realtime: NotificationRealtimeService) => {
+        // Durable messaging has no memory producer. Avoid starting a PostgreSQL
+        // poller in legacy memory-only applications and test environments.
+        if (config.get<NotificationRuntimeConfig>('auth')?.persistence === 'memory') return null;
+        if (!(repository instanceof PostgresNotificationRepository)) throw new Error('Direct-message notices require PostgreSQL persistence');
+        const connectionString = config.get<string>('database.url');
+        if (!connectionString) throw new Error('DATABASE_URL is required for direct-message notifications');
+        const pool = new Pool({ connectionString });
+        // Construct the neutral persistence adapter here: importing MessagingModule
+        // would cycle through CommunityModule back to NotificationModule.
+        return new DirectMessageNotificationWorker(pool, new PostgresDirectConversationRepository(pool), repository, realtime, true);
+      },
+    },
     {provide:CONNECTION_NOTIFICATION_ACCESS,
       inject:[ConfigService,IDENTITY_REPOSITORY,PROFILE_REPOSITORY,EXCHANGE_PREFERENCE_REPOSITORY,EXCHANGE_CONNECTION_REPOSITORY,NotificationPreferenceService],
       useFactory:(config:ConfigService,identities:IdentityRepository,profiles:ProfileRepository,preferences:ExchangePreferenceRepository,
