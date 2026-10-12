@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { MessageFailure } from './message-failure';
 import { parseSequence } from './message-validation';
 import { normalizeMessagePayload, type MessagePayloadInput, type MessageContextReference } from './message-context';
@@ -78,6 +78,9 @@ export class PostgresDirectMessageRepository {
         last_read_a=CASE WHEN participant_a_id=$2 THEN $3::bigint ELSE last_read_a END,
         last_read_b=CASE WHEN participant_b_id=$2 THEN $3::bigint ELSE last_read_b END,
         change_version=change_version+1 WHERE id=$1`, [conversationId, actor, sequence.toString()]);
+      // A partial read changes the first-unread episode even without another
+      // send. Persist that work with the authoritative monotonic read change.
+      await queueUnreadNotification(client, conversationId, actor);
     });
   }
 
@@ -123,9 +126,7 @@ export class PostgresDirectMessageRepository {
       await client.query(`UPDATE direct_conversations SET next_sequence=next_sequence+1,
         change_version=change_version+1,updated_at=clock_timestamp() WHERE id=$1`, [conversationId]);
       const recipient = actor === row.participant_a_id ? row.participant_b_id : row.participant_a_id;
-      await client.query(`INSERT INTO direct_message_notification_intents(conversation_id,recipient_user_id,generation)
-        VALUES($1,$2,1) ON CONFLICT(conversation_id,recipient_user_id) DO UPDATE SET
-        generation=direct_message_notification_intents.generation+1,updated_at=clock_timestamp()`, [conversationId, recipient]);
+      await queueUnreadNotification(client, conversationId, recipient);
       return { message: project(inserted, card), retryAfter: 0 };
     });
     // withConversation commits both counters on denial. No message/sequence/intent
@@ -139,6 +140,13 @@ export class PostgresDirectMessageRepository {
     if (!this.contexts) throw new Error('Messaging context resolver is required');
     return this.contexts.resolve(actor, context);
   }
+}
+
+async function queueUnreadNotification(client: PoolClient, conversationId: string, recipient: string) {
+  await client.query(`INSERT INTO direct_message_notification_intents(conversation_id,recipient_user_id,generation)
+    VALUES($1,$2,1) ON CONFLICT(conversation_id,recipient_user_id) DO UPDATE SET
+    generation=direct_message_notification_intents.generation+1,updated_at=clock_timestamp(),
+    attempts=0,available_at=clock_timestamp()`, [conversationId, recipient]);
 }
 
 function reference(row: MessageRow): MessageContextReference | null {
