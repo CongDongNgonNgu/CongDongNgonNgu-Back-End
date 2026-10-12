@@ -40,6 +40,9 @@ export class StudyGroupRoleDto {
 export class StudyGroupOwnershipDto {
   @IsUUID("4") userId!: string;
 }
+export class ConnectedPartnerInvitationDto {
+  @IsUUID("4") partnerUserId!: string;
+}
 export class StudyGroupTextDto {
   @Transform(trim) @IsString() @Length(1, 2000) body!: string;
 }

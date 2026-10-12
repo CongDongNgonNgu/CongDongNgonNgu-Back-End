@@ -1,6 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import { createHash, randomBytes } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
+import { lockMessagingPair } from '../messaging/messaging-pair-authorization';
+import { MessageFailure } from '../messaging/message-failure';
 import type {
   GroupResponse,
   GroupRow,
@@ -118,20 +120,38 @@ export class StudyGroupService {
       "INVITE",
       async (client, _group, current) => {
         this.requireOwner(current);
-        await this.checkGroupCap(client, groupId, "study_group_invitations");
-        const token = randomBytes(32).toString("base64url");
-        const result = await client.query<{ id: string; expires_at: Date }>(
-          `INSERT INTO study_group_invitations(group_id,issuer_user_id,token_digest,expires_at)
-        VALUES($1,$2,$3,clock_timestamp()+interval '24 hours') RETURNING id,expires_at`,
-          [groupId, actorId, this.digest(token)],
-        );
-        return {
-          id: result.rows[0].id,
-          token,
-          expiresAt: result.rows[0].expires_at.toISOString(),
-        };
+        return this.insertInvitation(client, actorId, groupId);
       },
     );
+  }
+  async issueConnectedPartnerInvitation(actorId: string, groupId: string, partnerUserId: string) {
+    [actorId, groupId, partnerUserId].forEach(uuid);
+    await consumeRate(this.pool, actorId, "INVITE");
+    return transaction(this.pool, async client => {
+      try { await lockMessagingPair(client, actorId, partnerUserId); }
+      catch (error) {
+        if (error instanceof MessageFailure && error.code === 'CONVERSATION_UNAVAILABLE') unavailable();
+        throw error;
+      }
+      const group = await lockGroup(client, groupId, true);
+      const current = await authorize(client, groupId, actorId);
+      this.requireOwner(current);
+      if (group.owner_user_id !== actorId) unavailable();
+      // A convenience check only: retain the native unbound one-use bearer,
+      // with no membership grant, message, notification or recipient binding.
+      return this.insertInvitation(client, actorId, groupId);
+    });
+  }
+
+  private async insertInvitation(client: PoolClient, actorId: string, groupId: string) {
+    await this.checkGroupCap(client, groupId, "study_group_invitations");
+    const token = randomBytes(32).toString("base64url");
+    const result = await client.query<{ id: string; expires_at: Date }>(
+      `INSERT INTO study_group_invitations(group_id,issuer_user_id,token_digest,expires_at)
+       VALUES($1,$2,$3,clock_timestamp()+interval '24 hours') RETURNING id,expires_at`,
+      [groupId, actorId, this.digest(token)],
+    );
+    return { id: result.rows[0].id, token, expiresAt: result.rows[0].expires_at.toISOString() };
   }
   async listInvitations(
     actorId: string,
