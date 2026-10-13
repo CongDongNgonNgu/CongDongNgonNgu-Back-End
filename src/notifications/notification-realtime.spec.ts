@@ -214,9 +214,9 @@ function buildIntent(
 ) {
   const event: NotificationDomainEvent = {
     eventId: '77777777-7777-4777-8777-777777777777',
-    eventType: 'community.comment.created',
+    eventType: 'moderation.notice.created',
     eventVersion: 1,
-    aggregateType: 'COMMUNITY_COMMENT',
+    aggregateType: 'SYSTEM',
     aggregateId: '88888888-8888-4888-8888-888888888888',
     actor: { kind: 'USER', userId: ACTOR_ID },
     recipient: { authority: 'SOURCE_DOMAIN', userId: recipientUserId },
@@ -225,7 +225,7 @@ function buildIntent(
     causationId: null,
     idempotencyKey: 'community.comment.created:realtime-default:v1',
     payload: {
-      target: { kind: 'COMMUNITY_POST', id: POST_ID, path: `/community/posts/${POST_ID}` },
+      target: { kind: 'SYSTEM', id: null, path: null },
       variables: { commentPreview: 'A bounded realtime notification' },
     },
     ...overrides,
@@ -233,8 +233,8 @@ function buildIntent(
 
   return createNotificationIntent({
     event,
-    notificationType: 'COMMENT_REPLY',
-    category: 'COMMUNITY',
+    notificationType: 'MODERATION_NOTICE',
+    category: 'MODERATION',
     priority: 'NORMAL',
     actor: { kind: 'USER', displayName: 'Realtime Actor', profilePath: `/profiles/${ACTOR_ID}` },
     retention: { mode: 'DAYS', days: 180 },

@@ -127,7 +127,7 @@ describe('notification API and read state', () => {
     });
   });
 
-  it('projects safe API data and rejects a cursor issued to another owner', async () => {
+  it('redacts Community snapshots without a source reader and rejects a cursor issued to another owner', async () => {
     const repository = new InMemoryNotificationRepository();
     const service = new NotificationService(repository);
     const created = await service.publish(buildIntent());
@@ -141,15 +141,17 @@ describe('notification API and read state', () => {
     const page = await service.list(USER_A, { limit: 1 });
     expect(page.items[0]).toMatchObject({
       id: expect.any(String),
-      actor: { kind: 'USER', displayName: 'Nguyen Learner', profilePath: `/profiles/${ACTOR_ID}` },
-      target: { kind: 'COMMUNITY_POST', path: `/community/posts/${POST_ID}` },
+      actor: { kind: 'DELETED', label: 'Deleted member' },
+      target: null,
+      variables: {},
       read: false,
       readAt: null,
     });
-    expect(page.items[0].target).not.toHaveProperty('id');
+    expect(page.items[0].target).toBeNull();
     expect(page.items[0]).not.toHaveProperty('recipientUserId');
     expect(page.items[0]).not.toHaveProperty('sourceEventId');
-    expect(page.unreadCount).toBe(2);
+    expect(page.unreadCount).toBe(0);
+    expect(await service.unreadCount(USER_A)).toEqual({ unreadCount: 0 });
     expect(page.nextCursor).toEqual(expect.any(String));
 
     const paged = await service.list(USER_A, { limit: 1, cursor: page.nextCursor! });
