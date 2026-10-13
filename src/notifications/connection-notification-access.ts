@@ -8,8 +8,13 @@ export class CurrentConnectionAccessChangedError extends Error {
 }
 
 export interface ConnectionNotificationAccess {
+  resolveCommunity?(record:NotificationRecord,channel?:'IN_APP'|'SSE'):Promise<{actor:NotificationActorProjection;parentPostId:string}|null>;
   resolve(record:NotificationRecord,channel?:'IN_APP'|'SSE'):Promise<NotificationActorProjection|null>;
   countUnread(userId:string,repository:NotificationRepository):Promise<number>;
+}
+
+export function isCommunityNotification(record:NotificationRecord):boolean {
+  return ['COMMENT_REPLY','ANSWER_ACCEPTED','CORRECTION_ACCEPTED'].includes(record.notificationType);
 }
 
 export function isConnectionNotification(record:NotificationRecord):boolean {
@@ -41,6 +46,12 @@ export async function projectCurrentNotification(
   record:NotificationRecord,read:boolean,readAt:string|null,access?:ConnectionNotificationAccess,channel:'IN_APP'|'SSE'='IN_APP',
 ):Promise<{response:NotificationResponse;available:boolean}> {
   const response=toNotificationResponse(record,read,readAt);
+  if(isCommunityNotification(record)) {
+    const current=await access?.resolveCommunity?.(record,channel);
+    const available=Boolean(current && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(current.parentPostId));
+    return {available,response:{...response,actor:available?current!.actor:{kind:'DELETED',label:'Deleted member'},
+      target:available?{kind:'COMMUNITY_POST',path:`/community/posts/${current!.parentPostId}`}:null,variables:{}}};
+  }
   if(!isConnectionNotification(record)) return {response,available:true};
   let actor:NotificationActorProjection|null=null;
   try {actor=access?await access.resolve(record,channel):null;}

@@ -10,7 +10,7 @@ import {
   type NotificationRepository,
 } from './notification.repository';
 import { toNotificationResponse, type NotificationResponse } from './notification.projection';
-import { CONNECTION_NOTIFICATION_ACCESS,isConnectionNotification,projectCurrentNotification,type ConnectionNotificationAccess } from './connection-notification-access';
+import { CONNECTION_NOTIFICATION_ACCESS,isConnectionNotification,isCommunityNotification,projectCurrentNotification,type ConnectionNotificationAccess } from './connection-notification-access';
 
 type ReplayUnavailableReason = 'LAST_EVENT_NOT_AVAILABLE' | 'REPLAY_WINDOW_EXCEEDED' | 'LIVE_QUEUE_OVERFLOW';
 
@@ -110,7 +110,7 @@ export class NotificationRealtimeService {
         else subscriber.pendingOverflow = true;
         continue;
       }
-      if(subscriber.reauthorize || this.connectionAccess || isConnectionNotification(record)) {
+      if(subscriber.reauthorize || this.connectionAccess || isConnectionNotification(record) || isCommunityNotification(record)) {
         if(subscriber.pendingRecords.length<MAX_PENDING_RECORDS) subscriber.pendingRecords.push(record);
         else subscriber.pendingOverflow=true;
         void this.drainPending(subscriber);
@@ -215,10 +215,10 @@ export class NotificationRealtimeService {
     readState?: NotificationReadState,
   ): void|Promise<void> {
     if (connection.observer.closed || connection.seenNotificationIds.has(record.id)) return;
-    if(connection.reauthorize || this.connectionAccess || isConnectionNotification(record)) {
+    if(connection.reauthorize || this.connectionAccess || isConnectionNotification(record) || isCommunityNotification(record)) {
       return projectCurrentNotification(record,readState?.status==='READ',readState?.readAt??null,this.connectionAccess,'SSE')
         .then(async ({response,available})=>{
-          if (available && await this.authorize(connection)) this.emitResponse(connection,record.id,response);
+          if (await this.authorize(connection) && available) this.emitResponse(connection,record.id,response);
         });
     }
     this.emitResponse(connection,record.id,toNotificationResponse(record,readState?.status==='READ',readState?.readAt??null));

@@ -1,3 +1,4 @@
+import { currentCommunityNotificationSource } from './community-notification-source';
 import type { Pool } from 'pg';
 import type { NotificationActorProjection,NotificationRecord } from './notification.contracts';
 import type { NotificationRepository } from './notification.repository';
@@ -18,6 +19,19 @@ export class PostgresConnectionNotificationAccess implements ConnectionNotificat
     // CommunityModule back into NotificationModule.
     this.conversations=new PostgresDirectConversationRepository(pool);
   }
+  async resolveCommunity(record:NotificationRecord,channel:'IN_APP'|'SSE'='IN_APP') {
+    // Resolve by persisted notification identity and recipient, never its saved
+    // actor name or route. Source IDs and current source-domain ACL decide.
+    const row=(await this.pool.query(`SELECT current.* FROM notifications n
+      CROSS JOIN LATERAL (${currentCommunityNotificationSource('n')}) current
+      WHERE n.id=$1 AND n.recipient_user_id=$2
+        AND NOT EXISTS (SELECT 1 FROM notification_preferences p WHERE p.user_id=n.recipient_user_id
+          AND p.category=n.category AND p.channel='SSE' AND $3='SSE' AND NOT p.enabled)`,
+      [record.id,record.recipientUserId,channel])).rows[0];
+    return row?{actor:{kind:'USER' as const,displayName:String(row.display_name),profilePath:`/profiles/${row.actor_user_id}`},
+      parentPostId:String(row.parent_post_id)}:null;
+  }
+
   async resolve(record:NotificationRecord,channel:'IN_APP'|'SSE'='IN_APP'):Promise<NotificationActorProjection|null> {
     if(record.notificationType==='DIRECT_MESSAGE') return this.resolveDirectMessage(record,channel);
     if(!isConnectionNotification(record) || record.target?.kind!=='EXCHANGE_CONNECTION' || !record.target.id) return null;
@@ -75,7 +89,8 @@ export class PostgresConnectionNotificationAccess implements ConnectionNotificat
     const result=await this.pool.query(`SELECT count(*)::int AS count
       FROM notification_read_states r JOIN notifications n ON n.id=r.notification_id AND n.recipient_user_id=r.recipient_user_id
       WHERE r.recipient_user_id=$1::uuid AND r.status='UNREAD' AND (
-        n.notification_type NOT IN ('BUDDY_REQUEST','BUDDY_CONNECTED','DIRECT_MESSAGE') OR EXISTS (
+        n.notification_type NOT IN ('BUDDY_REQUEST','BUDDY_CONNECTED','DIRECT_MESSAGE','COMMENT_REPLY','ANSWER_ACCEPTED','CORRECTION_ACCEPTED')
+        OR EXISTS (${currentCommunityNotificationSource('n')}) OR EXISTS (
           SELECT 1 FROM language_exchange_connections c WHERE c.id::text=n.target->>'id'
             AND n.target->>'kind'='EXCHANGE_CONNECTION'
             AND (c.participant_a_id=$1::uuid OR c.participant_b_id=$1::uuid)

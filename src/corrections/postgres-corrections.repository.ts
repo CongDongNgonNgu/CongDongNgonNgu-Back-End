@@ -309,9 +309,28 @@ export class PostgresCorrectionsRepository implements CorrectionsRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      // Account updates take row locks too. Acquire participant locks before
+      // content locks, in stable order, so disable cannot race this decision.
+      const users = await client.query(
+        `SELECT u.id, u.status, u.email_verified_at FROM users u
+         WHERE u.id = $3 OR u.id IN (
+           SELECT author_user_id FROM community_posts WHERE id = $1
+           UNION SELECT author_user_id FROM community_structured_responses
+             WHERE id = $2 AND parent_post_id = $1
+         ) ORDER BY u.id FOR SHARE OF u`,
+        [input.parentPostId, input.responseId, input.acceptedByUserId],
+      );
+      if (users.rows.length !== 2 || users.rows.some(user => user.status !== 'ACTIVE' || !user.email_verified_at)) {
+        throw new CorrectionsRepositoryConflictError('Acceptance participants are unavailable');
+      }
       const parent = await client.query(
-        'SELECT id FROM community_posts WHERE id = $1 FOR UPDATE',
-        [input.parentPostId],
+        `SELECT p.id, p.post_type FROM community_posts p
+         INNER JOIN languages l ON l.id = p.target_language_id
+         WHERE p.id = $1 AND p.author_user_id = $2
+           AND p.moderation_state = 'ACTIVE' AND l.active = true
+           AND p.post_type IN ('QUESTION', 'CORRECTION_REQUEST')
+         FOR UPDATE OF p FOR SHARE OF l`,
+        [input.parentPostId, input.acceptedByUserId],
       );
       if (!parent.rows[0]) {
         throw new CorrectionsRepositoryConflictError('Acceptance parent is unavailable');
@@ -319,11 +338,13 @@ export class PostgresCorrectionsRepository implements CorrectionsRepository {
       const response = await client.query(
         `SELECT author_user_id, response_kind
          FROM community_structured_responses
-         WHERE id = $1 AND parent_post_id = $2
+         WHERE id = $1 AND parent_post_id = $2 AND moderation_state = 'ACTIVE'
+           AND author_user_id <> $3
+           AND response_kind::text = CASE WHEN $4 = 'QUESTION' THEN 'QA_ANSWER' ELSE 'CORRECTION_PROPOSAL' END
          FOR UPDATE`,
-        [input.responseId, input.parentPostId],
+        [input.responseId, input.parentPostId, input.acceptedByUserId, parent.rows[0].post_type],
       );
-      if (!response.rows[0]) {
+      if (!response.rows[0] || !users.rows.some(user => user.id === response.rows[0].author_user_id)) {
         throw new CorrectionsRepositoryConflictError('Acceptance response is unavailable');
       }
       const current = await client.query(

@@ -62,7 +62,7 @@ describe('notifications API', () => {
       .expect(({ body }) => expect(body.error).toMatchObject({ code: 'AUTH_UNAUTHORIZED' }));
   });
 
-  it('lists owner notifications, reconciles unread count, and marks one read idempotently', async () => {
+  it('redacts unavailable Community notices, reconciles unread count, and marks one read idempotently', async () => {
     const user = await createUser('notifications-owner@example.com');
     const credentials = await issueAccessToken(user);
     await expect(sessions.authenticate(credentials.accessToken)).resolves.toMatchObject({ user: { id: user.id } });
@@ -79,12 +79,13 @@ describe('notifications API', () => {
         expect(body).toMatchObject({
           success: true,
           data: {
-            items: [expect.objectContaining({ id: claim.record.id, read: false })],
-            unreadCount: 1,
+            items: [expect.objectContaining({ id: claim.record.id, read: false,
+              actor: { kind: 'DELETED', label: 'Deleted member' }, target: null, variables: {} })],
+            unreadCount: 0,
           },
         });
         expect(body.data.items[0]).not.toHaveProperty('recipientUserId');
-        expect(body.data.items[0].target).not.toHaveProperty('id');
+        expect(body.data.items[0].target).toBeNull();
       });
 
     await request(app.getHttpServer())

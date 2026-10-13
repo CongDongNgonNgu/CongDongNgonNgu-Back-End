@@ -21,7 +21,7 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
   let safety: PostgresExchangeSafetyRepository;
   beforeAll(async () => {
     await db.open();
-    for (const migration of ['0002_language_profile.sql', '0006_language_exchange_preferences.sql',
+    for (const migration of ['0002_language_profile.sql', '0003_community.sql', '0004_corrections_qa.sql', '0006_language_exchange_preferences.sql',
       '0007_language_exchange_connections.sql', '0008_language_exchange_safety.sql','0029_phase26_exchange_limits.sql',
       '0030_phase26_connection_outbox.sql','0016_phase12_notifications_read_state.sql',
       '0017_phase12_notification_preferences.sql','0031_phase26_connected_notification.sql',
@@ -29,6 +29,11 @@ describe('Phase26 connection PostgreSQL authorization and races', () => {
       await db.migration(migration);
     }
     safety = new PostgresExchangeSafetyRepository(db.pool);
+    // Notification access now resolves current Community source ACL too.
+    // Assert local ownership so TEST public tables cannot mask missing fixtures.
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace ns ON ns.oid=c.relnamespace
+      WHERE ns.nspname=current_schema() AND c.relname IN ('community_posts','community_comments',
+        'community_structured_responses','community_structured_response_acceptances')`)).rows[0].n).toBe(4);
     connections = new PostgresExchangeConnectionRepository(db.pool, safety,
       new ConnectionCursorCodec('synthetic-phase26-cursor-secret-for-tests'));
   });
