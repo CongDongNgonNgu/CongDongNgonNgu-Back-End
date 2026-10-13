@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS community_answers_search_eligible_idx;
+DROP INDEX IF EXISTS community_posts_search_type_topic_idx;
+DROP INDEX IF EXISTS community_posts_search_content_trgm_idx;

@@ -74,8 +74,16 @@ export class UpdatePostDto {
 }
 
 export class ListPostsQueryDto {
+  @IsOptional() @IsString() @MaxLength(240) q?: string;
+  @IsOptional() @IsString() @MaxLength(32) postType?: string;
+  @IsOptional() @IsString() @MaxLength(160) topic?: string;
+  @IsOptional() @IsString() @MaxLength(16) responseState?: string;
+  @IsOptional() @IsString() @MaxLength(5) savedByMe?: string;
+  @IsOptional() @IsString() @MaxLength(8) sort?: string;
   @IsOptional()
-  @Transform(({ value }) => typeof value === 'string' ? value.trim().toLowerCase() : value)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
   @IsString()
   @Length(2, 35)
   languageCode?: string;
@@ -89,7 +97,7 @@ export class ListPostsQueryDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(512)
+  @MaxLength(2048)
   cursor?: string;
 }
 

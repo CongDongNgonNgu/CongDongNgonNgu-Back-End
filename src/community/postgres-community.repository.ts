@@ -1,3 +1,5 @@
+import { communitySearchQuery } from './community-search-query';
+import { communityFailure } from './community.errors';
 import type { Pool } from 'pg';
 import type {
   CommunityCefrLevel,
@@ -185,32 +187,43 @@ export class PostgresCommunityRepository implements CommunityRepository {
     return result.rows[0] ? mapPost(result.rows[0]) : null;
   }
 
-  async listPosts(query: CommunityPostListQuery): Promise<CommunityListResult<CommunityPostRecord>> {
-    const values: unknown[] = [];
-    const where = [
-      `p.visibility = 'PUBLIC'::community_post_visibility`,
-      `p.moderation_state = 'ACTIVE'::community_moderation_state`,
-      'l.active = true',
-      `u.status = 'ACTIVE'::user_status`,
-    ];
-    if (query.languageCode) {
-      values.push(query.languageCode);
-      where.push('l.code = $' + values.length);
+  async listPosts(
+    query: CommunityPostListQuery,
+  ): Promise<CommunityListResult<CommunityPostRecord>> {
+    const querySql = communitySearchQuery(query);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SET LOCAL statement_timeout = '1000ms'");
+      const result = await client.query(querySql.text, querySql.values);
+      await client.query('COMMIT');
+      return page(
+        result.rows.map((row) => ({
+          ...mapPost(row),
+          searchProjection: {
+            authorDisplayName:String(row.search_author_name),language:row.search_language,
+            interaction:{helpfulCount:Number(row.search_helpful_count),commentCount:Number(row.search_comment_count),viewerReacted:Boolean(row.search_viewer_reacted),viewerSaved:Boolean(row.search_viewer_saved)},
+          },
+          searchPosition: {
+            id: String(row.id),
+            createdAt: String(row.search_created_at),
+            helpfulCount: Number(row.search_helpful_count),
+          },
+        })),
+        query.limit,
+      );
+    } catch (error) {
+      await client.query('ROLLBACK');
+      if ((error as { code?: string }).code === '57014')
+        return communityFailure(
+          'COMMUNITY_SEARCH_RETRY',
+          'Search took too long; please retry',
+          503,
+        );
+      throw error;
+    } finally {
+      client.release();
     }
-    appendCursorCondition(where, values, query.before, 'p');
-    values.push(query.limit + 1);
-
-    const result = await this.pool.query(
-      `SELECT p.*, l.code AS target_language_code
-       FROM community_posts p
-       INNER JOIN languages l ON l.id = p.target_language_id
-       INNER JOIN users u ON u.id = p.author_user_id
-       WHERE ${where.join(' AND ')}
-       ORDER BY p.created_at DESC, p.id DESC
-       LIMIT $${values.length}`,
-      values,
-    );
-    return page(result.rows.map(mapPost), query.limit);
   }
 
   async listSavedPosts(
