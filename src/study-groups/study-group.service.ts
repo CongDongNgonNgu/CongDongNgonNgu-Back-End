@@ -1,3 +1,14 @@
+import { randomBytes as randomCursorBytes } from 'node:crypto';
+import { GroupSyncCursor } from './group-sync-cursor';
+import {
+  normalizeGroupText,
+  normalizeGroupSync,
+  type GroupTextInput,
+  type GroupSyncInput,
+} from './group-collaboration.validation';
+import { MessageContextResolver } from '../communication/learning-context-resolver';
+import { parseSequence } from '../messaging/message-validation';
+import { StudyGroupFailure } from './study-group.validation';
 import { Injectable } from "@nestjs/common";
 import { createHash, randomBytes } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
@@ -36,7 +47,15 @@ import {
 
 @Injectable()
 export class StudyGroupService {
-  constructor(readonly pool: Pool) {}
+  private readonly syncCursors: GroupSyncCursor;
+  constructor(
+    readonly pool: Pool,
+    private readonly contexts?: MessageContextResolver,
+    cursors?: GroupSyncCursor,
+  ) {
+    this.syncCursors =
+      cursors ?? new GroupSyncCursor(randomCursorBytes(32).toString('hex'));
+  }
 
   async createGroup(
     actorId: string,
@@ -383,35 +402,216 @@ export class StudyGroupService {
         const result = await client.query<TextRow>(
           `SELECT t.*,u.display_name FROM study_group_texts t JOIN users u ON u.id=t.author_user_id
         WHERE t.group_id=$1 AND ($2::boolean OR t.hidden_at IS NULL) ORDER BY t.created_at,t.id`,
-          [groupId, current.role !== "MEMBER"],
+          [groupId, current.role !== 'MEMBER'],
         );
         return paginate(
-          result.rows.map((row) => this.textResponse(row)),
+          await this.projectTexts(actorId, result.rows),
           page,
         );
       },
     );
   }
-  async createText(actorId: string, groupId: string, input: { body: string }) {
-    const body = bounded(input.body, 2000);
+  async createText(actorId: string, groupId: string, input: GroupTextInput) {
+    const payload = normalizeGroupText(input);
     return this.scoped(
       actorId,
       groupId,
       true,
-      "TEXT",
+      'TEXT',
       async (client, _group, current) => {
-        await this.checkGroupCap(client, groupId, "study_group_texts");
-        const result = await client.query<TextRow>(
-          "INSERT INTO study_group_texts(group_id,author_user_id,body) VALUES($1,$2,$3) RETURNING *",
-          [groupId, actorId, body],
-        );
-        return this.textResponse({
-          ...result.rows[0],
+        if (payload.clientMessageId) {
+          const existing = (
+            await client.query<TextRow>(
+              'SELECT t.*,u.display_name FROM study_group_texts t JOIN users u ON u.id=t.author_user_id WHERE t.group_id=$1 AND t.author_user_id=$2 AND t.client_message_id=$3',
+              [groupId, actorId, payload.clientMessageId],
+            )
+          ).rows[0];
+          if (existing) {
+            if (
+              existing.body !== payload.body ||
+              (existing.context_type ?? null) !==
+                (payload.context?.type ?? null) ||
+              (existing.context_id ?? null) !== (payload.context?.id ?? null)
+            )
+              throw new StudyGroupFailure(
+                'GROUP_SEND_CONFLICT',
+                409,
+                'Client message ID was already used',
+              );
+            if (existing.hidden_at && current.role === 'MEMBER') unavailable();
+            return this.projectText(actorId, existing);
+          }
+        }
+        const context = payload.context
+          ? await this.contexts?.resolve(actorId, payload.context)
+          : null;
+        if (payload.context && context?.availability !== 'AVAILABLE')
+          throw new StudyGroupFailure(
+            'GROUP_CONTEXT_UNAVAILABLE',
+            404,
+            'Learning context is unavailable',
+          );
+        await this.checkGroupCap(client, groupId, 'study_group_texts');
+        const inserted = (
+          await client.query<TextRow>(
+            'INSERT INTO study_group_texts(group_id,author_user_id,body,client_message_id,context_type,context_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',
+            [
+              groupId,
+              actorId,
+              payload.body,
+              payload.clientMessageId,
+              payload.context?.type ?? null,
+              payload.context?.id ?? null,
+            ],
+          )
+        ).rows[0];
+        return this.projectText(actorId, {
+          ...inserted,
           display_name: current.display_name,
         });
       },
     );
   }
+
+  async syncTexts(
+    actorId: string,
+    groupId: string,
+    input: GroupSyncInput = {},
+  ) {
+    const query = normalizeGroupSync(input);
+    return this.scoped(
+      actorId,
+      groupId,
+      false,
+      undefined,
+      async (client, group, current) => {
+        const before = query.cursor
+          ? this.syncCursors.decode(
+              query.cursor,
+              groupId,
+              actorId,
+              current.generation,
+              query.limit,
+            )
+          : '0';
+        if (parseSequence(before) > parseSequence(group.text_sequence))
+          throw new StudyGroupFailure(
+            'GROUP_INVALID_CURSOR',
+            400,
+            'Group cursor is invalid',
+          );
+        if (query.renderedIds.length) {
+          const owned = await client.query(
+            'SELECT id FROM study_group_texts WHERE group_id=$1 AND id=ANY($2::uuid[])',
+            [groupId, query.renderedIds],
+          );
+          if (owned.rowCount !== query.renderedIds.length) unavailable();
+        }
+        const privileged = current.role !== 'MEMBER';
+        const rows = (
+          await client.query<TextRow>(
+            'SELECT t.*,u.display_name FROM study_group_texts t JOIN users u ON u.id=t.author_user_id WHERE t.group_id=$1 AND t.sequence>$2::bigint AND ($3::boolean OR t.hidden_at IS NULL) ORDER BY t.sequence LIMIT $4',
+            [groupId, before, privileged, query.limit + 1],
+          )
+        ).rows;
+        const hasMore = rows.length > query.limit;
+        const selected = rows.slice(0, query.limit);
+        const position = hasMore
+          ? String(selected.at(-1)!.sequence)
+          : String(group.text_sequence);
+        const rendered = (
+          await client.query<{ id: string; hidden: boolean }>(
+            'SELECT id,hidden_at IS NOT NULL AS hidden FROM study_group_texts WHERE group_id=$1 AND id=ANY($2::uuid[]) AND ($3::boolean OR hidden_at IS NULL)',
+            [groupId, query.renderedIds, privileged],
+          )
+        ).rows;
+        const stillVisibleIds = rendered.map((row) => row.id);
+        const hiddenIds = rendered.filter((row) => row.hidden).map((row) => row.id);
+        const unreadCount = (
+          await client.query<{ count: number }>(
+            'SELECT count(*)::int AS count FROM study_group_texts WHERE group_id=$1 AND sequence>$2::bigint AND author_user_id<>$3 AND hidden_at IS NULL',
+            [groupId, current.read_sequence, actorId],
+          )
+        ).rows[0].count;
+        const cursor = this.syncCursors.encode(
+          groupId,
+          actorId,
+          current.generation,
+          position,
+          query.limit,
+        );
+        return {
+          items: await this.projectTexts(actorId, selected),
+          stillVisibleIds,
+          hiddenIds,
+          cursor,
+          nextCursor: hasMore ? cursor : null,
+          hasMore,
+          version: String(group.change_version),
+          unreadCount,
+          lastReadSequence: String(current.read_sequence),
+          groupRole: current.role,
+          groupStatus: 'ACTIVE' as const,
+        };
+      },
+    );
+  }
+
+  async markRead(actorId: string, groupId: string, textId: string) {
+    uuid(textId);
+    return this.scoped(
+      actorId,
+      groupId,
+      true,
+      undefined,
+      async (client, _group, current) => {
+        const text = (
+          await client.query<{ sequence: string }>(
+            'SELECT sequence FROM study_group_texts WHERE id=$1 AND group_id=$2 AND ($3::boolean OR hidden_at IS NULL)',
+            [textId, groupId, current.role !== 'MEMBER'],
+          )
+        ).rows[0];
+        if (!text) unavailable();
+        const state = (
+          await client.query<{ read_sequence: string }>(
+            'UPDATE study_group_memberships SET read_sequence=GREATEST(read_sequence,$3::bigint) WHERE group_id=$1 AND user_id=$2 RETURNING read_sequence',
+            [groupId, actorId, text.sequence],
+          )
+        ).rows[0];
+        const unread = (
+          await client.query<{ count: number }>(
+            'SELECT count(*)::int AS count FROM study_group_texts WHERE group_id=$1 AND sequence>$2::bigint AND author_user_id<>$3 AND hidden_at IS NULL',
+            [groupId, state.read_sequence, actorId],
+          )
+        ).rows[0].count;
+        return {
+          lastReadSequence: String(state.read_sequence),
+          unreadCount: unread,
+        };
+      },
+    );
+  }
+
+  async getTextContext(actorId: string, groupId: string, textId: string) {
+    uuid(textId);
+    return this.scoped(
+      actorId,
+      groupId,
+      false,
+      undefined,
+      async (client, _group, current) => {
+        const row = (
+          await client.query<TextRow>(
+            'SELECT t.*,u.display_name FROM study_group_texts t JOIN users u ON u.id=t.author_user_id WHERE t.group_id=$1 AND t.id=$2 AND ($3::boolean OR t.hidden_at IS NULL)',
+            [groupId, textId, current.role !== 'MEMBER'],
+          )
+        ).rows[0];
+        if (!row) unavailable();
+        return {textId:row.id,context:(await this.projectText(actorId, row)).context};
+      },
+    );
+  }
+
   async hideText(actorId: string, groupId: string, textId: string) {
     uuid(textId);
     return this.scoped(
@@ -516,9 +716,47 @@ export class StudyGroupService {
       },
     );
   }
+  private async projectTexts(
+    actorId: string,
+    rows: TextRow[],
+  ): Promise<TextResponse[]> {
+    const references = rows.map((row) =>
+      row.context_type && row.context_id
+        ? { type: row.context_type, id: row.context_id }
+        : null,
+    );
+    const cards = this.contexts
+      ? await this.contexts.resolvePage(actorId, references)
+      : references.map((reference) =>
+          reference ? { availability: 'UNAVAILABLE' as const } : null,
+        );
+    return rows.map((row, index) => ({
+      ...this.textResponse(row),
+      context: cards[index],
+    }));
+  }
+  private async projectText(
+    actorId: string,
+    row: TextRow,
+  ): Promise<TextResponse> {
+    const context =
+      row.context_type && row.context_id
+        ? await this.contexts?.resolve(actorId, {
+            type: row.context_type,
+            id: row.context_id,
+          })
+        : null;
+    return {
+      ...this.textResponse(row),
+      context:
+        context ?? (row.context_id ? { availability: 'UNAVAILABLE' } : null),
+    };
+  }
   private textResponse(row: TextRow): TextResponse {
     return {
       id: row.id,
+      sequence: String(row.sequence),
+      context: null,
       body: row.body,
       author: { userId: row.author_user_id, displayName: row.display_name },
       hidden: row.hidden_at !== null,
@@ -606,6 +844,9 @@ export class StudyGroupService {
 }
 
 interface TextRow {
+  sequence:string;
+  context_type:'LIBRARY_RESOURCE'|'COMMUNITY_POST'|null;
+  context_id:string|null;
   id: string;
   body: string;
   author_user_id: string;

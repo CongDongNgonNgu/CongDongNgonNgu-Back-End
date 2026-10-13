@@ -154,7 +154,10 @@ describe('Phase22 real PostgreSQL HTTP authorization', () => {
     await http().post(prefix+'/invitations/accept').set(bearer(member)).send({groupId:group.id,token:invite.token}).expect(200);
     await http().post(prefix+'/invitations/accept').set(bearer(outsider)).send({groupId:group.id,token:invite.token}).expect(404);
     const text=(await http().post(prefix+'/'+group.id+'/texts').set(bearer(member)).send({body:'Study text'}).expect(201)).body.data;
-    expect(Object.keys(text).sort()).toEqual(['author','body','createdAt','hidden','id'].sort());
+    expect(Object.keys(text).sort()).toEqual(['author','body','context','createdAt','hidden','id','sequence'].sort());
+    expect(text).toMatchObject({body:'Study text',context:null,sequence:'1',hidden:false,author:{userId:member.id}});
+    expect(text).not.toHaveProperty('context_id');
+    expect(text).not.toHaveProperty('client_message_id');
     await http().post(prefix+'/'+group.id+'/texts/'+text.id+'/reports').set(bearer(member)).send({reason:'Synthetic reason'}).expect(200);
     const reports=(await http().get(prefix+'/'+group.id+'/reports').set(bearer(owner)).expect(200)).body.data;
     expect(Object.keys(reports.items[0]).sort()).toEqual(['createdAt','id','reason','status','textId'].sort());
