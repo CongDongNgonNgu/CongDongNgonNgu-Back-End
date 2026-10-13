@@ -1,6 +1,8 @@
 import { Transform, Type } from "class-transformer";
 import {
   IsIn,
+  IsArray,
+  ArrayMaxSize,
   IsInt,
   IsOptional,
   IsString,
@@ -44,8 +46,25 @@ export class ConnectedPartnerInvitationDto {
   @IsUUID("4") partnerUserId!: string;
 }
 export class StudyGroupTextDto {
-  @Transform(trim) @IsString() @Length(1, 2000) body!: string;
+  @IsOptional() @Transform(trim) @IsString() @Length(0, 4000) body?: string;
+  @IsOptional() @IsUUID('4') clientMessageId?: string;
+  @IsOptional() @IsIn(['LIBRARY_RESOURCE', 'COMMUNITY_POST']) contextType?:
+    'LIBRARY_RESOURCE' | 'COMMUNITY_POST';
+  @IsOptional() @IsUUID('4') contextId?: string;
 }
+export class StudyGroupSyncDto {
+  @IsOptional() @IsString() @Length(1, 2048) cursor?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(20) limit?: number;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUUID('4', { each: true })
+  renderedIds?: string[];
+}
+export class StudyGroupReadDto {
+  @IsUUID('4') textId!: string;
+}
+export class StudyGroupStreamQueryDto {}
 export class StudyGroupReportDto {
   @Transform(trim) @IsString() @Length(1, 500) reason!: string;
 }

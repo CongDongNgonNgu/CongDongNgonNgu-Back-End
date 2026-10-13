@@ -1,3 +1,13 @@
+import { ConfigService } from '@nestjs/config';
+import { Header, Headers, Sse, SseSignal } from '@nestjs/common';
+import { SessionFailure } from '../auth/session/session.service';
+import { MessageFailure } from '../messaging/message-failure';
+import { GroupStreamService } from './group-stream.service';
+import {
+  StudyGroupSyncDto,
+  StudyGroupReadDto,
+  StudyGroupStreamQueryDto,
+} from './study-group.dto';
 import {
   Body,
   Controller,
@@ -37,6 +47,8 @@ export class StudyGroupController {
   constructor(
     private readonly groups: StudyGroupService,
     private readonly sessions: SessionService,
+    private readonly streams:GroupStreamService,
+    private readonly config:ConfigService,
   ) {}
   @Get("")
   async listGroups(
@@ -216,6 +228,82 @@ export class StudyGroupController {
     );
   }
 
+  @Post(':groupId/texts/sync')
+  @HttpCode(200)
+  async sync(
+    @Param('groupId', uuidPipe) groupId: string,
+    @Body() input: StudyGroupSyncDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.groups.syncTexts(this.actor(request, true), groupId, input),
+    );
+  }
+  @Post(':groupId/read')
+  @HttpCode(200)
+  async markRead(
+    @Param('groupId', uuidPipe) groupId: string,
+    @Body() input: StudyGroupReadDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.groups.markRead(
+        this.actor(request, true),
+        groupId,
+        input.textId,
+      ),
+    );
+  }
+  @Get(':groupId/texts/:textId/context')
+  async context(
+    @Param('groupId', uuidPipe) groupId: string,
+    @Param('textId', uuidPipe) textId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return success(
+      await this.groups.getTextContext(
+        this.actor(request, false),
+        groupId,
+        textId,
+      ),
+    );
+  }
+  @Sse(':groupId/stream')
+  @Header('Cache-Control', 'private, no-store, no-transform')
+  @Header('X-Accel-Buffering', 'no')
+  async stream(
+    @Param('groupId', uuidPipe) groupId: string,
+    @Query() _query: StudyGroupStreamQueryDto,
+    @Req() request: AuthenticatedRequest,
+    @SseSignal() signal: AbortSignal,
+    @Headers('last-event-id') lastEventId?: string,
+  ) {
+    const origin = request.headers.origin;
+    if (
+      origin &&
+      !this.config.get<string[]>('app.corsOrigins')?.includes(origin)
+    )
+      throw new MessageFailure(
+        'MESSAGE_ORIGIN_DENIED',
+        403,
+        'Request origin is not allowed',
+      );
+    const actor = request.user!.user.id,
+      session = request.user!.claims.sid,
+      token = request.headers.authorization!.slice('Bearer '.length).trim();
+    return this.streams.open(
+      actor,
+      groupId,
+      session,
+      async () => {
+        const current = await this.sessions.authenticate(token);
+        if (current.user.id !== actor || current.claims.sid !== session)
+          throw new SessionFailure('AUTH_SESSION_EXPIRED');
+      },
+      signal,
+      lastEventId,
+    );
+  }
   @Get(":groupId/texts")
   async listTexts(
     @Param("groupId", uuidPipe) groupId: string,

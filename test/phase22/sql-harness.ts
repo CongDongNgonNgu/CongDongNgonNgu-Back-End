@@ -40,6 +40,37 @@ export class SqlHarness {
     }
     await this.migration('0001_identity.sql');
     await this.migration('0027_phase22_study_groups.sql');
+    // Legacy Phase22 suites need group columns but intentionally have no Phase26
+    // lease domain. Reuse only the canonical group prefix in the exact isolated schema.
+    if (!/^phase22_test_[a-f0-9]{32}$/.test(this.schema))
+      throw new Error('Unsafe group fixture schema');
+    const owned = (
+      await this.pool.query(
+        `SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace ns ON ns.oid=c.relnamespace WHERE ns.nspname=current_schema() AND c.relname IN ('users','study_groups','study_group_memberships','study_group_texts')`,
+      )
+    ).rows[0].n;
+    if (owned !== 4) throw new Error('Group fixture tables are not isolated');
+    const source = await readFile(
+      path.resolve(
+        __dirname,
+        '../../database/migrations/0038_phase27_group_collaboration.sql',
+      ),
+      'utf8',
+    );
+    const pieces = source.split('-- PHASE27_SHARED_LEASE_ADAPTATION');
+    if (pieces.length !== 2)
+      throw new Error('Group fixture migration marker mismatch');
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(pieces[0]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async migration(filename: string): Promise<void> {

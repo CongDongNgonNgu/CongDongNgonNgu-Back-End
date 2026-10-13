@@ -61,7 +61,7 @@ describe("study group safe boundaries", () => {
           id: "g",
           name: "group",
           description: "",
-          owner_user_id: "private-owner",
+          text_sequence:'0',change_version:'0',owner_user_id: "private-owner",
           status: "ACTIVE",
           created_at: now,
           updated_at: now,

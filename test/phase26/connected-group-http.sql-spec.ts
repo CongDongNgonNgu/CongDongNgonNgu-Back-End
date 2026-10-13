@@ -34,6 +34,7 @@ describe('Phase26 connected-partner invitation native PostgreSQL HTTP boundary',
         && Number(file.slice(0, 4)) >= 2 && Number(file.slice(0, 4)) <= 36).sort();
     expect(files).toHaveLength(35);
     for (const file of files) await db.migration(file);
+    await db.migration('0038_phase27_group_collaboration.sql');
     identity = new PostgresIdentityRepository(db.pool);
     groups = new StudyGroupService(db.pool);
     const config = buildConfiguration(validateEnvironment({
@@ -173,4 +174,29 @@ describe('Phase26 connected-partner invitation native PostgreSQL HTTP boundary',
       .set('Origin', 'http://localhost:5173').set('X-CSRF-Token', csrf!)
       .send({ partnerUserId: h.partner.id }).expect(200);
   });
+  it('returns the context endpoint envelope and bounded sync/read through native HTTP ACL',async()=>{
+    const h=await fixture(),invite=await groups.issueInvitation(h.owner.id,h.group.id);await groups.acceptInvitation(h.partner.id,{groupId:h.group.id,token:invite.token});
+    const text=(await http().post(`${prefix}/${h.group.id}/texts`).set(bearer(h.owner)).send({body:'Synthetic HTTP group note',clientMessageId:randomUUID()}).expect(201)).body.data;
+    const context=await http().get(`${prefix}/${h.group.id}/texts/${text.id}/context`).set(bearer(h.partner)).expect(200);expect(context.body.data).toEqual({textId:text.id,context:null});
+    const synced=await http().post(`${prefix}/${h.group.id}/texts/sync`).set(bearer(h.partner)).send({renderedIds:[],limit:20}).expect(200);expect(synced.body.data).toMatchObject({groupRole:'MEMBER',groupStatus:'ACTIVE',unreadCount:1,items:[{id:text.id,sequence:'1'}]});
+    await http().post(`${prefix}/${h.group.id}/read`).set(bearer(h.partner)).send({textId:text.id}).expect(200);
+    const ownerSync=(await http().post(`${prefix}/${h.group.id}/texts/sync`).set(bearer(h.owner)).send({}).expect(200)).body.data;
+    await http().post(`${prefix}/${h.group.id}/texts/${text.id}/hide`).set(bearer(h.owner)).send({}).expect(200);
+    const ownerHidden=(await http().post(`${prefix}/${h.group.id}/texts/sync`).set(bearer(h.owner)).send({cursor:ownerSync.cursor,renderedIds:[text.id]}).expect(200)).body.data;
+    expect(ownerHidden.items).toHaveLength(0);expect(ownerHidden.hiddenIds).toEqual([text.id]);expect(ownerHidden.stillVisibleIds).toEqual([text.id]);
+    const memberHidden=(await http().post(`${prefix}/${h.group.id}/texts/sync`).set(bearer(h.partner)).send({cursor:synced.body.data.cursor,renderedIds:[text.id]}).expect(200)).body.data;
+    expect(memberHidden.hiddenIds).toEqual([]);expect(memberHidden.stillVisibleIds).toEqual([]);
+
+    await http().get(`${prefix}/${h.group.id}/texts/${text.id}/context`).set(bearer(h.other)).expect(404);
+    await http().post(`${prefix}/${h.group.id}/texts/sync`).set(bearer(h.partner)).send({renderedIds:Array.from({length:21},()=>randomUUID())}).expect(400);
+  });
+
+  it('denies unauthenticated, outsider and malformed group streams before protected SSE delivery',async()=>{
+    const h=await fixture();const url=`${prefix}/${h.group.id}/stream`;
+    await http().get(url).expect(401);
+    const outsider=await http().get(url).set(bearer(h.other)).expect(404);expect(outsider.body.error.code).toBe('GROUP_UNAVAILABLE');
+    const malformed=await http().get(url).set(bearer(h.owner)).set('Last-Event-ID','not-a-sequence').expect(400);expect(malformed.body.error.code).toBe('MESSAGE_INVALID_STREAM_CURSOR');
+    expect((await db.pool.query('SELECT id FROM direct_message_stream_leases WHERE group_id=$1',[h.group.id])).rowCount).toBe(0);
+  });
+
 });
