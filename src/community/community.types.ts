@@ -1,3 +1,4 @@
+import type { CommunitySearchPosition } from './community-search';
 export const COMMUNITY_POST_TYPES = [
   'DISCUSSION',
   'QUESTION',
@@ -40,6 +41,12 @@ export const COMMUNITY_REPORT_STATES = ['OPEN', 'DISMISSED', 'ACTIONED'] as cons
 export type CommunityReportState = typeof COMMUNITY_REPORT_STATES[number];
 
 export interface CommunityPostRecord {
+  searchPosition?: CommunitySearchPosition;
+  searchProjection?: {
+    authorDisplayName: string;
+    language: {code:string;slug:string;nativeName:string;englishName:string;vietnameseName:string;direction:'ltr'|'rtl'};
+    interaction: CommunityInteractionSummary;
+  };
   id: string;
   authorUserId: string;
   targetLanguageCode: string;

@@ -1,3 +1,5 @@
+import { communityFailure } from './community.errors';
+import type { CommunitySearchFilters,CommunitySearchPosition } from './community-search';
 import { randomUUID } from 'node:crypto';
 import type {
   CommunityCefrLevel,
@@ -51,6 +53,10 @@ export interface UpdateCommunityPostInput {
 }
 
 export interface CommunityPostListQuery {
+  search?: CommunitySearchFilters;
+  searchActor?: string | null;
+  searchBefore?: CommunitySearchPosition;
+  searchIds?: string[];
   languageCode?: string;
   before?: CommunityPostCursor;
   limit: number;
@@ -223,15 +229,72 @@ export class InMemoryCommunityRepository implements CommunityRepository {
     return clonePost(post);
   }
 
-  async listPosts(query: CommunityPostListQuery): Promise<CommunityListResult<CommunityPostRecord>> {
-    const items = [...this.posts.values()]
-      .filter((post) => (
+  async listPosts(
+    query: CommunityPostListQuery,
+  ): Promise<CommunityListResult<CommunityPostRecord>> {
+    const filters = query.search;
+    // The memory adapter has no authoritative cross-domain response/identity
+    // query port. Refuse new structured-state filters rather than invent state.
+    if (filters?.responseState)
+      return communityFailure(
+        'COMMUNITY_SEARCH_RETRY',
+        'Structured search requires database persistence',
+        503,
+      );
+    const rows = [...this.posts.values()].filter(
+      (post) =>
         post.visibility === 'PUBLIC' &&
         post.moderationState === 'ACTIVE' &&
-        (!query.languageCode || post.targetLanguageCode === query.languageCode) &&
-        isBeforeCursor(post, query.before)
-      ))
-      .sort(compareNewestFirst);
+        (!(filters?.languageCode ?? query.languageCode) ||
+          post.targetLanguageCode ===
+            (filters?.languageCode ?? query.languageCode)) &&
+        (!filters?.q ||
+          post.content
+            .toLocaleLowerCase()
+            .includes(filters.q.toLocaleLowerCase())) &&
+        (!filters?.postType || post.postType === filters.postType) &&
+        (!filters?.topic || post.topic === filters.topic) &&
+        (!filters?.savedByMe ||
+          Boolean(
+            query.searchActor &&
+            this.savedPosts.has(saveKey(query.searchActor, post.id)),
+          )) &&
+        (!query.searchIds || query.searchIds.includes(post.id)),
+    );
+    const positioned = await Promise.all(
+      rows.map(async (post) => ({
+        ...clonePost(post),
+        searchPosition: {
+          id: post.id,
+          createdAt: post.createdAt.toISOString().replace('Z', '000Z'),
+          helpfulCount:
+            filters?.sort === 'USEFUL'
+              ? (await this.getPostInteractionSummary(post.id, null))
+                  .helpfulCount
+              : 0,
+        },
+      })),
+    );
+    const compare = (a: CommunityPostRecord, b: CommunityPostRecord) =>
+      (filters?.sort === 'USEFUL'
+        ? b.searchPosition!.helpfulCount - a.searchPosition!.helpfulCount
+        : 0) || compareNewestFirst(a, b);
+    const items = positioned
+      .filter((post) => {
+        const before = query.searchBefore;
+        if (!before) return isBeforeCursor(post, query.before);
+        const current = post.searchPosition!;
+        if (
+          filters?.sort === 'USEFUL' &&
+          current.helpfulCount !== before.helpfulCount
+        )
+          return current.helpfulCount < before.helpfulCount;
+        return (
+          current.createdAt < before.createdAt ||
+          (current.createdAt === before.createdAt && post.id < before.id)
+        );
+      })
+      .sort(compare);
     return page(items, query.limit);
   }
 

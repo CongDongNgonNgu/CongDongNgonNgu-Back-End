@@ -1,3 +1,8 @@
+import { ConfigService } from '@nestjs/config';
+import { randomBytes } from 'node:crypto';
+import { normalizeCommunitySearch } from './community-search';
+import type { CommunitySearchPosition } from './community-search';
+import { CommunitySearchCursorCodec } from './community-search-cursor';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { IDENTITY_REPOSITORY } from '../identity/identity.module';
 import type { IdentityRepository } from '../identity/identity.repository';
@@ -146,14 +151,27 @@ export interface CommunityShareResponse {
 
 @Injectable()
 export class CommunityService {
+  private readonly searchCursors: CommunitySearchCursorCodec;
   constructor(
-    @Inject(COMMUNITY_REPOSITORY) private readonly repository: CommunityRepository,
+    @Inject(COMMUNITY_REPOSITORY)
+    private readonly repository: CommunityRepository,
     @Inject(PROFILE_REPOSITORY) private readonly profiles: ProfileRepository,
-    @Inject(IDENTITY_REPOSITORY) private readonly identities: IdentityRepository,
+    @Inject(IDENTITY_REPOSITORY)
+    private readonly identities: IdentityRepository,
     private readonly rateLimiter: CommunityRateLimiter,
-    @Optional() @Inject(NOTIFICATION_DOMAIN_EVENT_SINK)
+    @Optional()
+    @Inject(NOTIFICATION_DOMAIN_EVENT_SINK)
     private readonly notificationEvents?: NotificationDomainEventSink,
-  ) {}
+    @Optional() config?: ConfigService,
+  ) {
+    const configuredSecret = config?.get<string>('auth.accessSecret');
+    if (config && (!configuredSecret || configuredSecret.length < 32))
+      throw new Error('Community search cursor secret is required');
+    // Direct-construction unit adapters have no ConfigService or shared runtime.
+    this.searchCursors = new CommunitySearchCursorCodec(
+      configuredSecret ?? randomBytes(32).toString('hex'),
+    );
+  }
 
   async createPost(userId: string, input: CreatePostDto): Promise<CommunityPostResponse> {
     await this.requireActiveUser(userId);
@@ -183,26 +201,72 @@ export class CommunityService {
     input: ListPostsQueryDto = {},
     viewerUserId: string | null = null,
   ): Promise<CommunityPostListResponse> {
-    const languageCode = input.languageCode === undefined
-      ? undefined
-      : await this.requireActiveLanguage(input.languageCode);
-    const query: CommunityPostListQuery = {
-      languageCode,
-      before: this.decodeCursor(input.cursor),
-      limit: normalizeLimit(input.limit),
-    };
-    const page = await this.repository.listPosts(query);
-    const items: CommunityPostResponse[] = [];
-    for (const post of page.items) {
-      const response = await this.toPostResponse(post, viewerUserId);
-      if (response) items.push(response);
+    const filters = normalizeCommunitySearch(input);
+    if (filters.languageCode)
+      filters.languageCode = await this.requireActiveLanguage(
+        filters.languageCode,
+      );
+    if (filters.savedByMe) {
+      if (!viewerUserId)
+        return communityFailure(
+          'COMMUNITY_AUTH_REQUIRED',
+          'Sign in to search saved posts',
+          401,
+        );
+      await this.requireActiveUser(viewerUserId);
     }
-    const cursorSource = page.items.at(-1);
+    let before = input.cursor
+      ? this.searchCursors.decode(input.cursor, filters, viewerUserId)
+      : undefined;
+    let lastScanned: CommunitySearchPosition | undefined;
+    let hasMore = false;
+    const items: CommunityPostResponse[] = [];
+    // At most four SQL batches (<=200 scan rows). Projection revocations refill
+    // boundedly and continuation always advances the encrypted last scan point.
+    for (let batch = 0; batch < 4 && items.length < filters.limit; batch++) {
+      const query: CommunityPostListQuery = {
+        search: filters,
+        searchActor: viewerUserId,
+        searchBefore: before,
+        limit: filters.limit - items.length,
+      };
+      const page = await this.repository.listPosts(query);
+      hasMore = page.hasMore;
+      if (!page.items.length) {
+        hasMore = false;
+        break;
+      }
+      lastScanned = page.items.at(-1)!.searchPosition;
+      if (!lastScanned)
+        return communityFailure(
+          'COMMUNITY_SEARCH_RETRY',
+          'Search is temporarily unavailable; please retry',
+          503,
+        );
+      // One bounded fresh SQL eligibility check covers changed response/save ACL
+      // as well as parent/language/authors before public projection.
+      const current = await this.repository.listPosts({
+        ...query,
+        searchBefore: undefined,
+        searchIds: page.items.map((post) => post.id),
+        limit: page.items.length,
+      });
+      const readable = new Map(current.items.map((post) => [post.id, post]));
+      for (const scanned of page.items) {
+        const fresh = readable.get(scanned.id);
+        if (!fresh) continue;
+        const response = await this.toSearchPostResponse(fresh, viewerUserId);
+        if (response && response.visibility === 'PUBLIC') items.push(response);
+      }
+      before = lastScanned;
+      if (!hasMore) break;
+    }
     return {
       items,
-      nextCursor: page.hasMore && cursorSource
-        ? encodeCommunityCursor({ createdAt: cursorSource.createdAt, id: cursorSource.id })
-        : null,
+      nextCursor:
+        hasMore && lastScanned
+          ? this.searchCursors.encode(filters, viewerUserId, lastScanned)
+          : null,
     };
   }
 
@@ -708,6 +772,39 @@ export class CommunityService {
       return communityFailure('COMMUNITY_POST_UNAVAILABLE', 'Post is not available', 404);
     }
     return response;
+  }
+
+  private async toSearchPostResponse(
+    post: CommunityPostRecord,
+    viewerUserId: string | null,
+  ): Promise<CommunityPostResponse | null> {
+    const projection = post.searchProjection;
+    if (!projection) return this.toPostResponse(post, viewerUserId);
+    if (post.visibility !== 'PUBLIC' || post.moderationState !== 'ACTIVE')
+      return null;
+    return {
+      id: post.id,
+      author: {
+        id: post.authorUserId,
+        displayName: projection.authorDisplayName,
+      },
+      targetLanguage: projection.language,
+      postType: post.postType,
+      content: post.content,
+      cefrLevel: post.cefrLevel,
+      topic: post.topic,
+      visibility: post.visibility,
+      createdAt: post.createdAt,
+      updatedAt: post.updatedAt,
+      editedAt: post.editedAt,
+      canonicalPath: '/community/posts/' + post.id,
+      isShareable: true,
+      isOwner: post.authorUserId === viewerUserId,
+      helpfulCount: projection.interaction.helpfulCount,
+      viewerReacted: projection.interaction.viewerReacted,
+      commentCount: projection.interaction.commentCount,
+      isSaved: projection.interaction.viewerSaved,
+    };
   }
 
   private async toPostResponse(
