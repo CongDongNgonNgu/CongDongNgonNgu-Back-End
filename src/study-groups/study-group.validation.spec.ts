@@ -72,6 +72,7 @@ describe("study group safe boundaries", () => {
       id: "g",
       name: "group",
       description: "",
+      visibility: "PRIVATE_INVITE_ONLY",
       status: "ACTIVE",
       role: "MEMBER",
       createdAt: now.toISOString(),
