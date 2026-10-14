@@ -59,14 +59,39 @@ describe('Phase22 real PostgreSQL HTTP authorization', () => {
     const owner=await actor();
     const result=await http().post(prefix).set(bearer(owner)).send({name:'Vietnamese / English',description:'Plain text'}).expect(201);
     expect(result.body.data.role).toBe('OWNER');
+    expect(result.body.data.visibility).toBe('PRIVATE_INVITE_ONLY');
     expect(result.headers['cache-control']).toContain('no-store');
     const groupId=result.body.data.id;
     expect((await db.pool.query('SELECT role,status FROM study_group_memberships WHERE group_id=$1 AND user_id=$2',[groupId,owner.id])).rows[0]).toEqual({role:'OWNER',status:'ACTIVE'});
     const list=await http().get(prefix+'?limit=1').set(bearer(owner)).expect(200);
     expect(list.body.data).toMatchObject({page:1,limit:1,total:1});
-    expect(Object.keys(list.body.data.items[0]).sort()).toEqual(['createdAt','description','id','name','role','status','updatedAt'].sort());
+    expect(Object.keys(list.body.data.items[0]).sort()).toEqual(['createdAt','description','id','name','role','status','updatedAt','visibility'].sort());
+    expect(list.body.data.items[0].visibility).toBe('PRIVATE_INVITE_ONLY');
     await http().post(prefix).set(bearer(owner)).send({name:'Tamper',ownerUserId:owner.id}).expect(400);
     await http().get(prefix+'?limit=21').set(bearer(owner)).expect(400);
+  });
+
+  it('rejects discovery queries and visibility escalation without exposing or joining private groups', async () => {
+    const {owner,member,stranger,group}=await fixture();
+    for(const query of ['q=Private','visibility=PUBLIC_JOINABLE','languageCode=en','topic=practice']) {
+      const result=await http().get(prefix+'?'+query).set(bearer(stranger)).expect(400);
+      expect(result.body).not.toHaveProperty('data');
+      expect(JSON.stringify(result.body)).not.toContain(group.id);
+    }
+    for(const visibility of ['PUBLIC_JOINABLE','PUBLIC_REQUEST_TO_JOIN']) {
+      await http().post(prefix).set(bearer(owner)).send({name:'Escalation',visibility}).expect(400);
+    }
+    const invite=await groups.issueInvitation(owner.id,group.id);
+    await http().post(prefix+'/invitations/accept').set(bearer(stranger)).send({groupId:group.id,token:invite.token,visibility:'PUBLIC_JOINABLE'}).expect(400);
+    expect((await http().get(prefix).set(bearer(stranger)).expect(200)).body.data).toMatchObject({items:[],total:0});
+    await http().get(prefix+'/'+group.id).set(bearer(stranger)).expect(404);
+    const joined=await http().post(prefix+'/invitations/accept').set(bearer(stranger)).send({groupId:group.id,token:invite.token}).expect(200);
+    expect(joined.body.data).toMatchObject({id:group.id,role:'MEMBER',visibility:'PRIVATE_INVITE_ONLY'});
+    for(const actor of [owner,member,stranger]) {
+      const detail=await http().get(prefix+'/'+group.id).set(bearer(actor)).expect(200);
+      expect(detail.body.data.visibility).toBe('PRIVATE_INVITE_ONLY');
+    }
+    expect((await db.pool.query('SELECT count(*)::int AS count FROM study_groups')).rows[0].count).toBe(1);
   });
 
   it('uses uniform unavailable errors for every foreign protected path and denies platform overrides', async () => {

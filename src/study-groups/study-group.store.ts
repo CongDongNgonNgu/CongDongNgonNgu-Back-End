@@ -127,6 +127,7 @@ export function groupResponse(group: GroupRow, role: GroupRole): GroupResponse {
     id: group.id,
     name: group.name,
     description: group.description,
+    visibility: 'PRIVATE_INVITE_ONLY',
     status: group.status,
     role,
     createdAt: group.created_at.toISOString(),
