@@ -1,6 +1,7 @@
 import type { ValidatedEnvironment } from "./env.validation";
 
 export interface RuntimeConfig {
+  attachments: ValidatedEnvironment["ATTACHMENTS"];
   app: {
     environment: ValidatedEnvironment["NODE_ENV"];
     port: number;
@@ -63,6 +64,7 @@ export interface RuntimeConfig {
 
 export function buildConfiguration(env: ValidatedEnvironment): RuntimeConfig {
   return {
+    attachments: env.ATTACHMENTS,
     app: {
       environment: env.NODE_ENV,
       port: env.PORT,

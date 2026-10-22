@@ -1,3 +1,4 @@
+import { parseAttachmentCapabilities } from '../attachments/attachment-policy';
 const BLOCKED_HOST_MARKERS = ["eduai", "giaoducso.org.vn"] as const;
 
 export type RuntimeEnvironment = "development" | "test" | "production";
@@ -7,6 +8,7 @@ export type StorageProviderSetting = OptionalProvider | "r2";
 export type PaymentProviderSetting = "disabled" | "payos";
 
 export interface ValidatedEnvironment {
+  ATTACHMENTS: ReturnType<typeof parseAttachmentCapabilities>;
   NODE_ENV: RuntimeEnvironment;
   PORT: number;
   PUBLIC_APP_URL: string;
@@ -139,6 +141,7 @@ export function validateEnvironment(
     ValidatedEnvironment,
     'AUTH_PERSISTENCE' | 'AUTH_ACCESS_TTL_SECONDS' | 'AUTH_REFRESH_TTL_SECONDS' | 'AUTH_OAUTH_PROVIDERS'
   > = {
+    ATTACHMENTS: parseAttachmentCapabilities(input),
     NODE_ENV: environment,
     PORT: port,
     PUBLIC_APP_URL: publicAppUrl,
@@ -174,6 +177,10 @@ export function validateEnvironment(
     ...(payosApiKey ? { PAYOS_API_KEY: payosApiKey } : {}),
     ...(payosChecksumKey ? { PAYOS_CHECKSUM_KEY: payosChecksumKey } : {}),
   };
+
+  if ((result.ATTACHMENTS.image || result.ATTACHMENTS.video || result.ATTACHMENTS.text) && storageProvider !== 'r2') {
+    throw new Error('Attachment formats require R2 storage');
+  }
 
   const redisUrl = optionalString(input.REDIS_URL);
   if (redisUrl) {
