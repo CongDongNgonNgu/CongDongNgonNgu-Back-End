@@ -21,6 +21,8 @@ export interface AttachmentStorage {
   /** Caller must own a fresh durable cleanup claim and guarantee no producer can reuse this key. R2 DELETE is not CAS. */
   deleteOwned(expected: AttachmentStoredObject): Promise<void>;
   listOwnedPrefix(cursor?: string): Promise<{ objects: Array<{ locator: AttachmentObjectLocator; sizeBytes: number }>; unrecognizedObjects: number; cursor?: string }>;
+  /** Fresh independent exact-key HEAD/list observation; never settles an uncertain producer. */
+  confirmAbsent(locator: AttachmentObjectLocator): Promise<{headMissing:true;ownedListingResidual:0}>;
   close(): void;
 }
 export type AttachmentStorageErrorCode = 'INVALID_CONFIGURATION' | 'INVALID_INPUT' | 'INTEGRITY' | 'OWNERSHIP' | 'NOT_FOUND' | 'CONFLICT' | 'UNAVAILABLE';

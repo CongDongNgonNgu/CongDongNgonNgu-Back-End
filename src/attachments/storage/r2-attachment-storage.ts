@@ -134,6 +134,15 @@ export class R2AttachmentStorage implements AttachmentStorage {
     await this.call(new DeleteObjectCommand({Bucket:this.bucket,Key:key}));
     if(await this.head(locator))fail('INTEGRITY');
   }
+  async confirmAbsent(locator: AttachmentObjectLocator): Promise<{headMissing:true;ownedListingResidual:0}> {
+    const key=attachmentObjectKey(locator);
+    if(await this.head(locator))fail('INTEGRITY');
+    // Full generated object key, never the shared bucket or retained backups.
+    // A truncation or any residual (including an unknown suffix) fails closed.
+    const listing=await this.call<ListObjectsV2CommandOutput>(new ListObjectsV2Command({Bucket:this.bucket,Prefix:key,MaxKeys:2}));
+    if(listing.IsTruncated!==false||(listing.Contents!==undefined&&!Array.isArray(listing.Contents))||(listing.Contents?.length??0)!==0)fail('INTEGRITY');
+    return {headMissing:true,ownedListingResidual:0};
+  }
   async listOwnedPrefix(cursor?: string): Promise<{ objects: Array<{ locator: AttachmentObjectLocator; sizeBytes: number }>; unrecognizedObjects: number; cursor?: string }> {
     if (cursor !== undefined && (typeof cursor !== 'string' || cursor.length < 1 || cursor.length > 2048 || /[\u0000-\u0020\u007f]/.test(cursor))) fail('INVALID_INPUT');
     const result = await this.call<ListObjectsV2CommandOutput>(new ListObjectsV2Command({ Bucket: this.bucket, Prefix: PREFIX, MaxKeys: 100, ...(cursor ? { ContinuationToken: cursor } : {}) }));

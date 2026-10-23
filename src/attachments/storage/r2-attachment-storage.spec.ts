@@ -69,6 +69,12 @@ describe('private TEST attachment storage', () => {
   it('refuses changed versions or foreign owners before deletion', async () => {
     const { storage, send } = setup(); await expect(storage.deleteOwned({...stored(),version:'changed'})).rejects.toThrow('ATTACHMENT_STORAGE_OWNERSHIP'); expect(send.mock.calls.some(([command]) => command instanceof DeleteObjectCommand)).toBe(false);
   });
+  it('confirms exact-owned absence using separate HEAD and bounded exact-key listing', async()=>{
+    const {storage,send}=setup(async command=>{if(command instanceof HeadObjectCommand)throw missing();return {Contents:[],IsTruncated:false};});
+    await expect(storage.confirmAbsent(locator)).resolves.toEqual({headMissing:true,ownedListingResidual:0});
+    expect(send.mock.calls[1][0]).toMatchObject({input:{Prefix:attachmentObjectKey(locator),MaxKeys:2}});
+    for(const result of [{Contents:[{Key:attachmentObjectKey(locator),Size:bytes.length}],IsTruncated:false},{Contents:[],IsTruncated:true},{Contents:[{Key:'backups/unrelated',Size:1}],IsTruncated:false}]){const {storage:s}=setup(async command=>{if(command instanceof HeadObjectCommand)throw missing();return result;});await expect(s.confirmAbsent(locator)).rejects.toThrow('ATTACHMENT_STORAGE_INTEGRITY');}
+  });
   it('lists only the owned namespace, at most100 objects and valid locators', async () => {
     const { storage, send } = setup(async () => ({ Contents: [{ Key: attachmentObjectKey(locator), Size: bytes.length }], IsTruncated: false }));
     await expect(storage.listOwnedPrefix()).resolves.toEqual({ objects: [{ locator, sizeBytes: bytes.length }], unrecognizedObjects: 0 });
