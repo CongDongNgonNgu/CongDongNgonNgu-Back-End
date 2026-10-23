@@ -1,0 +1,56 @@
+﻿import {randomUUID,createHash} from 'node:crypto';
+import {readdir} from 'node:fs/promises';import path from 'node:path';
+import {SqlHarness} from '../phase22/sql-harness';
+import {transaction} from '../../src/study-groups/study-group.store';
+import {AttachmentFinalizationLedger} from '../../src/attachments/finalization/attachment-finalization-ledger';
+import {createProcessorProof} from '../../src/attachments/finalization/processor-proof';
+import {AttachmentQuotaLedger} from '../../src/attachments/attachment-quota-ledger';
+import {AttachmentObjectLedger} from '../../src/attachments/attachment-object-ledger';
+import {authorizeDraftScope} from '../../src/attachments/authorization/attachment-authorization';
+describe('Phase30 internal processing/finalization ledger',()=>{
+ const db=new SqlHarness(),ledger=new AttachmentFinalizationLedger(),quotas=new AttachmentQuotaLedger(),objects=new AttachmentObjectLedger();let actor:string,other:string,language:string;
+ const tx=<T>(f:(c:import('pg').PoolClient)=>Promise<T>)=>transaction(db.pool,f);
+ const source=Buffer.from('abc'),sha=createHash('sha256').update(source).digest('hex');
+ const proof=()=>createProcessorProof(source,{filename:'synthetic.txt',mime:'text/plain'},{format:'TEXT'},'ALLOW');
+ beforeAll(async()=>{await db.open();await db.migration('0027_phase22_study_groups.down.sql');const files=(await readdir(path.resolve(__dirname,'../../database/migrations'))).filter(f=>/^\d{4}_[\w-]+\.sql$/.test(f)&&Number(f.slice(0,4))>=2&&Number(f.slice(0,4))<=39).sort();for(const file of files)await db.migration(file);},180000);
+ afterAll(async()=>db.close());
+ beforeEach(async()=>{await db.reset();await db.pool.query('TRUNCATE attachment_quota_counters');await db.pool.query('INSERT INTO attachment_processing_lease(singleton) VALUES(true) ON CONFLICT(singleton) DO UPDATE SET owner=NULL,attachment_id=NULL,expires_at=NULL');actor=randomUUID();other=randomUUID();for(const id of [actor,other])await db.pool.query("INSERT INTO users(id,email,normalized_email,display_name,status,email_verified_at) VALUES($1,$2,$2,'Synthetic finalizer','ACTIVE',now())",[id,id+'@phase30.invalid']);language=(await db.pool.query("INSERT INTO languages(code,slug,native_name,english_name,vietnamese_name) VALUES('en','english','English','English','English') ON CONFLICT(code) DO UPDATE SET active=true RETURNING id")).rows[0].id;});
+ async function pending(groupId?:string){
+  const id=randomUUID(),sourceId=randomUUID(),attempt=randomUUID();if(groupId){const generation=(await db.pool.query('SELECT generation FROM study_group_memberships WHERE group_id=$1 AND user_id=$2',[groupId,actor])).rows[0].generation;await db.pool.query(`INSERT INTO attachments(id,uploader_id,scope,scope_id,group_id,scope_generation,client_upload_id,init_fingerprint,format,declared_mime,expected_bytes,display_filename,reserved_bytes,state,pending_slot_held,expires_at) VALUES($1,$2,'STUDY_GROUP',$3,$3,$4,$5,$6,'TEXT','text/plain',3,'synthetic.txt',65539,'PENDING',true,clock_timestamp()+interval '1 hour')`,[id,actor,groupId,generation,randomUUID(),'a'.repeat(64)]);}else await db.pool.query(`INSERT INTO attachments(id,uploader_id,scope,scope_id,language_id,community_post_type,community_visibility,client_upload_id,init_fingerprint,format,declared_mime,expected_bytes,display_filename,reserved_bytes,state,pending_slot_held,expires_at) VALUES($1,$2,'COMMUNITY',$3,$3,'DISCUSSION','PUBLIC',$4,$5,'TEXT','text/plain',3,'synthetic.txt',65539,'PENDING',true,clock_timestamp()+interval '1 hour')`,[id,actor,language,randomUUID(),'a'.repeat(64)]);
+  await db.pool.query(`INSERT INTO attachment_objects(id,attachment_id,attempt_id,variant,sha256,byte_count,content_type,status,put_claim,put_claimed_at,put_settled_at,etag) VALUES($1,$2,$3,'source',$4,3,'application/octet-stream','WRITTEN',$5,clock_timestamp(),clock_timestamp(),'"source"')`,[sourceId,id,attempt,sha,randomUUID()]);
+  await db.pool.query('UPDATE attachments SET source_object_id=$2,version=version+1 WHERE id=$1',[id,sourceId]);await tx(c=>quotas.changeCapacity(c,actor,{pendingDelta:1}));
+  return {id,sourceId,head:{locator:{attachmentId:id,attemptId:attempt,objectId:sourceId,kind:'source' as const},sizeBytes:3,sha256:sha,version:'"source"'}};
+ }
+ async function prepared(groupId?:string){const p=await pending(groupId),fence=await tx(c=>ledger.claimProcessing(c,actor,p.id)),plan=await tx(c=>ledger.prepareArtifacts(c,actor,fence,proof()));return {...p,fence,plan};}
+ async function settle(plan:Awaited<ReturnType<AttachmentFinalizationLedger['prepareArtifacts']>>,groupId?:string){const heads=[];for(const claim of plan.claims){const head={...claim.manifest,version:'"normalized"'};await tx(async c=>{await authorizeDraftScope(c,actor,groupId?{kind:'STUDY_GROUP',groupId}:{kind:'COMMUNITY',languageId:language,postType:'DISCUSSION',visibility:'PUBLIC'});return objects.recordPutResult(c,claim,head);});heads.push(head);}return heads;}
+ it('claims only one concurrent processing job and refuses to steal even an expired unresolved global producer',async()=>{
+  const a=await pending(),b=await pending();const r=await Promise.allSettled([tx(c=>ledger.claimProcessing(c,actor,a.id)),tx(c=>ledger.claimProcessing(c,actor,b.id))]);expect(r.filter(x=>x.status==='fulfilled')).toHaveLength(1);
+  await db.pool.query("UPDATE attachment_processing_lease SET expires_at=clock_timestamp()-interval '1 second'");const loser=r[0].status==='rejected'?a:b;await expect(tx(c=>ledger.claimProcessing(c,actor,loser.id))).rejects.toThrow();
+ });
+ it('prepares immutable inert-text normalized manifests with single-use consumed claims, no source fallback',async()=>{
+  const p=await prepared();expect(p.plan.claims).toHaveLength(1);expect(p.plan.claims[0].manifest.locator.kind).toBe('normalized');expect((await db.pool.query('SELECT content_type,put_uncertain,put_claim FROM attachment_objects WHERE id=$1',[p.plan.claims[0].objectId])).rows[0]).toMatchObject({content_type:'application/octet-stream',put_uncertain:true});
+  await expect(tx(c=>ledger.prepareArtifacts(c,actor,p.fence,proof()))).rejects.toThrow();
+ });
+ it('requires all exact settled receipts and independent selected HEAD snapshots before READY',async()=>{
+  const p=await prepared();await expect(tx(c=>ledger.publishReady(c,actor,p.plan,[p.head]))).rejects.toThrow();const heads=await settle(p.plan);
+  await expect(tx(c=>ledger.publishReady(c,actor,p.plan,[p.head,...heads.map(h=>({...h,sha256:'f'.repeat(64)}))]))).rejects.toThrow();
+  await expect(tx(c=>ledger.publishReady(c,actor,p.plan,[p.head,...heads]))).resolves.toEqual({state:'READY'});
+  const row=(await db.pool.query('SELECT state,normalized_object_id,thumbnail_object_id,lease_owner,pending_slot_held FROM attachments WHERE id=$1',[p.id])).rows[0];expect(row).toEqual({state:'READY',normalized_object_id:p.plan.claims[0].objectId,thumbnail_object_id:null,lease_owner:null,pending_slot_held:false});
+  expect((await db.pool.query("SELECT used FROM attachment_quota_counters WHERE action='pending'")).rows[0].used).toBe('0');expect((await db.pool.query('SELECT owner FROM attachment_processing_lease')).rows[0].owner).toBeNull();
+  expect((await db.pool.query("SELECT reason FROM attachment_cleanup_jobs WHERE object_id=$1",[p.sourceId])).rows).toEqual([{reason:'ORPHAN'}]);
+  await expect(tx(c=>ledger.publishReady(c,actor,p.plan,[p.head,...heads]))).resolves.toEqual({state:'READY'});
+ });
+ it('does not publish after deletion and retains producer ownership for explicit quiescence settlement',async()=>{const p=await prepared(),heads=await settle(p.plan);await db.pool.query("UPDATE attachments SET state='DELETED',deleted_at=clock_timestamp(),version=version+1 WHERE id=$1",[p.id]);await expect(tx(c=>ledger.publishReady(c,actor,p.plan,[p.head,...heads]))).rejects.toThrow();expect((await db.pool.query('SELECT owner FROM attachment_processing_lease')).rows[0].owner).toBe(p.fence.leaseOwner);});
+ it('does not publish after account revocation or attachment lease expiry',async()=>{const p=await prepared(),heads=await settle(p.plan);await db.pool.query("UPDATE users SET status='DISABLED' WHERE id=$1",[actor]);await expect(tx(c=>ledger.publishReady(c,actor,p.plan,[p.head,...heads]))).rejects.toThrow();await db.pool.query("UPDATE users SET status='ACTIVE' WHERE id=$1",[actor]);await db.pool.query("UPDATE attachments SET lease_expires_at=clock_timestamp()-interval '1 second',version=version+1 WHERE id=$1",[p.id]);await expect(tx(c=>ledger.publishReady(c,actor,p.plan,[p.head,...heads]))).rejects.toThrow();});
+ it('denies foreign actors, forged proof/plan and proof/source mismatch before allocating derivatives',async()=>{const p=await pending();await expect(tx(c=>ledger.claimProcessing(c,other,p.id))).rejects.toThrow();const f=await tx(c=>ledger.claimProcessing(c,actor,p.id));await expect(tx(c=>ledger.prepareArtifacts(c,actor,f,{} as never))).rejects.toThrow();const wrong=createProcessorProof(Buffer.from('xyz'),{filename:'synthetic.txt',mime:'text/plain'},{format:'TEXT'},'ALLOW');await expect(tx(c=>ledger.prepareArtifacts(c,actor,f,wrong))).rejects.toThrow();await expect(tx(c=>ledger.publishReady(c,actor,{} as never,[]))).rejects.toThrow();expect((await db.pool.query("SELECT count(*)::int n FROM attachment_objects WHERE variant<>'source'")).rows[0].n).toBe(0);});
+ it('loses safely when the singleton fence changes and rolls back the pending-slot decrement',async()=>{const p=await prepared(),heads=await settle(p.plan);await db.pool.query('UPDATE attachment_processing_lease SET owner=$1',[randomUUID()]);await expect(tx(c=>ledger.publishReady(c,actor,p.plan,[p.head,...heads]))).rejects.toThrow();expect((await db.pool.query("SELECT state,pending_slot_held FROM attachments WHERE id=$1",[p.id])).rows[0]).toEqual({state:'PENDING',pending_slot_held:true});expect((await db.pool.query("SELECT used FROM attachment_quota_counters WHERE action='pending'")).rows[0].used).toBe('1');});
+
+ it('denies stale group generation after leave/rejoin immediately before publication',async()=>{
+  const group=await tx(async c=>{const id=(await c.query("INSERT INTO study_groups(name,owner_user_id) VALUES('Synthetic finalizer group',$1) RETURNING id",[other])).rows[0].id;
+  await c.query("INSERT INTO study_group_memberships(group_id,user_id,role) VALUES($1,$2,'OWNER'),($1,$3,'MEMBER')",[id,other,actor]);return id;});
+  const p=await prepared(group),heads=await settle(p.plan,group);await db.pool.query("UPDATE study_group_memberships SET status='LEFT' WHERE group_id=$1 AND user_id=$2",[group,actor]);await db.pool.query("UPDATE study_group_memberships SET status='ACTIVE' WHERE group_id=$1 AND user_id=$2",[group,actor]);
+  await expect(tx(c=>ledger.publishReady(c,actor,p.plan,[p.head,...heads]))).rejects.toMatchObject({code:'ATTACHMENT_UNAVAILABLE'});expect((await db.pool.query('SELECT state FROM attachments WHERE id=$1',[p.id])).rows[0].state).toBe('PENDING');
+ });
+ it('cannot claim a PENDING row without its durable slot ownership flag',async()=>{const p=await pending();await db.pool.query('UPDATE attachments SET pending_slot_held=false,version=version+1 WHERE id=$1',[p.id]);await expect(tx(c=>ledger.claimProcessing(c,actor,p.id))).rejects.toThrow();expect((await db.pool.query("SELECT used FROM attachment_quota_counters WHERE action='pending'")).rows[0].used).toBe('1');});
+
+});
