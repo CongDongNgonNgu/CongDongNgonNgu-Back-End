@@ -48,8 +48,14 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Package checksum-pinned TEST native processors
+        run: node scripts/package-phase30-processors.cjs /tmp/phase30-approved-ffmpeg.tar.xz /tmp/phase30-approved-processors --download
+
       - name: Unit tests
         run: npm test -- --runInBand
+        env:
+          PHASE30_PROCESSOR_DIR: /tmp/phase30-approved-processors
+          PHASE30_REQUIRE_NATIVE_TESTS: 'true'
 
       - name: End-to-end tests
         run: npm run test:e2e -- --runInBand
@@ -92,6 +98,14 @@ jobs:
 
       - name: PostgreSQL18 Community acceptance and notification privacy
         run: npm run test:community-collaboration
+        env:
+          PHASE22_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/congdongngonngu_phase22_ci
+
+      - name: Attachment TEST connection guards
+        run: node --test scripts/phase30-sql-target.test.cjs
+
+      - name: PostgreSQL18 attachment ownership and lifecycle proof
+        run: npm run test:attachments
         env:
           PHASE22_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/congdongngonngu_phase22_ci
 
