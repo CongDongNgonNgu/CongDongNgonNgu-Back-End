@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve, isAbsolute, sep } from 'node:path';
 import { validateMp4Structure } from '../video/mp4';
 import { validateImageStructure } from '../validation/image';
-export class VideoProcessingError extends Error { constructor(readonly code:'PROCESSING_INVALID'|'PROCESSING_UNAVAILABLE'|'PROCESSING_CANCELLED'|'PROCESSING_TIMEOUT'|'PROCESSING_MEMORY_LIMIT'){super(code);this.name='VideoProcessingError';} }
+import {parseLinuxHighWater,waitForLinuxGroupExit} from './native-memory';
+export class VideoProcessingError extends Error { readonly producerQuiesced:boolean;constructor(readonly code:'PROCESSING_INVALID'|'PROCESSING_UNAVAILABLE'|'PROCESSING_CANCELLED'|'PROCESSING_TIMEOUT'|'PROCESSING_MEMORY_LIMIT'|'PROCESSING_UNQUIESCED'){super(code);this.name='VideoProcessingError';this.producerQuiesced=code!=='PROCESSING_UNQUIESCED';} }
 export interface ProcessedVideo {normalized:Buffer;thumbnail:Buffer;width:number;height:number;durationSeconds:number;thumbnailWidth:number;thumbnailHeight:number;peakRssBytes:number;nativeRssObserved:boolean}
 interface Options {processorsDirectory:string;temporaryRoot?:string;workerFile?:string;deadlineMs?:number}
 /** Disabled infrastructure port. Watchdogs and file/pipe restrictions do not constitute OS memory/network isolation. */
@@ -22,7 +23,7 @@ export class NativeVideoProcessor {
  }
  async shutdown():Promise<void>{this.closed=true;this.stop?.();if(this.active)await Promise.allSettled([this.active]);}
  private async run(bytes:Buffer,declaration:{filename:string;mime:string},signal?:AbortSignal):Promise<ProcessedVideo>{
-  const started=performance.now();validateMp4Structure(bytes,declaration);const input=Buffer.from(bytes),directory=await mkdtemp(join(this.root,'attachment-video-'));
+  const started=performance.now();validateMp4Structure(bytes,declaration);const input=Buffer.from(bytes),directory=await mkdtemp(join(this.root,'attachment-video-'));let producerQuiesced=true;
   try{
    await chmod(directory,0o700);await writeFile(join(directory,'input.mp4'),input,{flag:'wx',mode:0o600});
    const remaining=this.deadline-(performance.now()-started);if(remaining<=0)throw new VideoProcessingError('PROCESSING_TIMEOUT');
@@ -34,7 +35,8 @@ export class NativeVideoProcessor {
    if(this.closed||signal?.aborted)throw new VideoProcessingError('PROCESSING_CANCELLED');
    if(performance.now()-started>this.deadline)throw new VideoProcessingError('PROCESSING_TIMEOUT');
    return {normalized,thumbnail,width:video.width,height:video.height,durationSeconds:video.durationSeconds,thumbnailWidth:image.width,thumbnailHeight:image.height,...memory};
-  }finally{if(resolve(directory).startsWith(this.root+sep)&&directory.startsWith(join(this.root,'attachment-video-')))await rm(directory,{recursive:true,force:true});}
+  }catch(error){if(error instanceof VideoProcessingError&&!error.producerQuiesced){producerQuiesced=false;this.closed=true;}throw error;}
+  finally{if(producerQuiesced&&resolve(directory).startsWith(this.root+sep)&&directory.startsWith(join(this.root,'attachment-video-')))await rm(directory,{recursive:true,force:true});}
  }
  private execute(directory:string,deadline:number,signal?:AbortSignal):Promise<{peakRssBytes:number;nativeRssObserved:boolean}>{
   return new Promise((accept,reject)=>{
@@ -48,10 +50,11 @@ export class NativeVideoProcessor {
     if(killIssued)return;killIssued=true;
     if(process.platform==='linux'&&child.pid){try{process.kill(-child.pid,'SIGKILL');}catch{child.kill('SIGKILL');}}
     else if(process.platform==='win32'&&child.pid&&process.env.SystemRoot){
+     if(nativePid)try{process.kill(nativePid,'SIGKILL');}catch{/* Independently checked after worker close. */}
      killTask=new Promise<void>(done=>{
       const killer=spawn(join(process.env.SystemRoot!,'System32','taskkill.exe'),['/PID',String(child.pid),'/T','/F'],{shell:false,windowsHide:true,stdio:'ignore',env:environment});
       const timer=setTimeout(()=>{killer.kill();child.kill('SIGKILL');done();},1000);
-      killer.on('error',()=>{child.kill('SIGKILL');clearTimeout(timer);done();});killer.on('close',()=>{clearTimeout(timer);done();});
+      killer.on('error',()=>{child.kill('SIGKILL');clearTimeout(timer);done();});killer.on('close',()=>{child.kill('SIGKILL');clearTimeout(timer);done();});
      });
     }else child.kill('SIGKILL');
    };
@@ -62,16 +65,29 @@ export class NativeVideoProcessor {
    const monitor=setInterval(()=>{
     if(process.platform!=='linux'||!child.pid||finished||sampling)return;
     sampling=true;
-    const measure=async(pid:number)=>{const s=await readFile('/proc/'+pid+'/status','utf8'),m=/^VmHWM:\s+(\d+)\s+kB$/m.exec(s);if(!m)throw Error('memory observation');return Number(m[1])*1024;};
-    void (async()=>{let rss=await measure(child.pid!);if(nativePid)try{rss+=await measure(nativePid);nativeRssObserved=true;}catch(e:any){if(e.code!=='ENOENT')throw e;}observe(rss);})().catch((e:any)=>{if(!finished&&e.code!=='ENOENT')fail('PROCESSING_UNAVAILABLE');}).finally(()=>{sampling=false;});
+    const measure=async(pid:number,exited=false)=>parseLinuxHighWater(await readFile('/proc/'+pid+'/status','utf8'),exited);
+    void (async()=>{let rss=(await measure(child.pid!,true))??0;if(nativePid)try{rss+=(await measure(nativePid,true))??0;}catch(e:any){if(e.code!=='ENOENT')throw e;}if(rss)observe(rss);})().catch((e:any)=>{if(!finished&&e.code!=='ENOENT')fail('PROCESSING_UNAVAILABLE');}).finally(()=>{sampling=false;});
    },25);
    child.on('message',(message:any)=>{
     if(!message||typeof message!=='object'||typeof message.rss!=='number'){fail('PROCESSING_INVALID');return;}observe(message.rss);
-    if(message.nativePid!==undefined){if(!Number.isSafeInteger(message.nativePid)||message.nativePid<1){fail('PROCESSING_INVALID');return;}nativePid=message.nativePid;}
+    if(message.nativePid!==undefined){if(message.nativePid===null)nativePid=undefined;else{if(!Number.isSafeInteger(message.nativePid)||message.nativePid<1){fail('PROCESSING_INVALID');return;}nativePid=message.nativePid;}}
+    if(message.nativePeakRssBytes!==undefined){if(process.platform!=='linux'||!Number.isSafeInteger(message.nativePeakRssBytes)||message.nativePeakRssBytes<1){fail('PROCESSING_INVALID');return;}nativeRssObserved=true;observe(message.nativePeakRssBytes);}
     if(message.failure)fail('PROCESSING_INVALID');
    });
    child.once('error',()=>{failure??=new VideoProcessingError('PROCESSING_UNAVAILABLE');});
-   child.once('close',async code=>{finished=true;clearInterval(monitor);clearTimeout(timer);signal?.removeEventListener('abort',cancel);this.stop=undefined;await killTask;if(failure)reject(failure);else if(code!==0||!peak||(process.platform==='linux'&&!nativeRssObserved))reject(new VideoProcessingError('PROCESSING_INVALID'));else accept({peakRssBytes:peak,nativeRssObserved});});
+   child.once('close',async code=>{finished=true;clearInterval(monitor);clearTimeout(timer);signal?.removeEventListener('abort',cancel);this.stop=undefined;
+    // Heartbeat/direct worker exits and stream-overflow failures can bypass fail().
+    // Always kill remaining owned descendants before treating an error as settled.
+    if(failure||code!==0)kill();await killTask;
+    if(process.platform==='linux'&&child.pid){
+     if(!failure&&code===0)try{process.kill(-child.pid,'SIGKILL');}catch{/* ESRCH is checked independently below. */}
+     if(!await waitForLinuxGroupExit(child.pid)){reject(new VideoProcessingError('PROCESSING_UNQUIESCED'));return;}
+    }
+    if(process.platform==='win32'&&nativePid){
+     try{process.kill(nativePid,'SIGKILL');}catch{/* Absence, not kill success, is the proof. */}
+     if(!await waitForLinuxGroupExit(nativePid,pid=>{process.kill(-pid,0);})){reject(new VideoProcessingError('PROCESSING_UNQUIESCED'));return;}
+    }
+    if(failure)reject(failure);else if(code!==0||!peak||(process.platform==='linux'&&!nativeRssObserved))reject(new VideoProcessingError('PROCESSING_INVALID'));else accept({peakRssBytes:peak,nativeRssObserved});});
   });
  }
 }
