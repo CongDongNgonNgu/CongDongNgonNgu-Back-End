@@ -1,0 +1,8 @@
+import {NativeMemoryObservationError} from './native-memory';
+import {NativeDiagnosticFailure,diagnoseNativeFailure,parseNativeDiagnostic,formatNativeDiagnostic} from './native-diagnostic';
+describe('bounded native failure diagnostics',()=>{
+ it('retains fixed stage, point and missing live HWM state without raw status or error text',()=>{const error=new NativeMemoryObservationError('HWM_MISSING','R');const d=diagnoseNativeFailure(error,'SOURCE_PROBE','NATIVE_MEMORY');expect(d).toEqual({stage:'SOURCE_PROBE',point:'NATIVE_MEMORY',reason:'HWM_MISSING',state:'R'});expect(formatNativeDiagnostic(d)).toBe('SOURCE_PROBE/NATIVE_MEMORY/HWM_MISSING/R');});
+ it('never includes arbitrary paths, provider messages or stack data',()=>{const e=Object.assign(Error('/private?secret=VERY_SECRET'),{code:'OTHER',path:'/private',stack:'SECRET'});const d=diagnoseNativeFailure(e,'THUMBNAIL','MAIN');expect(d).toEqual({stage:'THUMBNAIL',point:'MAIN',reason:'EXCEPTION'});expect(JSON.stringify(d)).not.toMatch(/SECRET|private|stack/);});
+ it('only accepts the exact closed diagnostic vocabulary and rejects injected fields',()=>{const good={stage:'BOOT',point:'HEARTBEAT',reason:'ENOENT'};expect(parseNativeDiagnostic(good)).toEqual(good);for(const changed of [{...good,reason:'SECRET'},{...good,point:'/private'},{...good,stage:'UNKNOWN'},{...good,state:'private'},{...good,path:'private'},null,[]])expect(parseNativeDiagnostic(changed)).toBeNull();});
+ it('preserves a known captured snapshot diagnostic through the heartbeat/main failure wrapper',()=>{const d={stage:'VERIFY_FFPROBE',point:'LAUNCHER_MEMORY',reason:'HWM_MISSING',state:'R'} as const;expect(diagnoseNativeFailure(new NativeDiagnosticFailure(d),'RESULT','MAIN')).toEqual(d);});
+});

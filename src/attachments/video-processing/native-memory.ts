@@ -3,10 +3,14 @@
  * GNU time %M is lifetime maximum resident set in KiB, surviving short commands:
  * https://www.gnu.org/software/time/manual/html_node/Memory-Resources.html
  * These are observed/post-exit peaks, not an OS-enforced memory sandbox. */
+export class NativeMemoryObservationError extends Error{
+ constructor(readonly reason:'HWM_MISSING'|'HWM_INVALID',readonly state:'R'|'S'|'D'|'T'|'t'|'X'|'Z'|'P'|'I'|'W'|'UNKNOWN'){super('PROCESSING_UNAVAILABLE');this.name='NativeMemoryObservationError';}
+}
 export function parseLinuxHighWater(status:string,allowExited=false):number|null {
+ const stateMatch=/^State:\s+([RSDTtXZPIW])\b/m.exec(status),state=(stateMatch?.[1]??'UNKNOWN') as NativeMemoryObservationError['state'];
  const match=/^VmHWM:\s+(\d+)\s+kB$/m.exec(status);
- if(!match){if(allowExited&&/^State:\s+[ZX]\b/m.test(status))return null;throw Error('PROCESSING_UNAVAILABLE');}
- const bytes=Number(match[1])*1024;if(!Number.isSafeInteger(bytes)||bytes<1)throw Error('PROCESSING_UNAVAILABLE');return bytes;
+ if(!match){if(allowExited&&/^State:\s+[ZX]\b/m.test(status))return null;throw new NativeMemoryObservationError('HWM_MISSING',state);}
+ const bytes=Number(match[1])*1024;if(!Number.isSafeInteger(bytes)||bytes<1)throw new NativeMemoryObservationError('HWM_INVALID',state);return bytes;
 }
 export function parseCompletedNativePeak(bytes:Buffer):number {
  if(!Buffer.isBuffer(bytes)||bytes.length>128)throw Error('PROCESSING_UNAVAILABLE');
