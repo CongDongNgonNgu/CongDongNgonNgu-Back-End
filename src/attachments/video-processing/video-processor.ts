@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, isAbsolute, sep } from 'node:path';
 import { validateMp4Structure } from '../video/mp4';
 import { validateImageStructure } from '../validation/image';
-import {parseLinuxHighWater,waitForLinuxGroupExit} from './native-memory';
+import {sampleLinuxHighWaterAsync,waitForLinuxGroupExit} from './native-memory';
 import {parseNativeDiagnostic,formatNativeDiagnostic,diagnoseNativeFailure,NativeDiagnosticFailure,type NativeDiagnostic} from './native-diagnostic';
 export class VideoProcessingError extends Error { readonly producerQuiesced:boolean;constructor(readonly code:'PROCESSING_INVALID'|'PROCESSING_UNAVAILABLE'|'PROCESSING_CANCELLED'|'PROCESSING_TIMEOUT'|'PROCESSING_MEMORY_LIMIT'|'PROCESSING_UNQUIESCED',diagnostic?:NativeDiagnostic){const safe=parseNativeDiagnostic(diagnostic);super(code+(safe?' ['+formatNativeDiagnostic(safe)+']':''));this.name='VideoProcessingError';this.producerQuiesced=code!=='PROCESSING_UNQUIESCED';} }
 export interface ProcessedVideo {normalized:Buffer;thumbnail:Buffer;width:number;height:number;durationSeconds:number;thumbnailWidth:number;thumbnailHeight:number;peakRssBytes:number;nativeRssObserved:boolean}
@@ -67,7 +67,7 @@ export class NativeVideoProcessor {
     if(process.platform!=='linux'||!child.pid||finished||sampling)return;
     sampling=true;
     const measure=async(pid:number,point:'WORKER_MEMORY'|'NATIVE_MEMORY')=>{
-     try{return parseLinuxHighWater(await readFile('/proc/'+pid+'/status','utf8'),true);}
+     try{return await sampleLinuxHighWaterAsync(pid,path=>readFile(path,'utf8'),true);}
      catch(error:any){if(error?.code==='ENOENT')throw error;throw new NativeDiagnosticFailure(diagnoseNativeFailure(error,'SUPERVISOR',point));}
     };
     void (async()=>{let rss=(await measure(child.pid!,'WORKER_MEMORY'))??0;if(nativePid)try{rss+=(await measure(nativePid,'NATIVE_MEMORY'))??0;}catch(e:any){if(e.code!=='ENOENT')throw e;}if(rss)observe(rss);})().catch((e:any)=>{if(!finished&&e.code!=='ENOENT')fail('PROCESSING_UNAVAILABLE',diagnoseNativeFailure(e,'SUPERVISOR','WORKER_MEMORY'));}).finally(()=>{sampling=false;});

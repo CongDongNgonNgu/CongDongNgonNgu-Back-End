@@ -7,7 +7,7 @@ import { validateMp4Structure } from '../video/mp4';
 import { validateImageStructure } from '../validation/image';
 import { inspectProbe } from './probe';
 import { stripImageMetadata } from '../processing/strip-image-metadata';
-import {parseLinuxHighWater,parseCompletedNativePeak,measuredNativeInvocation} from './native-memory';
+import {sampleLinuxHighWater,parseCompletedNativePeak,measuredNativeInvocation} from './native-memory';
 import {NativeDiagnosticFailure,diagnoseNativeFailure,type NativeDiagnostic} from './native-diagnostic';
 const directory = process.argv[2], processors = process.argv[3];
 const declaration = { filename: 'source.mp4', mime: 'video/mp4' };
@@ -18,7 +18,7 @@ const observe=<T>(point:NativeDiagnostic['point'],work:()=>T):T=>{try{return wor
 const snapshot = (): void => {
  let rss = process.memoryUsage().rss;
  if (process.platform === 'linux') {
-  const memory=(pid:number,exited=false)=>parseLinuxHighWater(readFileSync('/proc/'+pid+'/status','utf8'),exited);
+  const memory=(pid:number,exited=false)=>sampleLinuxHighWater(pid,path=>readFileSync(path,'utf8'),exited);
   rss=observe('WORKER_MEMORY',()=>memory(process.pid))!;
   let live=0;
   if(launcherPid)try{
