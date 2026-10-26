@@ -1,0 +1,22 @@
+DROP FUNCTION phase30_terminal_purge_eligible(uuid);
+DROP TABLE attachment_upload_replay_leases;
+DROP TABLE attachment_initiation_admissions;
+DROP FUNCTION phase30_admission_guard();
+-- Disposable isolated schema only. Never roll back shared TEST with this file.
+DROP TABLE attachment_processing_lease;
+DROP TABLE attachment_cleanup_jobs;
+ALTER TABLE attachments DROP CONSTRAINT phase30_source_identity;
+ALTER TABLE attachments DROP CONSTRAINT phase30_normalized_identity;
+ALTER TABLE attachments DROP CONSTRAINT phase30_thumbnail_identity;
+DROP TABLE attachment_objects;
+DROP TABLE attachment_bindings;
+DROP FUNCTION phase30_binding_guard();
+DROP TABLE attachments;
+DROP FUNCTION phase30_attachment_guard();
+DROP TABLE attachment_quota_counters;
+ALTER TABLE direct_messages DROP CONSTRAINT phase30_message_conversation_author;
+ALTER TABLE study_group_texts DROP CONSTRAINT phase30_text_group_author;
+ALTER TABLE community_posts DROP CONSTRAINT phase30_post_author_language;
+DROP FUNCTION phase30_attachment_purge_guard();
+DROP FUNCTION phase30_cleanup_guard();
+DROP FUNCTION phase30_object_guard();
