@@ -1,3 +1,6 @@
+import type {PutUnsentCertificate,PutLocalClosure} from '../storage/put-supervision-proof';
+import {AttachmentObjectLedger,type AttachmentPutClaim} from '../attachment-object-ledger';
+import type {AttachmentStoredObject} from '../storage/attachment-storage.port';
 import {AttachmentCleanupLedger,type AttachmentCleanupIdentity,type AttachmentCleanupClaim,type AttachmentCleanupFailure} from '../attachment-cleanup-ledger';
 ﻿import {randomUUID} from 'node:crypto';import type {PoolClient} from 'pg';
 import {authorizeDraftScope,authorizeAttachmentRemoval,opaqueAttachmentAuthorizationError,type AttachmentBoundParent} from '../authorization/attachment-authorization';
@@ -78,12 +81,32 @@ export class AttachmentLifecycleLedger {
   if(row.pending_slot_held)await this.quotas.changeCapacity(client,row.uploader_id,{pendingDelta:-1});
   return {state:'DELETED' as const};
  }
+ /** Internal ordered lock boundary only. No read permission, quiescence proof or mutation. */
+ async lockForTerminalRetention(client:PoolClient,id:string):Promise<void>{await this.locked(client,id);}
+ async terminalProducer(client:PoolClient,id:string,owner:string,producer:'upload'|'processing'):Promise<boolean>{
+  uuid(owner);if(!['upload','processing'].includes(producer))return conflict();const {row}=await this.locked(client,id);
+  if(!['DELETED','REJECTED'].includes(row.state))return false;
+  if(producer==='upload')return row.upload_slot_held&&row.lease_owner===owner;
+  const lease=(await client.query<{owner:string|null;attachment_id:string|null}>('SELECT owner,attachment_id FROM attachment_processing_lease WHERE singleton FOR UPDATE')).rows[0];
+  return !!lease&&lease.owner===owner&&lease.attachment_id===id;
+ }
  async deleteOwned(client:PoolClient,actor:string,id:string):Promise<{state:'DELETED'}>{
   try{const {row,binding}=await this.locked(client,id,actor);return await this.tombstone(client,row,binding,'REMOVED');}
   catch(error){if(error instanceof AttachmentLifecycleError)throw opaqueAttachmentAuthorizationError();throw error;}
  }
  async expireDraft(client:PoolClient,id:string):Promise<{state:'DELETED'}>{const {row,binding}=await this.locked(client,id);if(binding||row.first_bound_at||!row.expired)return conflict();return this.tombstone(client,row,binding,'EXPIRED');}
  async interruptUpload(client:PoolClient,id:string,leaseOwner:string):Promise<{state:'DELETED'}>{uuid(leaseOwner);const {row,binding}=await this.locked(client,id);if(row.state!=='UPLOADING'||row.lease_owner!==leaseOwner||!row.upload_slot_held)return conflict();return this.tombstone(client,row,binding,'INTERRUPTED');}
+ /** Internal receipt after the actual replay body/spool transport has stopped.
+  * Current user eligibility is irrelevant to releasing retained resource debt.
+  * Exact ownership is required; stale owners cannot settle a newer intake. */
+ async settleReplay(client:PoolClient,proof:{attachmentId:string;owner:string;producerQuiesced:true}):Promise<void>{
+  uuid(proof.owner);if(proof.producerQuiesced!==true)return conflict();
+  const {row}=await this.locked(client,proof.attachmentId);
+  const replay=(await client.query<{owner:string}>('SELECT owner FROM attachment_upload_replay_leases WHERE attachment_id=$1 FOR UPDATE',[row.id])).rows[0];
+  if(!replay||replay.owner!==proof.owner)return conflict();
+  await this.quotas.changeCapacity(client,row.uploader_id,{uploadDelta:-1});
+  if((await client.query('DELETE FROM attachment_upload_replay_leases WHERE attachment_id=$1 AND owner=$2',[row.id,proof.owner])).rowCount!==1)return conflict();
+ }
  async settleUpload(client:PoolClient,proof:{attachmentId:string;leaseOwner:string;producerQuiesced:true}):Promise<void>{
   uuid(proof.leaseOwner);if(proof.producerQuiesced!==true)return conflict();const {row}=await this.locked(client,proof.attachmentId);
   if(!['DELETED','REJECTED'].includes(row.state))return conflict();
@@ -116,6 +139,11 @@ export class AttachmentLifecycleLedger {
  }
  /** Background transaction adapters: re-enter system domain locks before the
   * cleanup ledger. No provider I/O or user-facing authorization grant. */
+ /** Durable infrastructure acknowledgement after a completed PUT, including
+  * late results after revoke/delete. This grants no user metadata or byte access;
+  * the caller must freshly authorize every subsequent public state transition. */
+ async abandonUnsent(client:PoolClient,claim:AttachmentPutClaim,certificate:PutUnsentCertificate,closure:PutLocalClosure):Promise<void>{await this.locked(client,claim.attachmentId);await new AttachmentObjectLedger().abandonUnsent(client,claim,certificate,closure);}
+ async recordPutResult(client:PoolClient,claim:AttachmentPutClaim,observed:AttachmentStoredObject):Promise<{acceptedForNextStep:boolean}>{await this.locked(client,claim.attachmentId);return new AttachmentObjectLedger().recordPutResult(client,claim,observed);}
  async claimCleanup(client:PoolClient,id:AttachmentCleanupIdentity,owner:string):Promise<AttachmentCleanupClaim>{await this.locked(client,id.attachmentId);return new AttachmentCleanupLedger().claim(client,id,owner);}
  async finishCleanup(client:PoolClient,claim:AttachmentCleanupClaim):Promise<void>{
   await this.locked(client,claim.attachmentId);
@@ -128,9 +156,10 @@ export class AttachmentLifecycleLedger {
  async completePhysicalCleanup(client:PoolClient,id:string):Promise<void>{
   const {row}=await this.locked(client,id);if(!['DELETED','REJECTED'].includes(row.state))return conflict();if(row.physical_cleanup_at)return;
   if(row.upload_slot_held||row.pending_slot_held||row.lease_owner!==null)return conflict();
-  const objects=(await client.query<{status:string;put_uncertain:boolean;put_claim:string|null;put_settled_at:Date|null}>('SELECT status,put_uncertain,put_claim,put_settled_at FROM attachment_objects WHERE attachment_id=$1 ORDER BY id FOR UPDATE',[id])).rows;
+  if((await client.query('SELECT attachment_id FROM attachment_upload_replay_leases WHERE attachment_id=$1 FOR UPDATE',[id])).rowCount)return conflict();
+  const objects=(await client.query<{status:string;put_uncertain:boolean;put_claim:string|null;put_settled_at:Date|null;put_abandoned_at:Date|null}>('SELECT status,put_uncertain,put_claim,put_settled_at,put_abandoned_at FROM attachment_objects WHERE attachment_id=$1 ORDER BY id FOR UPDATE',[id])).rows;
   const jobs=(await client.query<{completed_at:Date|null;lease_owner:string|null}>('SELECT completed_at,lease_owner FROM attachment_cleanup_jobs WHERE attachment_id=$1 ORDER BY id FOR UPDATE',[id])).rows;
-  if(objects.some(o=>o.status!=='DELETED'||o.put_uncertain||(o.put_claim!==null&&o.put_settled_at===null))||jobs.some(j=>!j.completed_at||j.lease_owner!==null))return conflict();
+  if(objects.some(o=>o.status!=='DELETED'||o.put_uncertain||(o.put_claim!==null&&o.put_settled_at===null&&!o.put_abandoned_at))||jobs.some(j=>!j.completed_at||j.lease_owner!==null))return conflict();
   // Quota rows precede the singleton lease. Failure below rolls back all counters.
   await this.quotas.changeCapacity(client,row.uploader_id,{bytesDelta:-Number(row.reserved_bytes),metadataDelta:-1});
   const processing=(await client.query<{owner:string|null;attachment_id:string|null}>('SELECT owner,attachment_id FROM attachment_processing_lease WHERE singleton FOR UPDATE')).rows[0];

@@ -1,12 +1,15 @@
+import {createPutSupervisionAuthority} from './put-supervision-proof';
 import { createHash } from 'node:crypto';
+import {ATTACHMENT_LIMITS as L} from '../attachment-policy';
 import { Readable, Transform, pipeline } from 'node:stream';
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, type HeadObjectCommandOutput, type GetObjectCommandOutput, type ListObjectsV2CommandOutput, type PutObjectCommandOutput } from '@aws-sdk/client-s3';
-import { AttachmentStorageError, type AttachmentObjectLocator, type AttachmentStoredObject, type AttachmentByteRange, type AttachmentStorage } from './attachment-storage.port';
+import { AttachmentStorageError, type AttachmentObjectLocator, type AttachmentStoredObject, type AttachmentByteRange, type AttachmentStorage, type AttachmentPutSupervision } from './attachment-storage.port';
 
 const PREFIX = 'attachments/test/v1/';
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const KINDS = new Set(['source', 'normalized', 'thumbnail']);
+interface PutSupervisionEntry {authority:ReturnType<typeof createPutSupervisionAuthority>;used:boolean;reserved:boolean;}
 type Command = PutObjectCommand | HeadObjectCommand | GetObjectCommand | DeleteObjectCommand | ListObjectsV2Command;
 export interface AttachmentStorageTransport { send(command: Command, options: { abortSignal: AbortSignal }): Promise<unknown>; destroy(): void }
 export interface R2AttachmentStorageConfiguration { classification: 'approved-test'; endpoint: string; bucket: string; accessKeyId: string; secretAccessKey: string }
@@ -21,6 +24,15 @@ function validateSize(locator: AttachmentObjectLocator, size: number): void { if
 function validateVersion(value: unknown): asserts value is string { if (typeof value !== 'string' || !/^[\x21-\x7e]{1,256}$/.test(value)) fail('INTEGRITY'); }
 function status(error: unknown): number | undefined { return (error as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode; }
 function safeError(error: unknown): AttachmentStorageError { if (error instanceof AttachmentStorageError) return error; return new AttachmentStorageError(status(error) === 404 ? 'NOT_FOUND' : status(error) === 409 || status(error) === 412 ? 'CONFLICT' : 'UNAVAILABLE'); }
+function closeProviderBody(source:Readable):Promise<void>{
+  if(source.closed)return Promise.resolve();
+  return new Promise<void>(resolve=>{
+    const ignore=()=>undefined;
+    source.on('error',ignore);
+    source.once('close',()=>{source.removeListener('error',ignore);resolve();});
+    source.destroy();
+  });
+}
 function ownedHead(locator: AttachmentObjectLocator, result: HeadObjectCommandOutput): AttachmentStoredObject {
   const metadata = result.Metadata;
   if (!metadata || !SHA256.test(metadata.sha256 || '')) fail('OWNERSHIP');
@@ -31,7 +43,7 @@ function ownedHead(locator: AttachmentObjectLocator, result: HeadObjectCommandOu
   return { locator: { ...locator }, sizeBytes: result.ContentLength!, sha256: metadata.sha256, version: result.ETag };
 }
 /** A size/digest guard whose final failure prevents a successful completed PUT/read. */
-function byteGuard(size: number, checksum?: string): Transform {
+function byteGuard(size: number, checksum?: string, closeOwnedSource?:()=>Promise<void>): Transform {
   let received = 0; const digest = createHash('sha256');
   return new Transform({ highWaterMark: 64 * 1024, transform(chunk: Buffer, _encoding, callback) {
     received += chunk.length;
@@ -39,7 +51,13 @@ function byteGuard(size: number, checksum?: string): Transform {
     digest.update(chunk); callback(null, chunk);
   }, flush(callback) {
     callback(received !== size || (checksum && digest.digest('hex') !== checksum) ? new AttachmentStorageError('INTEGRITY') : undefined);
-  }, destroy(error, callback) { callback(error ? safeError(error) : null); } });
+  }, destroy(error, callback) {
+    const failure=error?safeError(error):null;
+    if(!closeOwnedSource){callback(failure);return;}
+    // A returned guard must not report closure while its hidden provider body
+    // still owns a socket/resource. Destruction requested is not actual closure.
+    void closeOwnedSource().then(()=>callback(failure),()=>callback(new AttachmentStorageError('UNAVAILABLE')));
+  } });
 }
 
 export class R2AttachmentStorage implements AttachmentStorage {
@@ -48,6 +66,27 @@ export class R2AttachmentStorage implements AttachmentStorage {
   private readonly active = new Set<AbortController>();
   private readonly streams = new Set<Readable>();
   private closed = false;
+  private readonly putSupervisions=new Map<string,PutSupervisionEntry>();
+  private supervisionReservations=0;
+  private readonly handles=new WeakMap<AttachmentPutSupervision,PutSupervisionEntry>();
+  /** Observe actual SDK request settlement, independently of foreground timeout.
+   * Released unresolved sends remain counted, without retaining a locator map.
+   * Caller still owns durable claim fencing and file/native producer closure. */
+  supervisePut(locator:AttachmentObjectLocator):AttachmentPutSupervision {
+    const key=attachmentObjectKey(locator);
+    if(this.closed||this.supervisionReservations>=L.deploymentMetadata*3)fail('UNAVAILABLE');
+    if(this.putSupervisions.has(key))fail('CONFLICT');
+    let entry!:PutSupervisionEntry;
+    const authority=createPutSupervisionAuthority(locator,()=>{if(this.putSupervisions.get(key)===entry)this.putSupervisions.delete(key);this.releaseSupervisionReservation(entry);});
+    entry={authority,used:false,reserved:true};this.handles.set(authority.handle,entry);
+    this.putSupervisions.set(key,entry);this.supervisionReservations++;return authority.handle;
+  }
+  private releaseSupervisionReservation(entry:PutSupervisionEntry):void {
+    if(entry.authority.released&&entry.authority.state!=='STARTED'&&entry.reserved){entry.reserved=false;this.supervisionReservations--;}
+  }
+  private actualSendSettled(entry:PutSupervisionEntry|undefined):void {
+    if(!entry)return;entry.authority.settle();this.releaseSupervisionReservation(entry);
+  }
   constructor(configuration: R2AttachmentStorageConfiguration, transport?: AttachmentStorageTransport) {
     let endpoint: URL;
     try { endpoint = new URL(configuration.endpoint); } catch { fail('INVALID_CONFIGURATION'); }
@@ -55,37 +94,54 @@ export class R2AttachmentStorage implements AttachmentStorage {
     const client = transport ? undefined : new S3Client({ endpoint: endpoint.origin, region: 'auto', forcePathStyle: true, maxAttempts: 1, requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED', credentials: { accessKeyId: configuration.accessKeyId, secretAccessKey: configuration.secretAccessKey } });
     this.transport = transport || { send: client!.send.bind(client!) as AttachmentStorageTransport['send'], destroy: () => client!.destroy() };
   }
-  private async call<T>(command: Command, signal?: AbortSignal): Promise<T> {
+  private async call<T>(command: Command, signal?: AbortSignal, supervision?:PutSupervisionEntry): Promise<T> {
     if (this.closed) fail('UNAVAILABLE');
     const controller = new AbortController(); this.active.add(controller);
     const abort = () => controller.abort(); const timer = setTimeout(abort, 10000);
     signal?.addEventListener('abort', abort, { once: true });
     const interrupted = new Promise<never>((_resolve, reject) => controller.signal.addEventListener('abort', () => reject(new AttachmentStorageError('UNAVAILABLE')), { once: true }));
+    let actualStarted=false,actualSettled=false;
     try {
       if (signal?.aborted) fail('UNAVAILABLE');
       // A transport can finish after abort won the race. Its eventual response
       // still belongs to this request and must not leave a socket/body alive.
-      const operation = this.transport.send(command, { abortSignal: controller.signal }).then(result => {
+      if(supervision)supervision.authority.start();
+      let dispatched:Promise<unknown>;
+      try{actualStarted=true;dispatched=this.transport.send(command,{abortSignal:controller.signal});}
+      catch(error){actualSettled=true;this.actualSendSettled(supervision);throw error;}
+      const operation = Promise.resolve(dispatched).then(async result => {
+        this.actualSendSettled(supervision);
         if (controller.signal.aborted || this.closed) {
           const body = (result as { Body?: unknown } | null)?.Body;
-          if (body instanceof Readable) body.destroy();
+          if (body instanceof Readable) await closeProviderBody(body);
+          actualSettled=true;
           fail('UNAVAILABLE');
         }
+        actualSettled=true;
         return result;
-      });
+      },error=>{actualSettled=true;this.actualSendSettled(supervision);throw error;});
       return await Promise.race([operation, interrupted]) as T;
     }
-    catch (error) { throw safeError(error); }
+    catch (error) { const safe=safeError(error);throw actualStarted&&!actualSettled?new AttachmentStorageError(safe.code,false):safe; }
     finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); this.active.delete(controller); }
   }
-  async putTemporary(input: { locator: AttachmentObjectLocator; body: Readable; sizeBytes: number; sha256: string; signal?: AbortSignal }): Promise<AttachmentStoredObject> {
+  async putSupervised(handle:AttachmentPutSupervision,input:Parameters<AttachmentStorage['putTemporary']>[0]):Promise<AttachmentStoredObject>{
+    const entry=this.handles.get(handle),key=attachmentObjectKey(input.locator);
+    if(!entry||entry.authority.released||entry.authority.state!=='ISSUED'||this.putSupervisions.get(key)!==entry)fail('CONFLICT');
+    return this.put(input,entry);
+  }
+  async putTemporary(input:Parameters<AttachmentStorage['putTemporary']>[0]):Promise<AttachmentStoredObject>{
+    return this.put(input,this.putSupervisions.get(attachmentObjectKey(input.locator)));
+  }
+  private async put(input:Parameters<AttachmentStorage['putTemporary']>[0],supervision?:PutSupervisionEntry):Promise<AttachmentStoredObject>{
     const key = attachmentObjectKey(input.locator); validateSize(input.locator, input.sizeBytes); if (!SHA256.test(input.sha256) || !(input.body instanceof Readable)) fail('INVALID_INPUT');
+    if(supervision){if(supervision.used||supervision.authority.released||supervision.authority.state!=='ISSUED')fail('CONFLICT');supervision.used=true;}
     const guarded = byteGuard(input.sizeBytes, input.sha256); let streamFailure: unknown;
     // Consume errors immediately even if transport fails before reading its request body.
     guarded.on('error', error => { streamFailure = error; });
     pipeline(input.body, guarded, error => { if (error) streamFailure = error; });
     try {
-      const result = await this.call<PutObjectCommandOutput>(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: guarded, ContentLength: input.sizeBytes, ContentType: 'application/octet-stream', CacheControl: 'private, no-store', IfNoneMatch: '*', Metadata: metadataFor(input.locator, input.sha256) }), input.signal);
+      const result = await this.call<PutObjectCommandOutput>(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: guarded, ContentLength: input.sizeBytes, ContentType: 'application/octet-stream', CacheControl: 'private, no-store', IfNoneMatch: '*', Metadata: metadataFor(input.locator, input.sha256) }), input.signal, supervision);
       if (streamFailure) throw streamFailure;
       // A transport returning before the stream finishes cannot establish a successful persisted upload.
       if (!guarded.readableEnded) fail('INTEGRITY');
@@ -110,7 +166,7 @@ export class R2AttachmentStorage implements AttachmentStorage {
       if (ownedHead(locator, { ...response, ContentLength: object.sizeBytes }).version !== object.version || response.Metadata?.sha256 !== object.sha256) fail('INTEGRITY');
       const responseBytes = range ? range.end - range.start + 1 : object.sizeBytes;
       if (response.ContentLength !== responseBytes || (range ? response.ContentRange !== `bytes ${range.start}-${range.end}/${object.sizeBytes}` : response.ContentRange !== undefined)) fail('INTEGRITY');
-      const body = byteGuard(responseBytes, range ? undefined : object.sha256);
+      const body = byteGuard(responseBytes, range ? undefined : object.sha256,()=>closeProviderBody(source));
       // Keep timers alive through body consumption, independently of SDK header completion.
       const abort = () => { source.destroy(new AttachmentStorageError('UNAVAILABLE')); body.destroy(new AttachmentStorageError('UNAVAILABLE')); };
       let idle = setTimeout(abort, 10000); const total = setTimeout(abort, 60000);
@@ -121,7 +177,7 @@ export class R2AttachmentStorage implements AttachmentStorage {
       pipeline(source, body, error => { if (error) body.destroy(safeError(error)); });
       if (signal?.aborted || this.closed) abort();
       return { ...object, body, responseBytes };
-    } catch (error) { source.destroy(); throw safeError(error); }
+    } catch (error) { await closeProviderBody(source); throw safeError(error); }
   }
   async deleteOwned(expected: AttachmentStoredObject): Promise<void> {
     const locator=expected.locator, key=attachmentObjectKey(locator);

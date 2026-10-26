@@ -64,12 +64,12 @@ export class AttachmentFinalizationLedger {
   await client.query('UPDATE attachment_processing_lease SET owner=$1,attachment_id=$2,expires_at=$3 WHERE singleton',[leaseOwner,row.id,next.lease_expires_at]);
   return {attachmentId:row.id,attachmentVersion:Number(next.version),leaseOwner,source};
  }
- async prepareArtifacts(client:PoolClient,actor:string,fence:AttachmentProcessingFence,proof:ValidatedProcessorProof):Promise<AttachmentPreparedArtifacts>{
+ async prepareArtifacts(client:PoolClient,actor:string,fence:AttachmentProcessingFence,proof:ValidatedProcessorProof,bindSupervision?:(claim:AttachmentPutClaim)=>Promise<AttachmentPutClaim>):Promise<AttachmentPreparedArtifacts>{
   const facts=processorProofFacts(proof),row=await this.locked(client,actor,fence.attachmentId);this.fence(row,fence);const source=await this.source(client,row);
   if(!exact(source,fence.source)||facts.format!==row.format||facts.sourceBytes!==Number(row.expected_bytes)||facts.sourceSha256!==source.sha256||facts.filename!==row.display_filename||facts.mime!==row.declared_mime||row.normalized_object_id||row.thumbnail_object_id)return conflict();
   if((await client.query("SELECT 1 FROM attachment_objects WHERE attachment_id=$1 AND variant<>'source' AND status<>'DELETED' LIMIT 1",[row.id])).rowCount)return conflict();
   const attempt=randomUUID(),entries=facts.artifacts.map(artifact=>({artifact,id:randomUUID()})).sort((a,b)=>a.id<b.id?-1:1),claims:AttachmentPutClaim[]=[];
-  for(const {artifact,id} of entries){await client.query('INSERT INTO attachment_objects(id,attachment_id,attempt_id,variant,sha256,byte_count,content_type) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,row.id,attempt,artifact.variant,artifact.sha256,artifact.sizeBytes,artifact.contentType]);claims.push(await this.objects.claimPut(client,row.id,id,fence,randomUUID()));}
+  for(const {artifact,id} of entries){await client.query('INSERT INTO attachment_objects(id,attachment_id,attempt_id,variant,sha256,byte_count,content_type) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,row.id,attempt,artifact.variant,artifact.sha256,artifact.sizeBytes,artifact.contentType]);const claim=await this.objects.claimPut(client,row.id,id,fence,randomUUID());claims.push(bindSupervision?await bindSupervision(claim):claim);}
   await this.singleton(client,row,fence);
   const frozen=Object.freeze({claims:Object.freeze(structuredClone(claims))}) as unknown as AttachmentPreparedArtifacts;
   plans.set(frozen,{fence:structuredClone(fence),facts,claims:structuredClone(claims)});return frozen;

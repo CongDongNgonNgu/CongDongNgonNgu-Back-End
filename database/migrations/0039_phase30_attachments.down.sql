@@ -1,3 +1,5 @@
+DROP FUNCTION phase30_terminal_purge_eligible(uuid);
+DROP TABLE attachment_upload_replay_leases;
 DROP TABLE attachment_initiation_admissions;
 DROP FUNCTION phase30_admission_guard();
 -- Disposable isolated schema only. Never roll back shared TEST with this file.

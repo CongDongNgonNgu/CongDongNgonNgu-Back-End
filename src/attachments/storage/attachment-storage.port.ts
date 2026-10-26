@@ -27,5 +27,18 @@ export interface AttachmentStorage {
 }
 export type AttachmentStorageErrorCode = 'INVALID_CONFIGURATION' | 'INVALID_INPUT' | 'INTEGRITY' | 'OWNERSHIP' | 'NOT_FOUND' | 'CONFLICT' | 'UNAVAILABLE';
 export class AttachmentStorageError extends Error {
-  constructor(public readonly code: AttachmentStorageErrorCode) { super(`ATTACHMENT_STORAGE_${code}`); this.name = 'AttachmentStorageError'; }
+  constructor(public readonly code: AttachmentStorageErrorCode,public readonly producerQuiesced:boolean=true) { super(`ATTACHMENT_STORAGE_${code}`); this.name = 'AttachmentStorageError'; }
+}
+
+/** Internal actual SDK-send observer; it is not proof that file/native producers
+ * stopped or that a remote write is absent. Issue before one consumed PUT claim. */
+export interface AttachmentPutSupervision {
+  readonly id:string;
+  retireUnsent():import('./put-supervision-proof').PutUnsentCertificate;
+  waitForActualSendSettlement():Promise<void>;
+  release():void;
+}
+export interface SupervisableAttachmentStorage extends AttachmentStorage {
+  supervisePut(locator:AttachmentObjectLocator):AttachmentPutSupervision;
+  putSupervised(handle:AttachmentPutSupervision,input:Parameters<AttachmentStorage['putTemporary']>[0]):Promise<AttachmentStoredObject>;
 }

@@ -28,6 +28,38 @@ describe('Phase30 atomic quota/rate counters',()=>{
   for(let i=0;i<8;i++)await transaction(db.pool,c=>ledger.consumeInitiation(c,actor,4*1048576));
   await expect(transaction(db.pool,c=>ledger.consumeInitiation(c,actor,1))).rejects.toThrow('ATTACHMENT_RATE_LIMITED');
  });
+ it('bounds every raw-body attempt separately while keeping initiation idempotency counters unchanged',async()=>{
+  await transaction(db.pool,c=>ledger.consumeInitiation(c,actor,3));
+  for(let i=0;i<10;i++)await transaction(db.pool,c=>ledger.consumeUploadAttempt(c,actor,3));
+  await expect(transaction(db.pool,c=>ledger.consumeUploadAttempt(c,actor,3))).rejects.toThrow('ATTACHMENT_RATE_LIMITED');
+  expect((await db.pool.query("SELECT used FROM attachment_quota_counters WHERE kind='ACTOR' AND subject=$1 AND action='initiate'",[actor])).rows[0].used).toBe('1');
+  now=new Date('2026-10-22T11:00:00.000Z');await expect(transaction(db.pool,c=>ledger.consumeUploadAttempt(c,actor,3))).resolves.toBeUndefined();
+ });
+ it('charges the full expected ingress bound on each admitted attempt and enforces daily boundaries',async()=>{
+  for(let i=0;i<8;i++)await transaction(db.pool,c=>ledger.consumeUploadAttempt(c,actor,4*1048576));
+  await expect(transaction(db.pool,c=>ledger.consumeUploadAttempt(c,actor,1))).rejects.toThrow('ATTACHMENT_RATE_LIMITED');
+  now=new Date('2026-10-23T00:00:00.000Z');await expect(transaction(db.pool,c=>ledger.consumeUploadAttempt(c,actor,1))).resolves.toBeUndefined();
+ });
+ it('caps deployment raw attempts across independent actors without partial counter charges',async()=>{
+  for(let i=0;i<40;i++)await transaction(db.pool,c=>ledger.consumeUploadAttempt(c,randomUUID(),1));
+  const fresh=randomUUID();await expect(transaction(db.pool,c=>ledger.consumeUploadAttempt(c,fresh,1))).rejects.toThrow('ATTACHMENT_RATE_LIMITED');
+  expect((await db.pool.query("SELECT count(*)::int n FROM attachment_quota_counters WHERE kind='ACTOR' AND subject=$1",[fresh])).rows[0].n).toBe(0);
+ });
+ it('serializes concurrent actors at the 128MiB deployment ingress boundary without partial charges',async()=>{
+  const initialActors=Array.from({length:4},()=>randomUUID());
+  for(const uploader of initialActors)for(let i=0;i<7;i++)await transaction(db.pool,c=>ledger.consumeUploadAttempt(c,uploader,4*1048576));
+  // 112MiB already admitted; five independent actors compete for the last16MiB.
+  // The hourly count remains below40, so the rejected actor proves the byte cap.
+  const contenders=Array.from({length:5},()=>randomUUID());
+  const results=await Promise.allSettled(contenders.map(uploader=>transaction(db.pool,c=>ledger.consumeUploadAttempt(c,uploader,4*1048576))));
+  expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(4);
+  expect(results.filter(r=>r.status==='rejected')).toHaveLength(1);
+  const rejected=contenders[results.findIndex(r=>r.status==='rejected')];
+  expect((await db.pool.query("SELECT count(*)::int n FROM attachment_quota_counters WHERE kind='ACTOR' AND subject=$1",[rejected])).rows[0].n).toBe(0);
+  const global=(await db.pool.query("SELECT action,used FROM attachment_quota_counters WHERE kind='DEPLOYMENT' ORDER BY action")).rows;
+  expect(global).toEqual([{action:'ingress',used:String(128*1048576)},{action:'upload_attempt',used:'32'}]);
+  await expect(transaction(db.pool,c=>ledger.consumeUploadAttempt(c,rejected,1))).rejects.toThrow('ATTACHMENT_RATE_LIMITED');
+ });
  it('separates anonymous trusted-IP buckets',async()=>{
   const ip='a'.repeat(64);for(let i=0;i<30;i++)await transaction(db.pool,c=>ledger.consumeRead(c,null,ip));
   await expect(transaction(db.pool,c=>ledger.consumeRead(c,null,ip))).rejects.toThrow('ATTACHMENT_RATE_LIMITED');

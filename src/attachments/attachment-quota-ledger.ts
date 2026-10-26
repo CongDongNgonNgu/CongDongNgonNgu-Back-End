@@ -3,7 +3,7 @@ import {ATTACHMENT_LIMITS as L} from './attachment-policy';
 type Failure='ATTACHMENT_RATE_LIMITED'|'ATTACHMENT_QUOTA_EXCEEDED'|'ATTACHMENT_BUSY'|'ATTACHMENT_QUOTA_INTEGRITY'|'ATTACHMENT_QUOTA_LOCK_ORDER';
 export class AttachmentQuotaError extends Error {constructor(readonly code:Failure){super(code);this.name='AttachmentQuotaError';}}
 type Kind='ACTOR'|'IP'|'DEPLOYMENT';
-interface Change {kind:Kind;subject:string;action:'bytes'|'metadata'|'upload'|'pending'|'initiate'|'source'|'read';window:Date;delta:number;ceiling:number;}
+interface Change {kind:Kind;subject:string;action:'bytes'|'metadata'|'upload'|'pending'|'initiate'|'source'|'read'|'upload_attempt'|'ingress';window:Date;delta:number;ceiling:number;}
 export interface AttachmentCapacityChange {bytesDelta?:number;metadataDelta?:0|1|-1;uploadDelta?:0|1|-1;pendingDelta?:0|1|-1;}
 interface HeldCounterLocks {xid:string;keys:Set<string>;maximum:Change|null;failed:boolean;}
 const heldLocks=new WeakMap<PoolClient,HeldCounterLocks>();
@@ -73,6 +73,15 @@ export class AttachmentQuotaLedger {
   actorId(actor);if(!Number.isSafeInteger(sourceBytes)||sourceBytes<1||sourceBytes>L.imageBytes)return fail('ATTACHMENT_QUOTA_INTEGRITY');
   const w=await this.windows(client);
   await this.apply(client,[{kind:'ACTOR',subject:actor,action:'initiate',window:w.hour,delta:1,ceiling:L.actorInitiationsPerHour},{kind:'ACTOR',subject:actor,action:'source',window:w.day,delta:sourceBytes,ceiling:L.actorSourceBytesPerDay},{kind:'DEPLOYMENT',subject:DEPLOYMENT,action:'initiate',window:w.hour,delta:1,ceiling:L.deploymentInitiationsPerHour},{kind:'DEPLOYMENT',subject:DEPLOYMENT,action:'source',window:w.day,delta:sourceBytes,ceiling:L.deploymentSourceBytesPerDay}],'ATTACHMENT_RATE_LIMITED');
+ }
+ /** Rate-only admission before each raw body, including completed replays and
+  * failed intakes. Conservatively charge its exact expected maximum bytes once;
+  * this is separate from initiation idempotency and retained-byte reservations.
+  * Uses the already frozen attempt/hour and source/day ceilings, no new budget. */
+ async consumeUploadAttempt(client:PoolClient,actor:string,expectedBytes:number):Promise<void>{
+  actorId(actor);if(!Number.isSafeInteger(expectedBytes)||expectedBytes<1||expectedBytes>L.imageBytes)return fail('ATTACHMENT_QUOTA_INTEGRITY');
+  const w=await this.windows(client);
+  await this.apply(client,[{kind:'ACTOR',subject:actor,action:'upload_attempt',window:w.hour,delta:1,ceiling:L.actorInitiationsPerHour},{kind:'ACTOR',subject:actor,action:'ingress',window:w.day,delta:expectedBytes,ceiling:L.actorSourceBytesPerDay},{kind:'DEPLOYMENT',subject:DEPLOYMENT,action:'upload_attempt',window:w.hour,delta:1,ceiling:L.deploymentInitiationsPerHour},{kind:'DEPLOYMENT',subject:DEPLOYMENT,action:'ingress',window:w.day,delta:expectedBytes,ceiling:L.deploymentSourceBytesPerDay}],'ATTACHMENT_RATE_LIMITED');
  }
  async consumeRead(client:PoolClient,actor:string|null,trustedIpHash?:string):Promise<void>{
   if(actor!==null)actorId(actor);else if(!/^[a-f0-9]{64}$/.test(trustedIpHash??''))return fail('ATTACHMENT_QUOTA_INTEGRITY');

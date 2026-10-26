@@ -1,3 +1,5 @@
+import {AttachmentQuotaLedger} from '../../src/attachments/attachment-quota-ledger';
+import {AttachmentLifecycleLedger} from '../../src/attachments/lifecycle/attachment-lifecycle-ledger';
 ﻿import {randomUUID} from 'node:crypto';
 import {readdir} from 'node:fs/promises';import path from 'node:path';
 import {SqlHarness} from '../phase22/sql-harness';import {transaction,lockAccounts} from '../../src/study-groups/study-group.store';
@@ -6,6 +8,7 @@ import {AttachmentObjectLedger} from '../../src/attachments/attachment-object-le
 import {patchDraftMetadata} from '../../src/attachments/initiation/attachment-draft-repository';
 
 describe('Phase30 fenced upload reception',()=>{
+ const lifecycle=new AttachmentLifecycleLedger();
  const db=new SqlHarness(),uploads=new AttachmentUploadLedger(),objects=new AttachmentObjectLedger();let actor:string,other:string,language:string;
  const tx=<T>(f:(c:import('pg').PoolClient)=>Promise<T>)=>transaction(db.pool,f);
  beforeAll(async()=>{await db.open();await db.migration('0027_phase22_study_groups.down.sql');const files=(await readdir(path.resolve(__dirname,'../../database/migrations'))).filter(f=>/^\d{4}_[\w-]+\.sql$/.test(f)&&Number(f.slice(0,4))>=2&&Number(f.slice(0,4))<=39).sort();for(const f of files)await db.migration(f);},180000);
@@ -47,4 +50,59 @@ describe('Phase30 fenced upload reception',()=>{
   expect((await db.pool.query("SELECT state FROM attachments WHERE id=$1",[id])).rows[0].state).toBe('UPLOADING');
  });
  it('rechecks current actor authorization at source claim and pending promotion',async()=>{const id=await draft(),fence=await tx(c=>uploads.beginUpload(c,actor,id));await db.pool.query("UPDATE users SET status='DISABLED' WHERE id=$1",[actor]);await expect(tx(c=>uploads.prepareSource(c,actor,fence,bytes))).rejects.toThrow();expect((await db.pool.query('SELECT count(*)::int n FROM attachment_objects')).rows[0].n).toBe(0);});
+
+ async function completed(){const id=await draft(),{fence,claim}=await received(id);await tx(c=>uploads.markPending(c,actor,fence,claim.objectId));return {id,sourceId:claim.objectId};}
+ it('admits one completed-body replay, denies expired-lease takeover, and changes neither state nor objects',async()=>{
+  const {id}=await completed(),before=(await db.pool.query('SELECT state,version,lease_owner FROM attachments WHERE id=$1',[id])).rows[0];
+  const outcomes=await Promise.allSettled([tx(c=>uploads.beginReplay(c,actor,id)),tx(c=>uploads.beginReplay(c,actor,id))]);expect(outcomes.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+  const replay=(outcomes.find(r=>r.status==='fulfilled') as PromiseFulfilledResult<Awaited<ReturnType<AttachmentUploadLedger['beginReplay']>>>).value;
+  await db.pool.query("UPDATE attachment_upload_replay_leases SET expires_at=clock_timestamp()-interval '1 second' WHERE attachment_id=$1",[id]);await expect(tx(c=>uploads.beginReplay(c,actor,id))).rejects.toThrow();
+  await expect(tx(c=>uploads.verifyCompletedSource(c,actor,id,bytes))).resolves.toEqual({state:'PENDING'});
+  expect((await db.pool.query('SELECT state,version,lease_owner FROM attachments WHERE id=$1',[id])).rows[0]).toEqual(before);expect((await db.pool.query('SELECT count(*)::int n FROM attachment_objects WHERE attachment_id=$1',[id])).rows[0].n).toBe(1);
+  await tx(c=>lifecycle.settleReplay(c,{...replay,producerQuiesced:true}));expect((await db.pool.query("SELECT sum(used)::int n FROM attachment_quota_counters WHERE action='upload'")).rows[0].n).toBe(0);
+ });
+ it('releases replay intake only on exact quiesced ownership and stale owners cannot release a newer intake',async()=>{
+  const {id}=await completed(),first=await tx(c=>uploads.beginReplay(c,actor,id));
+  await expect(tx(c=>lifecycle.settleReplay(c,{...first,owner:randomUUID(),producerQuiesced:true}))).rejects.toThrow();
+  await expect(tx(c=>lifecycle.settleReplay(c,{...first,producerQuiesced:false} as never))).rejects.toThrow();
+  await tx(c=>lifecycle.settleReplay(c,{...first,producerQuiesced:true}));const second=await tx(c=>uploads.beginReplay(c,actor,id));
+  await expect(tx(c=>lifecycle.settleReplay(c,{...first,producerQuiesced:true}))).rejects.toThrow();
+  expect((await db.pool.query('SELECT owner FROM attachment_upload_replay_leases WHERE attachment_id=$1',[id])).rows[0].owner).toBe(second.owner);
+  await tx(c=>lifecycle.settleReplay(c,{...second,producerQuiesced:true}));
+ });
+ it('retains the replay fence through delete/revocation and permits only internal quiesced settlement without access grants',async()=>{
+  const {id}=await completed(),replay=await tx(c=>uploads.beginReplay(c,actor,id));await tx(c=>lifecycle.deleteOwned(c,actor,id));await db.pool.query("UPDATE users SET status='DISABLED' WHERE id=$1",[actor]);
+  await expect(tx(c=>uploads.verifyCompletedSource(c,actor,id,bytes))).rejects.toThrow();await expect(tx(c=>lifecycle.completePhysicalCleanup(c,id))).rejects.toThrow();
+  // Remove every other cleanup blocker: the replay fence alone must still forbid
+  // physical completion and reservation release until actual intake quiescence.
+  await db.pool.query("UPDATE attachment_objects SET status='DELETED',deleted_at=clock_timestamp(),object_version=object_version+1 WHERE attachment_id=$1",[id]);
+  await db.pool.query('UPDATE attachment_cleanup_jobs SET completed_at=clock_timestamp(),lease_owner=NULL,lease_expires_at=NULL WHERE attachment_id=$1',[id]);
+  await expect(tx(c=>lifecycle.completePhysicalCleanup(c,id))).rejects.toThrow();
+  await expect(db.pool.query('UPDATE attachments SET physical_cleanup_at=clock_timestamp(),version=version+1 WHERE id=$1',[id])).rejects.toMatchObject({code:'23514'});
+  expect((await db.pool.query('SELECT owner FROM attachment_upload_replay_leases WHERE attachment_id=$1',[id])).rows[0].owner).toBe(replay.owner);
+  await tx(c=>lifecycle.settleReplay(c,{...replay,producerQuiesced:true}));expect((await db.pool.query('SELECT count(*)::int n FROM attachment_upload_replay_leases')).rows[0].n).toBe(0);expect((await db.pool.query("SELECT sum(used)::int n FROM attachment_quota_counters WHERE action='upload'")).rows[0].n).toBe(0);
+ });
+ it('holds completed-body upload concurrency independently while processing is active and rejects byte conflicts',async()=>{
+  const {id}=await completed(),processingOwner=randomUUID();await db.pool.query("UPDATE attachments SET lease_owner=$2,lease_expires_at=clock_timestamp()+interval '2 minutes',version=version+1 WHERE id=$1",[id,processingOwner]);
+  const replay=await tx(c=>uploads.beginReplay(c,actor,id));await expect(tx(c=>uploads.verifyCompletedSource(c,actor,id,{...bytes,sha256:'f'.repeat(64)}))).rejects.toThrow('ATTACHMENT_UPLOAD_INTEGRITY');
+  expect((await db.pool.query('SELECT lease_owner FROM attachments WHERE id=$1',[id])).rows[0].lease_owner).toBe(processingOwner);
+  const otherDraft=await draft();await expect(tx(c=>uploads.beginUpload(c,actor,otherDraft))).rejects.toThrow();
+  await tx(c=>lifecycle.settleReplay(c,{...replay,producerQuiesced:true}));expect((await db.pool.query('SELECT lease_owner FROM attachments WHERE id=$1',[id])).rows[0].lease_owner).toBe(processingOwner);
+ });
+ it('requires fresh ownership and a selected settled source receipt before replay admission',async()=>{
+  const {id,sourceId}=await completed();await expect(tx(c=>uploads.beginReplay(c,other,id))).rejects.toThrow();await db.pool.query("UPDATE attachment_objects SET status='DELETE_PENDING',object_version=object_version+1 WHERE id=$1",[sourceId]);await db.pool.query("UPDATE attachment_objects SET status='DELETED',deleted_at=clock_timestamp(),object_version=object_version+1 WHERE id=$1",[sourceId]);
+  const replay=await tx(c=>uploads.beginReplay(c,actor,id));await expect(tx(c=>uploads.verifyCompletedSource(c,actor,id,bytes))).resolves.toEqual({state:'PENDING'});await tx(c=>lifecycle.settleReplay(c,{...replay,producerQuiesced:true}));
+  const draftId=await draft();await expect(tx(c=>uploads.beginReplay(c,actor,draftId))).rejects.toThrow();
+ });
+
+
+ it('settles admitted replay intake after binding without reopening draft access or altering permanent binding',async()=>{
+  const {id}=await completed();await tx(async c=>{await new AttachmentQuotaLedger().changeCapacity(c,actor,{pendingDelta:-1});await c.query("UPDATE attachments SET state='READY',pending_slot_held=false,version=version+1 WHERE id=$1",[id]);});
+  const replay=await tx(c=>uploads.beginReplay(c,actor,id)),post=randomUUID();
+  await tx(async c=>{await c.query("INSERT INTO community_posts(id,author_user_id,target_language_id,post_type,content,visibility) VALUES($1,$2,$3,'DISCUSSION','Synthetic replay binding','PUBLIC')",[post,actor,language]);await c.query("INSERT INTO attachment_bindings(attachment_id,uploader_id,scope,scope_id,community_post_id,position) VALUES($1,$2,'COMMUNITY',$3,$4,0)",[id,actor,language,post]);});
+  const binding=(await db.pool.query('SELECT first_bound_at FROM attachments WHERE id=$1',[id])).rows[0].first_bound_at;
+  await expect(tx(c=>uploads.verifyCompletedSource(c,actor,id,bytes))).rejects.toThrow();
+  await tx(c=>lifecycle.settleReplay(c,{...replay,producerQuiesced:true}));expect((await db.pool.query('SELECT first_bound_at FROM attachments WHERE id=$1',[id])).rows[0].first_bound_at).toEqual(binding);expect((await db.pool.query('SELECT count(*)::int n FROM attachment_upload_replay_leases')).rows[0].n).toBe(0);
+ });
+
 });

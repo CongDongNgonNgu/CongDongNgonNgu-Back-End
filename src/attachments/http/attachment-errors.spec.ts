@@ -4,7 +4,10 @@ import { ApiExceptionFilter } from "../../common/http/api-exception.filter";
 import { SessionFailure } from "../../auth/session/session.service";
 import { AttachmentAuthorizationError } from "../authorization/attachment-authorization";
 import { AttachmentValidationError } from "../validation/validation-error";
-import { AttachmentPolicyError } from "../attachment-policy";
+import {
+  formatForDeclaration,
+  AttachmentPolicyError,
+} from "../attachment-policy";
 import { AttachmentQuotaError } from "../attachment-quota-ledger";
 import { AttachmentStorageError } from "../storage/attachment-storage.port";
 import { AttachmentLedgerError } from "../attachment-object-ledger";
@@ -31,6 +34,21 @@ describe("HTTP attachment failures use explicit classes and constant safe respon
       "ATTACHMENT_INVALID_INITIATION",
     ],
     [new AttachmentPolicyError(), 400, "ATTACHMENT_INVALID_REQUEST"],
+    [
+      new AttachmentPolicyError("TYPE_MISMATCH"),
+      415,
+      "ATTACHMENT_TYPE_MISMATCH",
+    ],
+    [
+      new AttachmentPolicyError("LIMIT_EXCEEDED"),
+      413,
+      "ATTACHMENT_LIMIT_EXCEEDED",
+    ],
+    [
+      new AttachmentUploadError("LIMIT_EXCEEDED"),
+      413,
+      "ATTACHMENT_LIMIT_EXCEEDED",
+    ],
     [
       new AttachmentValidationError("ATTACHMENT_INVALID_METADATA"),
       400,
@@ -255,5 +273,39 @@ describe("HTTP attachment failures use explicit classes and constant safe respon
         message: "Internal server error",
       },
     });
+  });
+
+  it.each([
+    ["synthetic.txt", "text/plain", 65537, 413, "ATTACHMENT_LIMIT_EXCEEDED"],
+    ["synthetic.jpg", "text/plain", 3, 415, "ATTACHMENT_TYPE_MISMATCH"],
+    ["synthetic.pdf", "application/pdf", 3, 415, "ATTACHMENT_TYPE_MISMATCH"],
+    ["synthetic.txt", "text/plain", 0, 400, "ATTACHMENT_INVALID_REQUEST"],
+  ] as const)(
+    "maps actual policy-boundary rejection %s/%s/%i to HTTP %i",
+    (filename, mime, bytes, status, code) => {
+      let error: unknown;
+      try {
+        formatForDeclaration(filename, mime, bytes);
+      } catch (failure) {
+        error = failure;
+      }
+      const mapped = attachmentHttpError(error);
+      expect(mapped.getStatus()).toBe(status);
+      expect(mapped.getResponse()).toMatchObject({ code });
+    },
+  );
+
+  it("does not trust arbitrary runtime policy codes or status on a known class", () => {
+    const error = Object.assign(new AttachmentPolicyError(), {
+      code: "PRIVATE_FILENAME_AND_URL",
+      status: 413,
+      message: privateDetail,
+    });
+    try {
+      attachmentHttpError(error);
+      throw Error("expected rejection");
+    } catch (observed) {
+      expect(observed).toBe(error);
+    }
   });
 });

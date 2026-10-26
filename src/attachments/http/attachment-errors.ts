@@ -70,10 +70,24 @@ export function attachmentHttpError(error: unknown): HttpException {
   if (error instanceof AttachmentAuthorizationError) return missing();
   if (error instanceof AttachmentInitiationInputError)
     return invalid("ATTACHMENT_INVALID_INITIATION");
-  if (error instanceof AttachmentPolicyError)
-    return invalid("ATTACHMENT_INVALID_REQUEST");
+  if (error instanceof AttachmentPolicyError) {
+    switch (error.code) {
+      case "INVALID_REQUEST":
+        return invalid("ATTACHMENT_INVALID_REQUEST");
+      case "TYPE_MISMATCH":
+        return unsupported("ATTACHMENT_TYPE_MISMATCH");
+      case "LIMIT_EXCEEDED":
+        return failure(
+          413,
+          "ATTACHMENT_LIMIT_EXCEEDED",
+          "Attachment limit exceeded",
+        );
+    }
+  }
   if (error instanceof AttachmentValidationError) {
     switch (error.code) {
+      case "ATTACHMENT_INVALID_REQUEST":
+        return invalid("ATTACHMENT_INVALID_REQUEST");
       case "ATTACHMENT_INVALID_METADATA":
         return invalid("ATTACHMENT_INVALID_METADATA");
       case "ATTACHMENT_LIMIT_EXCEEDED":
@@ -152,6 +166,12 @@ export function attachmentHttpError(error: unknown): HttpException {
   }
   if (error instanceof AttachmentUploadError) {
     switch (error.code) {
+      case "LIMIT_EXCEEDED":
+        return failure(
+          413,
+          "ATTACHMENT_LIMIT_EXCEEDED",
+          "Attachment limit exceeded",
+        );
       case "INTEGRITY":
         return invalid("ATTACHMENT_UPLOAD_INVALID");
       case "CANCELLED":

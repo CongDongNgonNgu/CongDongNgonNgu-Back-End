@@ -49,6 +49,7 @@ interface ObjectRow {
   object_version: string;
   put_claim: string | null;
   put_settled_at: Date | null;
+  put_abandoned_at: Date | null;
   put_uncertain: boolean;
   status: string;
 }
@@ -113,7 +114,7 @@ export class AttachmentCleanupLedger {
       !o ||
       !j ||
       o.put_uncertain ||
-      (o.put_claim !== null && o.put_settled_at === null)
+      (o.put_claim !== null && o.put_settled_at === null && !o.put_abandoned_at)
     )
       return reject("CLAIM_CONFLICT");
     if(!["DELETED","REJECTED"].includes(a.state)) {
@@ -145,7 +146,7 @@ export class AttachmentCleanupLedger {
       o.status === "DELETED"
     )
       return reject("CLAIM_CONFLICT");
-    if (o.put_claim !== null && o.etag === null) return reject("INTEGRITY");
+    if (o.put_claim !== null && o.etag === null && !o.put_abandoned_at) return reject("INTEGRITY");
     const row = (
       await client.query<ObjectRow>(
         `UPDATE attachment_objects SET status='DELETE_PENDING',object_version=object_version+1 WHERE id=$1 RETURNING *`,

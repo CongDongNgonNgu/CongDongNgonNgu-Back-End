@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
+import { finished } from 'node:stream/promises';
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3';
 import { R2AttachmentStorage, attachmentObjectKey } from './r2-attachment-storage';
 import type { AttachmentObjectLocator } from './attachment-storage.port';
@@ -49,6 +50,33 @@ describe('private TEST attachment storage', () => {
   it('streams full reads and verifies exact bytes and checksum', async () => {
     const { storage } = setup(async command => command instanceof HeadObjectCommand ? head() : { ...head(), Body: Readable.from([bytes]) });
     const result = await storage.openRead(stored()); expect(await drain(result.body)).toEqual(bytes);
+  });
+  it('does not close the returned read before its hidden provider source has actually closed',async()=>{
+    let beginClose!:()=>void,completeClose!:()=>void;
+    const closing=new Promise<void>(resolve=>{beginClose=resolve;});
+    const source=new Readable({read(){},destroy(error,callback){beginClose();completeClose=()=>callback(error);}});
+    const {storage}=setup(async command=>command instanceof HeadObjectCommand?head():{...head(),Body:source});
+    const result=await storage.openRead(stored());
+    let settled=false;
+    const bodyClosed=finished(result.body,{cleanup:true}).then(()=>{settled=true;},()=>{settled=true;});
+    const providerClosed=finished(source,{cleanup:true}).catch(()=>undefined);
+    result.body.destroy();await closing;await new Promise<void>(resolve=>setImmediate(resolve));
+    const returnedBodyClosedBeforeProvider=settled;
+    completeClose();await Promise.all([bodyClosed,providerClosed]);storage.close();
+    expect(returnedBodyClosedBeforeProvider).toBe(false);
+    expect(source.closed).toBe(true);expect(result.body.closed).toBe(true);
+  });
+  it('does not finish rejected read headers before the hidden provider source has actually closed',async()=>{
+    let beginClose!:()=>void,completeClose!:()=>void;
+    const closing=new Promise<void>(resolve=>{beginClose=resolve;});
+    const source=new Readable({read(){},destroy(error,callback){beginClose();completeClose=()=>callback(error);}});
+    const {storage}=setup(async command=>command instanceof HeadObjectCommand?head():{...head(),ContentLength:bytes.length+1,Body:source});
+    let settled=false;
+    const work=storage.openRead(stored()).then(()=>{settled=true;},()=>{settled=true;});
+    await closing;await Promise.resolve();await Promise.resolve();
+    const failedBeforeProviderClose=settled;
+    completeClose();await work;storage.close();
+    expect(failedBeforeProviderClose).toBe(false);expect(source.closed).toBe(true);
   });
   it('uses a bounded single range and checks Content-Range and length', async () => {
     const { storage, send } = setup(async command => command instanceof HeadObjectCommand ? head() : { ...head(), ContentLength: 3, ContentRange: `bytes 1-3/${bytes.length}`, Body: Readable.from([bytes.subarray(1, 4)]) });
@@ -140,4 +168,92 @@ describe('private TEST attachment storage', () => {
     jest.useFakeTimers(); try { const source = new Readable({ read() {} }); const { storage } = setup(async command => command instanceof HeadObjectCommand ? head() : { ...head(), Body: source }); const result = await storage.openRead(stored()); const assertion = expect(drain(result.body)).rejects.toThrow('ATTACHMENT_STORAGE_UNAVAILABLE'); await jest.advanceTimersByTimeAsync(10000); await assertion; expect(source.destroyed).toBe(true); storage.close(); } finally { jest.useRealTimers(); }
     const { storage, send, destroy } = setup(); storage.close(); await expect(storage.head(locator)).rejects.toThrow('ATTACHMENT_STORAGE_UNAVAILABLE'); expect(send).not.toHaveBeenCalled(); expect(destroy).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('actual R2 PUT send supervision',()=>{
+ it.each(['caller','deadline','shutdown'] as const)('does not confuse %s foreground failure with actual SDK send settlement',async reason=>{
+  jest.useFakeTimers();try{
+   let complete!:(value:object)=>void;const {storage,send}=setup(()=>new Promise(resolve=>{complete=resolve;}));
+   const handle=storage.supervisePut(locator),controller=new AbortController();let stopped=false;
+   const actual=handle.waitForActualSendSettlement().then(()=>{stopped=true;});
+   const pending=storage.putTemporary({locator,body:Readable.from([bytes]),sizeBytes:bytes.length,sha256:checksum,signal:controller.signal});
+   const rejected=expect(pending).rejects.toThrow('ATTACHMENT_STORAGE_UNAVAILABLE');
+   await jest.advanceTimersByTimeAsync(0);expect(send).toHaveBeenCalledTimes(1);
+   if(reason==='caller')controller.abort();else if(reason==='shutdown')storage.close();else await jest.advanceTimersByTimeAsync(10000);
+   await rejected;expect(stopped).toBe(false);
+   const lateBody=new Readable({read(){}});complete({ETag:'"late-etag"',Body:lateBody});await actual;
+   expect(stopped).toBe(true);expect(lateBody.destroyed).toBe(true);handle.release();storage.close();
+  }finally{jest.useRealTimers();}
+ });
+ it('observes actual SDK rejection after a foreground timeout without exposing provider details',async()=>{
+  jest.useFakeTimers();try{let reject!:(error:Error)=>void;const {storage}=setup(()=>new Promise((_,r)=>{reject=r;}));const handle=storage.supervisePut(locator);let stopped=false;const actual=handle.waitForActualSendSettlement().then(()=>{stopped=true;});const pending=storage.putTemporary({locator,body:Readable.from([bytes]),sizeBytes:bytes.length,sha256:checksum});const rejected=expect(pending).rejects.toThrow(/^ATTACHMENT_STORAGE_UNAVAILABLE$/);await jest.advanceTimersByTimeAsync(10000);await rejected;expect(stopped).toBe(false);reject(Error('PRIVATE SDK DETAILS'));await expect(actual).resolves.toBeUndefined();expect(stopped).toBe(true);handle.release();storage.close();}finally{jest.useRealTimers();}
+ });
+ it('keeps an issued but never dispatched claim unresolved, including pre-aborted requests',async()=>{
+  const {storage,send}=setup(),handle=storage.supervisePut(locator);let stopped=false;void handle.waitForActualSendSettlement().then(()=>{stopped=true;});const c=new AbortController();c.abort();await expect(storage.putTemporary({locator,body:Readable.from([bytes]),sizeBytes:bytes.length,sha256:checksum,signal:c.signal})).rejects.toThrow('ATTACHMENT_STORAGE_UNAVAILABLE');await Promise.resolve();expect(stopped).toBe(false);expect(send).not.toHaveBeenCalled();handle.release();await expect(handle.waitForActualSendSettlement()).rejects.toThrow('ATTACHMENT_STORAGE_UNAVAILABLE');storage.close();
+ });
+ it('records one positive SDK settlement and rejects duplicate PUT consumption under one handle',async()=>{
+  const {storage,send}=setup(async command=>{await drain((command as PutObjectCommand).input.Body as Readable);return {ETag:'"opaque-etag"'};});const handle=storage.supervisePut(locator);expect(()=>storage.supervisePut({...locator})).toThrow('ATTACHMENT_STORAGE_CONFLICT');await storage.putTemporary({locator,body:Readable.from([bytes]),sizeBytes:bytes.length,sha256:checksum});await expect(handle.waitForActualSendSettlement()).resolves.toBeUndefined();await expect(storage.putTemporary({locator,body:Readable.from([bytes]),sizeBytes:bytes.length,sha256:checksum})).rejects.toThrow('ATTACHMENT_STORAGE_CONFLICT');expect(send).toHaveBeenCalledTimes(1);handle.release();handle.release();const next=storage.supervisePut(locator);next.release();storage.close();
+ });
+ it('bounds issued handles and frees exact released entries',()=>{
+  const {storage}=setup();const handles=Array.from({length:512*3},(_,i)=>storage.supervisePut({...locator,objectId:('00000000-0000-4000-8000-'+i.toString(16).padStart(12,'0'))}));expect(()=>storage.supervisePut(locator)).toThrow('ATTACHMENT_STORAGE_UNAVAILABLE');for(const handle of handles)handle.release();const next=storage.supervisePut(locator);next.release();storage.close();
+ });
+});
+
+describe('read transport closure before response headers',()=>{
+ it('does not equate late SDK headers with closure while an aborted response body is still closing',async()=>{
+  let beginClose!:()=>void,completeClose!:()=>void;
+  const closing=new Promise<void>(resolve=>{beginClose=resolve;});
+  const source=new Readable({read(){},destroy(error,callback){beginClose();completeClose=()=>callback(error);}});
+  const controller=new AbortController();
+  const {storage}=setup(async command=>{
+   if(command instanceof HeadObjectCommand)return head();
+   controller.abort();return {...head(),Body:source};
+  });
+  const work=storage.openRead(stored(),undefined,controller.signal).catch(error=>error);
+  await closing;const error=await work;
+  const providerClosed=finished(source,{cleanup:true}).catch(()=>undefined);
+  expect(source.closed).toBe(false);
+  completeClose();await providerClosed;storage.close();
+  expect(error).toMatchObject({code:'UNAVAILABLE',producerQuiesced:false});
+ });
+ it('marks a foreground abort as unquiesced until the actual GET send has settled',async()=>{
+  let complete!:(value:object)=>void;
+  const {storage,send}=setup(async command=>command instanceof HeadObjectCommand?head():new Promise<object>(resolve=>{complete=resolve;}));
+  const controller=new AbortController();
+  const work=storage.openRead(stored(),undefined,controller.signal).catch(error=>error);
+  while(send.mock.calls.length<2)await new Promise<void>(resolve=>setImmediate(resolve));
+  controller.abort();const error=await work;
+  const lateBody=new Readable({read(){}}),closed=finished(lateBody,{cleanup:true}).catch(()=>undefined);
+  complete({...head(),Body:lateBody});await closed;storage.close();
+  expect(error).toMatchObject({code:'UNAVAILABLE',producerQuiesced:false});
+ });
+ it('marks actual SDK rejection as quiesced without exposing provider error details',async()=>{
+  const {storage}=setup(async command=>{if(command instanceof HeadObjectCommand)return head();throw Error('PRIVATE_PROVIDER_DETAILS');});
+  const error=await storage.openRead(stored()).catch(value=>value);storage.close();
+  expect(error).toMatchObject({code:'UNAVAILABLE',producerQuiesced:true});
+  expect(error.message).toBe('ATTACHMENT_STORAGE_UNAVAILABLE');
+ });
+});
+
+describe('PUT supervisor reservation retirement',()=>{
+ it('does not reclaim capacity for a released handle until its actual send settles',async()=>{
+  jest.useFakeTimers();try{
+   let complete!:(value:object)=>void;const {storage}=setup(()=>new Promise(resolve=>{complete=resolve;}));const handle=storage.supervisePut(locator),actual=handle.waitForActualSendSettlement();
+   const pending=storage.putTemporary({locator,body:Readable.from([bytes]),sizeBytes:bytes.length,sha256:checksum});const rejected=expect(pending).rejects.toThrow('ATTACHMENT_STORAGE_UNAVAILABLE');await jest.advanceTimersByTimeAsync(10000);await rejected;handle.release();
+   const held=Array.from({length:512*3-1},(_,i)=>storage.supervisePut({...locator,objectId:'00000000-0000-4000-8000-'+i.toString(16).padStart(12,'0')}));
+   expect(()=>storage.supervisePut(locator)).toThrow('ATTACHMENT_STORAGE_UNAVAILABLE');complete({ETag:'"late"'});await actual;
+   const next=storage.supervisePut(locator);next.release();for(const h of held)h.release();storage.close();
+  }finally{jest.useRealTimers();}
+ });
+ it('does not mark malformed input dispatched or let unrelated provider calls satisfy a PUT handle',async()=>{
+  const {storage,send}=setup(),handle=storage.supervisePut(locator);let stopped=false;void handle.waitForActualSendSettlement().then(()=>{stopped=true;});
+  await expect(storage.putTemporary({locator,body:Readable.from([bytes]),sizeBytes:4*1048576+1,sha256:checksum})).rejects.toThrow('ATTACHMENT_STORAGE_INVALID_INPUT');await storage.head(locator);await Promise.resolve();expect(stopped).toBe(false);expect(send).toHaveBeenCalledTimes(1);handle.release();storage.close();
+ });
+});
+
+describe('captured original-entry mandatory PUT dispatch',()=>{
+ it('rejects a retired handle before SDK send',async()=>{const {storage,send}=setup();const h=storage.supervisePut(locator);h.retireUnsent();await expect(storage.putSupervised(h,{locator,body:Readable.from([bytes]),sizeBytes:bytes.length,sha256:checksum})).rejects.toThrow('ATTACHMENT_STORAGE_CONFLICT');expect(send).not.toHaveBeenCalled();h.release();storage.close();});
+ it('rejects released and cross-locator handles without legacy fallback',async()=>{const {storage,send}=setup();const h=storage.supervisePut(locator);h.release();const next=storage.supervisePut(locator);await expect(storage.putSupervised(h,{locator,body:Readable.from([bytes]),sizeBytes:bytes.length,sha256:checksum})).rejects.toThrow('ATTACHMENT_STORAGE_CONFLICT');await expect(storage.putSupervised(next,{locator:{...locator,objectId:locator.attemptId},body:Readable.from([bytes]),sizeBytes:bytes.length,sha256:checksum})).rejects.toThrow('ATTACHMENT_STORAGE_CONFLICT');expect(send).not.toHaveBeenCalled();next.release();storage.close();});
+ it('disallows unsent retirement after actual SDK rejection',async()=>{const {storage,send}=setup(async()=>{throw Error('private');});const h=storage.supervisePut(locator);await expect(storage.putSupervised(h,{locator,body:Readable.from([bytes]),sizeBytes:bytes.length,sha256:checksum})).rejects.toThrow('ATTACHMENT_STORAGE_UNAVAILABLE');expect(send).toHaveBeenCalledTimes(1);expect(()=>h.retireUnsent()).toThrow('ATTACHMENT_STORAGE_CONFLICT');h.release();storage.close();});
+ it('preserves original identity when a released locator gets a replacement',()=>{const {storage}=setup();const old=storage.supervisePut(locator);old.release();const next=storage.supervisePut(locator);expect(next.id).not.toBe(old.id);expect(()=>old.retireUnsent()).toThrow();next.release();storage.close();});
 });

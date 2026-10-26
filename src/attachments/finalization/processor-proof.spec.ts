@@ -1,4 +1,4 @@
-﻿import { createProcessorProof, processorProofArtifacts } from './processor-proof';
+﻿import { createProcessorProof, processorProofArtifacts, inspectProcessorResult } from './processor-proof';
 describe('internal finalization proof boundary',()=>{
  it('does not accept client-shaped proof data',()=>expect(()=>processorProofArtifacts({} as never)).toThrow());
  it('validates inert text bytes and strips only an initial BOM',()=>{const p=createProcessorProof(Buffer.from([239,187,191,97,98,99]),{filename:'x.txt',mime:'text/plain'},{format:'TEXT'},'ALLOW');expect(processorProofArtifacts(p)).toMatchObject([{variant:'normalized',contentType:'application/octet-stream',bytes:Buffer.from('abc')}]);});
@@ -23,6 +23,21 @@ describe('internal finalization proof boundary',()=>{
   const p=createProcessorProof(source,{filename:'x.mp4',mime:'video/mp4'},{format:'VIDEO',result},'ALLOW');
   expect(processorProofArtifacts(p).map(x=>[x.variant,x.contentType])).toEqual([['normalized','video/mp4'],['thumbnail','image/jpeg']]);
   expect(()=>createProcessorProof(source,{filename:'x.mp4',mime:'video/mp4'},{format:'VIDEO',result:{...result,thumbnail:source}},'ALLOW')).toThrow();
+ });
+
+
+ it('inspects output facts before moderation without creating any publication proof',()=>{
+  const source=Buffer.from('abc'),facts=inspectProcessorResult(source,{filename:'x.txt',mime:'text/plain'},{format:'TEXT'});
+  expect(facts).toMatchObject({format:'TEXT',sourceBytes:3,artifacts:[{variant:'normalized',sizeBytes:3}]});
+  expect(()=>processorProofArtifacts(facts as never)).toThrow('ATTACHMENT_PROCESSOR_PROOF_INVALID');
+  expect(()=>createProcessorProof(source,{filename:'x.txt',mime:'text/plain'},{format:'TEXT'},'PENDING' as never)).toThrow('ATTACHMENT_PROCESSOR_PROOF_INVALID');
+ });
+ it('isolates inspection bytes from source mutation, later inspections and sealed proof bytes',()=>{
+  const source=Buffer.from('abc'),declaration={filename:'x.txt',mime:'text/plain'},completed={format:'TEXT' as const};
+  const inspected=inspectProcessorResult(source,declaration,completed);inspected.artifacts[0].bytes.fill(0);
+  const proof=createProcessorProof(source,declaration,completed,'ALLOW');source.fill(120);
+  expect(processorProofArtifacts(proof)[0].bytes.toString()).toBe('abc');
+  expect(inspectProcessorResult(Buffer.from('abc'),declaration,completed).artifacts[0].bytes.toString()).toBe('abc');
  });
 
 });

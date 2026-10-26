@@ -54,6 +54,13 @@ CREATE TABLE attachments (
 );
 CREATE INDEX attachments_expiry_idx ON attachments(expires_at,id) WHERE state<>'DELETED';
 CREATE INDEX attachments_actor_idx ON attachments(uploader_id,state,id);
+-- A completed-body replay has its own intake fence; processing may run in parallel.
+-- Expiry is diagnostic only. No lease can be stolen or purged before actual intake quiescence.
+CREATE TABLE attachment_upload_replay_leases (
+ attachment_id uuid PRIMARY KEY REFERENCES attachments(id) ON DELETE RESTRICT,
+ owner uuid NOT NULL,
+ expires_at timestamptz NOT NULL
+);
 CREATE TABLE attachment_bindings (
  attachment_id uuid PRIMARY KEY,
  uploader_id uuid NOT NULL,
@@ -86,6 +93,8 @@ CREATE TABLE attachment_objects (
  put_claim uuid,
  put_claimed_at timestamptz,
  put_settled_at timestamptz,
+ put_supervision_id uuid UNIQUE,
+ put_abandoned_at timestamptz,
  put_uncertain boolean NOT NULL DEFAULT false,
  object_key text GENERATED ALWAYS AS ('attachments/test/v1/' || attachment_id::text || '/' || attempt_id::text || '/' || variant || '/' || id::text) STORED UNIQUE,
  sha256 text NOT NULL CHECK(sha256 ~ '^[a-f0-9]{64}$'),
@@ -100,18 +109,19 @@ CREATE TABLE attachment_objects (
  CHECK((status='DELETED')=(deleted_at IS NOT NULL)),
  CHECK(status<>'WRITTEN' OR (etag IS NOT NULL AND put_settled_at IS NOT NULL)),
  CHECK((put_claim IS NULL)=(put_claimed_at IS NULL)),
- CHECK(put_claim IS NOT NULL OR (put_settled_at IS NULL AND NOT put_uncertain)),
+ CHECK(put_claim IS NOT NULL OR (put_settled_at IS NULL AND put_abandoned_at IS NULL AND put_supervision_id IS NULL AND NOT put_uncertain)),
  CHECK(put_settled_at IS NULL OR (NOT put_uncertain AND etag IS NOT NULL)),
- CHECK(put_claim IS NULL OR put_uncertain=(put_settled_at IS NULL)),
+ CHECK(put_claim IS NULL OR put_uncertain=(put_settled_at IS NULL AND put_abandoned_at IS NULL)),
+ CHECK(put_abandoned_at IS NULL OR (put_supervision_id IS NOT NULL AND put_settled_at IS NULL AND etag IS NULL AND NOT put_uncertain AND status IN ('DELETE_PENDING','DELETED'))),
  CHECK(status<>'DELETED' OR NOT put_uncertain)
 );
 -- Exact artifact selection survives physical deletion and retained retry history.
 ALTER TABLE attachments ADD COLUMN source_object_id uuid;
 ALTER TABLE attachments ADD COLUMN normalized_object_id uuid;
 ALTER TABLE attachments ADD COLUMN thumbnail_object_id uuid;
-ALTER TABLE attachments ADD CONSTRAINT phase30_source_identity FOREIGN KEY(source_object_id,id) REFERENCES attachment_objects(id,attachment_id) ON DELETE RESTRICT;
-ALTER TABLE attachments ADD CONSTRAINT phase30_normalized_identity FOREIGN KEY(normalized_object_id,id) REFERENCES attachment_objects(id,attachment_id) ON DELETE RESTRICT;
-ALTER TABLE attachments ADD CONSTRAINT phase30_thumbnail_identity FOREIGN KEY(thumbnail_object_id,id) REFERENCES attachment_objects(id,attachment_id) ON DELETE RESTRICT;
+ALTER TABLE attachments ADD CONSTRAINT phase30_source_identity FOREIGN KEY(source_object_id,id) REFERENCES attachment_objects(id,attachment_id) ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE attachments ADD CONSTRAINT phase30_normalized_identity FOREIGN KEY(normalized_object_id,id) REFERENCES attachment_objects(id,attachment_id) ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE attachments ADD CONSTRAINT phase30_thumbnail_identity FOREIGN KEY(thumbnail_object_id,id) REFERENCES attachment_objects(id,attachment_id) ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE;
 CREATE TABLE attachment_cleanup_jobs (
  id uuid PRIMARY KEY,
  attachment_id uuid NOT NULL REFERENCES attachments(id) ON DELETE RESTRICT,
@@ -132,7 +142,7 @@ CREATE INDEX attachment_cleanup_due_idx ON attachment_cleanup_jobs(next_attempt_
 CREATE TABLE attachment_quota_counters (
  kind text NOT NULL CHECK(kind IN ('ACTOR','IP','DEPLOYMENT')),
  subject text NOT NULL CHECK(octet_length(subject) BETWEEN 1 AND 128),
- action text NOT NULL CHECK(action IN ('bytes','metadata','upload','pending','initiate','source','read')),
+ action text NOT NULL CHECK(action IN ('bytes','metadata','upload','pending','initiate','source','read','upload_attempt','ingress')),
  window_start timestamptz NOT NULL,
  used bigint NOT NULL DEFAULT 0,
  ceiling bigint NOT NULL CHECK(ceiling>0),
@@ -174,6 +184,7 @@ BEGIN
  IF OLD.state='DELETED' AND (NEW.state<>'DELETED' OR NEW.deleted_at IS DISTINCT FROM OLD.deleted_at) THEN RAISE EXCEPTION 'Deleted attachment is terminal' USING ERRCODE='23514'; END IF;
  IF NEW.physical_cleanup_at IS NOT NULL AND NEW.physical_cleanup_at IS DISTINCT FROM OLD.physical_cleanup_at AND (
   NEW.lease_owner IS NOT NULL OR NEW.upload_slot_held OR NEW.pending_slot_held
+  OR EXISTS(SELECT 1 FROM attachment_upload_replay_leases r WHERE r.attachment_id=OLD.id)
   OR EXISTS(SELECT 1 FROM attachment_objects o WHERE o.attachment_id=OLD.id AND (o.status<>'DELETED' OR o.put_uncertain))
   OR EXISTS(SELECT 1 FROM attachment_cleanup_jobs j WHERE j.attachment_id=OLD.id AND j.completed_at IS NULL)
   OR EXISTS(SELECT 1 FROM attachment_processing_lease l WHERE l.attachment_id=OLD.id AND l.owner IS NOT NULL))
@@ -185,6 +196,10 @@ CREATE TRIGGER phase30_attachment_guard BEFORE UPDATE ON attachments FOR EACH RO
 CREATE FUNCTION phase30_binding_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE candidate attachments%ROWTYPE;
 BEGIN
+ IF TG_OP='DELETE' THEN
+  IF OLD.removed_at IS NULL OR OLD.removed_at>clock_timestamp()-interval '7 days' OR NOT phase30_terminal_purge_eligible(OLD.attachment_id) THEN RAISE EXCEPTION 'Binding retention required' USING ERRCODE='23514'; END IF;
+  RETURN OLD;
+ END IF;
  IF TG_OP='INSERT' THEN
   SELECT * INTO candidate FROM attachments WHERE id=NEW.attachment_id FOR UPDATE;
   IF NOT FOUND OR candidate.state<>'READY' OR candidate.first_bound_at IS NOT NULL OR candidate.expires_at<=clock_timestamp() THEN RAISE EXCEPTION 'Attachment cannot bind' USING ERRCODE='23514'; END IF;
@@ -198,7 +213,7 @@ BEGIN
  END IF;
  RETURN NEW;
 END $$;
-CREATE TRIGGER phase30_binding_guard BEFORE INSERT OR UPDATE ON attachment_bindings FOR EACH ROW EXECUTE FUNCTION phase30_binding_guard();
+CREATE TRIGGER phase30_binding_guard BEFORE INSERT OR UPDATE OR DELETE ON attachment_bindings FOR EACH ROW EXECUTE FUNCTION phase30_binding_guard();
 
 -- Defense in depth for durable ownership. Repository mutations still acquire
 -- domain -> attachment -> object -> cleanup locks, never the reverse.
@@ -215,6 +230,10 @@ BEGIN
  IF (OLD.put_claim IS NOT NULL AND ROW(NEW.put_claim,NEW.put_claimed_at) IS DISTINCT FROM ROW(OLD.put_claim,OLD.put_claimed_at))
   OR (OLD.put_claim IS NULL AND NEW.put_claim IS NOT NULL AND (OLD.status<>'RESERVED' OR NOT NEW.put_uncertain OR NEW.put_settled_at IS NOT NULL))
   OR (OLD.put_settled_at IS NOT NULL AND ROW(NEW.put_settled_at,NEW.put_uncertain) IS DISTINCT FROM ROW(OLD.put_settled_at,OLD.put_uncertain))
+  OR (OLD.put_supervision_id IS NOT NULL AND NEW.put_supervision_id IS DISTINCT FROM OLD.put_supervision_id)
+  OR (OLD.put_supervision_id IS NULL AND NEW.put_supervision_id IS NOT NULL AND (OLD.put_claim IS NULL OR NOT OLD.put_uncertain OR OLD.put_settled_at IS NOT NULL OR OLD.put_abandoned_at IS NOT NULL))
+  OR (OLD.put_abandoned_at IS NOT NULL AND ROW(NEW.put_abandoned_at,NEW.put_uncertain,NEW.put_settled_at,NEW.etag) IS DISTINCT FROM ROW(OLD.put_abandoned_at,OLD.put_uncertain,OLD.put_settled_at,OLD.etag))
+  OR (OLD.put_abandoned_at IS NULL AND NEW.put_abandoned_at IS NOT NULL AND (OLD.put_supervision_id IS NULL OR NOT EXISTS(SELECT 1 FROM attachments a WHERE a.id=OLD.attachment_id AND a.state IN ('REJECTED','DELETED'))))
  THEN RAISE EXCEPTION 'Physical PUT claim is single use' USING ERRCODE='23514'; END IF;
  IF ROW(NEW.id,NEW.attachment_id,NEW.attempt_id,NEW.variant,NEW.sha256,NEW.byte_count,NEW.content_type,NEW.created_at)
   IS DISTINCT FROM ROW(OLD.id,OLD.attachment_id,OLD.attempt_id,OLD.variant,OLD.sha256,OLD.byte_count,OLD.content_type,OLD.created_at)
@@ -245,8 +264,9 @@ END $$;
 CREATE TRIGGER phase30_cleanup_guard BEFORE UPDATE OR DELETE ON attachment_cleanup_jobs FOR EACH ROW EXECUTE FUNCTION phase30_cleanup_guard();
 CREATE FUNCTION phase30_attachment_purge_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF OLD.state<>'DELETED' OR OLD.physical_cleanup_at IS NULL OR OLD.physical_cleanup_at>clock_timestamp()-interval '7 days'
+ IF NOT phase30_terminal_purge_eligible(OLD.id) OR OLD.state<>'DELETED' OR OLD.physical_cleanup_at IS NULL OR OLD.physical_cleanup_at>clock_timestamp()-interval '7 days'
   OR OLD.created_at>clock_timestamp()-interval '24 hours' OR OLD.lease_owner IS NOT NULL
+  OR EXISTS(SELECT 1 FROM attachment_upload_replay_leases r WHERE r.attachment_id=OLD.id)
  THEN RAISE EXCEPTION 'Attachment tombstone retention required' USING ERRCODE='23514'; END IF;
  RETURN OLD;
 END $$;
@@ -274,7 +294,9 @@ CREATE TABLE attachment_initiation_admissions (
 CREATE FUNCTION phase30_admission_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_OP='DELETE' THEN
-  IF OLD.expires_at>clock_timestamp() OR OLD.attachment_id IS NOT NULL THEN RAISE EXCEPTION 'Admission retention required' USING ERRCODE='23514'; END IF;
+  IF OLD.expires_at>clock_timestamp() OR OLD.created_at>clock_timestamp()-interval '24 hours'
+   OR (OLD.attachment_id IS NOT NULL AND (OLD.status<>'CREATED' OR NOT phase30_terminal_purge_eligible(OLD.attachment_id)))
+  THEN RAISE EXCEPTION 'Admission retention required' USING ERRCODE='23514'; END IF;
   RETURN OLD;
  END IF;
  IF ROW(NEW.uploader_id,NEW.client_upload_id,NEW.fingerprint,NEW.source_bytes,NEW.format,NEW.created_at,NEW.expires_at) IS DISTINCT FROM ROW(OLD.uploader_id,OLD.client_upload_id,OLD.fingerprint,OLD.source_bytes,OLD.format,OLD.created_at,OLD.expires_at)
@@ -283,3 +305,26 @@ BEGIN
  RETURN NEW;
 END $$;
 CREATE TRIGGER phase30_admission_guard BEFORE UPDATE OR DELETE ON attachment_initiation_admissions FOR EACH ROW EXECUTE FUNCTION phase30_admission_guard();
+
+-- Read-only eligibility shared by narrow DELETE guards. This grants no bypass:
+-- internal callers still take ordered domain/parent/child locks and commit the
+-- complete graph atomically; no capacity or provider operation is performed.
+CREATE FUNCTION phase30_terminal_purge_eligible(target uuid) RETURNS boolean LANGUAGE sql AS $$
+ SELECT EXISTS(SELECT 1 FROM attachments a WHERE a.id=target AND a.state='DELETED'
+  AND EXISTS(SELECT 1 FROM attachment_processing_lease l WHERE l.singleton)
+  AND a.physical_cleanup_at<=clock_timestamp()-interval '7 days'
+  AND a.created_at<=clock_timestamp()-interval '24 hours'
+  AND a.lease_owner IS NULL AND NOT a.upload_slot_held AND NOT a.pending_slot_held
+  AND NOT EXISTS(SELECT 1 FROM attachment_upload_replay_leases r WHERE r.attachment_id=a.id)
+  AND NOT EXISTS(SELECT 1 FROM attachment_processing_lease l WHERE l.attachment_id=a.id)
+  AND NOT EXISTS(SELECT 1 FROM attachment_objects o WHERE o.attachment_id=a.id AND
+   (o.status<>'DELETED' OR o.put_uncertain OR o.deleted_at IS NULL OR o.deleted_at>clock_timestamp()-interval '7 days'
+    OR (o.put_claim IS NOT NULL AND o.put_settled_at IS NULL AND o.put_abandoned_at IS NULL)))
+  AND NOT EXISTS(SELECT 1 FROM attachment_cleanup_jobs j WHERE j.attachment_id=a.id AND
+   (j.completed_at IS NULL OR j.completed_at>clock_timestamp()-interval '7 days' OR j.lease_owner IS NOT NULL))
+  AND NOT EXISTS(SELECT 1 FROM attachment_bindings b WHERE b.attachment_id=a.id AND
+   (b.removed_at IS NULL OR b.removed_at>clock_timestamp()-interval '7 days'))
+  AND NOT EXISTS(SELECT 1 FROM attachment_initiation_admissions i WHERE i.attachment_id=a.id AND
+   (i.status<>'CREATED' OR i.expires_at>clock_timestamp() OR i.created_at>clock_timestamp()-interval '24 hours'))
+ );
+$$;

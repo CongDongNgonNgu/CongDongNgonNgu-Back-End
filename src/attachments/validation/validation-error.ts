@@ -1,5 +1,5 @@
 ﻿export class AttachmentValidationError extends Error {
-  constructor(readonly code: 'ATTACHMENT_INVALID_METADATA' | 'ATTACHMENT_TYPE_MISMATCH' | 'ATTACHMENT_INVALID_CONTENT' | 'ATTACHMENT_LIMIT_EXCEEDED') {
+  constructor(readonly code: 'ATTACHMENT_INVALID_REQUEST' | 'ATTACHMENT_INVALID_METADATA' | 'ATTACHMENT_TYPE_MISMATCH' | 'ATTACHMENT_INVALID_CONTENT' | 'ATTACHMENT_LIMIT_EXCEEDED') {
     super(code);
     this.name = 'AttachmentValidationError';
   }

@@ -7,6 +7,7 @@ import {authorizeDraftScope,opaqueAttachmentAuthorizationError,type AttachmentDr
 import type {CommunityPostType,CommunityVisibility} from '../../community/community.types';
 
 export interface AttachmentUploadFence {attachmentId:string;attachmentVersion:number;leaseOwner:string;expectedBytes:number;}
+export interface AttachmentReplayFence {attachmentId:string;owner:string;expectedBytes:number;}
 export interface AttachmentReceivedBytes {sizeBytes:number;sha256:string;}
 export class AttachmentUploadStateError extends Error {
  constructor(readonly code:'CONFLICT'|'INTEGRITY'){super('ATTACHMENT_UPLOAD_'+code);this.name='AttachmentUploadStateError';}
@@ -59,6 +60,19 @@ export class AttachmentUploadLedger {
   const leaseOwner=randomUUID();
   const next=(await client.query<{version:string}>(`UPDATE attachments SET state='UPLOADING',upload_slot_held=true,version=version+1,lease_owner=$2,lease_expires_at=clock_timestamp()+$3*interval '1 millisecond',updated_at=clock_timestamp() WHERE id=$1 RETURNING version`,[attachmentId,leaseOwner,L.uploadLeaseMs])).rows[0];
   return {attachmentId,attachmentVersion:Number(next.version),leaseOwner,expectedBytes:Number(row.expected_bytes)};
+ }
+ /** Commit durable completed-body intake admission before accepting any bytes.
+  * This lease is independent of processing and never stolen on expiry. */
+ async beginReplay(client:PoolClient,actor:string,attachmentId:string):Promise<AttachmentReplayFence>{
+  const row=await this.locked(client,actor,attachmentId);
+  if(!['PENDING','READY'].includes(row.state)||!row.source_object_id||row.upload_slot_held)return conflict();
+  const source=(await client.query<{byte_count:string;put_claim:string|null;put_settled_at:Date|null;put_uncertain:boolean;etag:string|null;sha256:string}>(`SELECT byte_count,put_claim,put_settled_at,put_uncertain,etag,sha256 FROM attachment_objects WHERE attachment_id=$1 AND id=$2 AND variant='source' FOR UPDATE`,[row.id,row.source_object_id])).rows[0];
+  if(!source||Number(source.byte_count)!==Number(row.expected_bytes)||!source.put_claim||!source.put_settled_at||source.put_uncertain||!source.etag||!/^[a-f0-9]{64}$/.test(source.sha256))return conflict();
+  if((await client.query('SELECT owner FROM attachment_upload_replay_leases WHERE attachment_id=$1 FOR UPDATE',[row.id])).rowCount)return conflict();
+  await this.quotas.changeCapacity(client,actor,{uploadDelta:1});
+  const owner=randomUUID();
+  await client.query(`INSERT INTO attachment_upload_replay_leases(attachment_id,owner,expires_at) VALUES($1,$2,clock_timestamp()+$3*interval '1 millisecond')`,[row.id,owner,L.uploadLeaseMs]);
+  return {attachmentId:row.id,owner,expectedBytes:Number(row.expected_bytes)};
  }
  async prepareSource(client:PoolClient,actor:string,fence:AttachmentUploadFence,received:AttachmentReceivedBytes):Promise<AttachmentPutClaim>{
   const row=await this.locked(client,actor,fence.attachmentId);this.fence(row,fence);
