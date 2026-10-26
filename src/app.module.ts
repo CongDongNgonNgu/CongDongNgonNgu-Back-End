@@ -1,3 +1,4 @@
+import {AttachmentModule} from './attachments/attachment.module';
 import { Module } from '@nestjs/common';
 import { MessagingModule } from './messaging/messaging.module';
 import { StudyGroupModule } from './study-groups/study-group.module';
@@ -24,6 +25,7 @@ import { AdminModule } from './admin/admin.module';
 @Module({
   imports: [
     AppConfigModule,
+    AttachmentModule,
     HealthModule,
     AuthModule,
     ProfileModule,

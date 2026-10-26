@@ -11,4 +11,3 @@ An uncertain object remains uncertain. Positive-provider full-checksum recovery 
 Tests use deterministic metadata structure, owned random UUID fixtures and synthetic provider listings. SQL classification executes inside READ ONLY transactions in disposable schemas on the approved TEST target. No real provider requests, real user media, shared schema migration, deployment, cleanup success or runtime leak count is claimed.
 
 Adjacent modules implement positive PUT recovery with exact original supervision and durable identity checks, and separately guarded terminal retention under `../retention`. The application composition remains disabled by default. Their source tests do not grant this read-only detector deletion authority or establish deployed acceptance. Unknown read/HEAD transport closure and lost process-local authority retain producer/deletion debt; no restart or negative observation resets it.
-
