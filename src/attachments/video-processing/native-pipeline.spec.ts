@@ -8,10 +8,15 @@ import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
 import { NativeVideoProcessor } from './video-processor';
 import { validateMp4Structure } from '../video/mp4';
 import { validateImageStructure } from '../validation/image';
+import {verifyBundledNativeTime,NATIVE_TIME_DISTRIBUTION} from './native-time';
 const configured=process.env.PHASE30_PROCESSOR_DIR;
 const available = configured && existsSync(join(configured,'bin',process.platform==='win32'?'ffmpeg.exe':'ffmpeg'));
 if(process.env.PHASE30_REQUIRE_NATIVE_TESTS==='true'&&!available)throw Error('Required pinned native processor tests cannot be skipped');
 const native = available ? describe : describe.skip;
+const assertStagedBinaryHashes=(manifest:{binaryHashes:Record<string,string>},hashes:Record<string,string>)=>expect(manifest.binaryHashes).toEqual(expect.objectContaining(hashes));
+describe('Linux native fixture manifest preservation',()=>{
+ it('accepts matching staged binaries while retaining the real license entry, and rejects changed binaries',()=>{const manifest={binaryHashes:{'bin/ffmpeg':'approved-ffmpeg','bin/ffprobe':'approved-ffprobe','LICENSE.txt':'approved-license'}},before=JSON.stringify(manifest);assertStagedBinaryHashes(manifest,{'bin/ffmpeg':'approved-ffmpeg','bin/ffprobe':'approved-ffprobe'});expect(JSON.stringify(manifest)).toBe(before);expect(()=>assertStagedBinaryHashes(manifest,{'bin/ffprobe':'wrong'})).toThrow();expect(()=>assertStagedBinaryHashes(manifest,{'bin/missing':'wrong'})).toThrow();});
+});
 native('explicit pinned native synthetic pipeline (not Render acceptance)',()=>{
  let compiled:string,root:string,processors:string,source:Buffer;
  beforeAll(async()=>{
@@ -23,7 +28,16 @@ native('explicit pinned native synthetic pipeline (not Render acceptance)',()=>{
   const windows=process.platform==='win32',hashes:Record<string,string>={};
   for(const name of ['ffmpeg','ffprobe']){const relative='bin/'+name+(windows?'.exe':'');await copyFile(join(configured,relative),join(processors,relative));const hash=createHash('sha256');for await(const bytes of require('node:fs').createReadStream(join(processors,relative)))hash.update(bytes);hashes[relative]=hash.digest('hex');}
   if(windows){expect(hashes['bin/ffmpeg.exe']).toBe('501ec04f7282f394b5479585166b127ba5ff8f7059a5d81f961a120ffd0dfe1c');expect(hashes['bin/ffprobe.exe']).toBe('1493d24ffa482ab28444e573ee55e23f9f1979c1064b8f24ac5baed05c2d4729');}
-  await writeFile(join(processors,'manifest.json'),JSON.stringify({sha256:windows?'e7bca5e004c2d13bcb374c3a4bd30c4588b08607a4b1a01369341a4f9678dff3':'5ae5939260c72671383f0a0d8785695bfe06c94c27d4daac2e63eb8576417927',version:'n9.0.2-29-g6dfaba896f',binaryHashes:hashes}));
+  if(windows)await writeFile(join(processors,'manifest.json'),JSON.stringify({sha256:'e7bca5e004c2d13bcb374c3a4bd30c4588b08607a4b1a01369341a4f9678dff3',version:'n9.0.2-29-g6dfaba896f',binaryHashes:hashes}));
+  else{
+   await verifyBundledNativeTime(configured);
+   const manifest=JSON.parse(await readFile(join(configured,'manifest.json'),'utf8'));assertStagedBinaryHashes(manifest,hashes);
+   await copyFile(join(configured,'manifest.json'),join(processors,'manifest.json'));
+   await copyFile(join(configured,'time-manifest.json'),join(processors,'time-manifest.json'));
+   await copyFile(join(configured,'bin','time'),join(processors,'bin','time'));
+   await mkdir(join(processors,'source','time'),{recursive:true});
+   for(const pin of NATIVE_TIME_DISTRIBUTION)await copyFile(join(configured,'source','time',pin.file),join(processors,'source','time',pin.file));
+  }
   const output=join(root,'generated.mp4');execFileSync(join(processors,'bin','ffmpeg'+(windows?'.exe':'')),['-hide_banner','-nostdin','-v','error','-threads','1','-filter_threads','1','-f','lavfi','-i','color=c=navy:size=128x72:rate=4','-t','0.5','-c:v','libopenh264','-profile:v','constrained_baseline','-pix_fmt','yuv420p','-bsf:v','h264_metadata=sei_user_data=01234567-89ab-cdef-0123-456789abcdef+PRIVATE_SYNTHETIC_SEI','-metadata','title=PRIVATE_SYNTHETIC_TITLE','-metadata','comment=PRIVATE_SYNTHETIC_COMMENT','-movflags','+faststart',output],{timeout:10000,maxBuffer:131072,windowsHide:true});source=await readFile(output);await rm(output);
  },20000);
  afterAll(async()=>{for(const directory of [root,compiled])if(directory){const p=resolve(directory);if(!(p.startsWith(resolve(tmpdir())+sep)||p.startsWith(process.cwd()+sep+'.video-worker-test-')))throw Error('unsafe cleanup');await rm(p,{recursive:true,force:true});}});
