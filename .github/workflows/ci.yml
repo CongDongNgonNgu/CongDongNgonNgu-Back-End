@@ -57,6 +57,20 @@ jobs:
           PHASE30_PROCESSOR_DIR: /tmp/phase30-approved-processors
           PHASE30_REQUIRE_NATIVE_TESTS: 'true'
 
+      - name: Bounded native video repeatability
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3
+          do
+            printf 'Synthetic native pipeline run %s/3\n' "$attempt"
+            npm test -- --runInBand --runTestsByPath src/attachments/video-processing/native-pipeline.spec.ts
+          done
+        env:
+          PHASE30_PROCESSOR_DIR: /tmp/phase30-approved-processors
+          PHASE30_REQUIRE_NATIVE_TESTS: 'true'
+
       - name: End-to-end tests
         run: npm run test:e2e -- --runInBand
 
