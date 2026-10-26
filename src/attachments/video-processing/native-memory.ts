@@ -1,3 +1,4 @@
+import {posix} from 'node:path';
 /** Linux /proc emits task_mem only while task has an mm:
  * https://raw.githubusercontent.com/torvalds/linux/master/fs/proc/array.c
  * GNU time %M is lifetime maximum resident set in KiB, surviving short commands:
@@ -54,8 +55,9 @@ export function parseCompletedNativePeak(bytes:Buffer):number {
  const match=/^PHASE30_RSS_KIB=([1-9]\d*)\n$/.exec(bytes.toString('utf8'));if(!match)throw Error('PROCESSING_UNAVAILABLE');
  const peak=Number(match[1])*1024;if(!Number.isSafeInteger(peak)||peak<1)throw Error('PROCESSING_UNAVAILABLE');return peak;
 }
-export function measuredNativeInvocation(executable:string,args:string[],measurementFile:string,platform:NodeJS.Platform):{executable:string;args:string[]}{
- return platform==='linux'?{executable:'/usr/bin/time',args:['-q','-f','PHASE30_RSS_KIB=%M','-o',measurementFile,'--',executable,...args]}:{executable,args:[...args]};
+export function measuredNativeInvocation(executable:string,args:string[],measurementFile:string,platform:NodeJS.Platform,timeExecutable?:string):{executable:string;args:string[]}{
+ if(platform==='linux'&&(!timeExecutable||!posix.isAbsolute(timeExecutable)))throw Error('PROCESSING_UNAVAILABLE');
+ return platform==='linux'?{executable:timeExecutable!,args:['-q','-f','PHASE30_RSS_KIB=%M','-o',measurementFile,'--',executable,...args]}:{executable,args:[...args]};
 }
 export async function waitForLinuxGroupExit(groupId:number,probe:(pid:number)=>void=pid=>{process.kill(pid,0);},pause:()=>Promise<void>=()=>new Promise(done=>setTimeout(done,25))):Promise<boolean>{
  if(!Number.isSafeInteger(groupId)||groupId<1)return false;

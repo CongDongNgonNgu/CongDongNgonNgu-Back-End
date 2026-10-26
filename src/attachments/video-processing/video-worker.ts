@@ -1,4 +1,4 @@
-﻿import { spawn, spawnSync } from 'node:child_process';
+﻿import { spawn } from 'node:child_process';
 import { readFileSync, statSync, readdirSync, createReadStream, unlinkSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -9,9 +9,11 @@ import { inspectProbe } from './probe';
 import { stripImageMetadata } from '../processing/strip-image-metadata';
 import {sampleLinuxHighWater,parseCompletedNativePeak,measuredNativeInvocation} from './native-memory';
 import {NativeDiagnosticFailure,diagnoseNativeFailure,type NativeDiagnostic} from './native-diagnostic';
+import {verifyBundledNativeTime} from './native-time';
 const directory = process.argv[2], processors = process.argv[3];
 const declaration = { filename: 'source.mp4', mime: 'video/mp4' };
 let nativePid: number | undefined;
+let timeExecutable:string|undefined;
 let launcherPid:number|undefined,completedNativePeak=0,launcherPeak=0,commandSequence=0;
 let stage:NativeDiagnostic['stage']='BOOT',terminating=false;
 const observe=<T>(point:NativeDiagnostic['point'],work:()=>T):T=>{try{return work();}catch(error){throw new NativeDiagnosticFailure(diagnoseNativeFailure(error,stage,point));}};
@@ -51,7 +53,7 @@ if (process.platform==='win32' && process.env.SystemRoot) environment.SystemRoot
 async function command(executable: string, args: string[]): Promise<string> {
  snapshot();
  return new Promise((accept,reject)=>{
-  const metric=join(directory,'native-rss-'+(++commandSequence)+'.txt'),invocation=measuredNativeInvocation(executable,args,metric,process.platform);
+  const metric=join(directory,'native-rss-'+(++commandSequence)+'.txt'),invocation=measuredNativeInvocation(executable,args,metric,process.platform,timeExecutable);
   const child=observe('COMMAND_SPAWN',()=>spawn(invocation.executable,invocation.args,{cwd:directory,env:environment,shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']}));
   if(process.platform==='linux')launcherPid=child.pid;else nativePid=child.pid;
   process.send?.({nativePid:process.platform==='linux'?null:nativePid,rss:process.memoryUsage().rss});
@@ -68,11 +70,7 @@ async function command(executable: string, args: string[]): Promise<string> {
 }
 async function main(): Promise<void> {
  if (!directory || resolve(directory)!==directory || !processors || resolve(processors)!==processors) throw Error('PROCESSING_UNAVAILABLE');
- if(process.platform==='linux'){
-  const info=statSync('/usr/bin/time');if(!info.isFile()||!(info.mode&0o111))throw Error('PROCESSING_UNAVAILABLE');
-  const version=spawnSync('/usr/bin/time',['--version'],{cwd:directory,env:environment,shell:false,windowsHide:true,timeout:1000,maxBuffer:8192,encoding:'utf8'});
-  if(version.error||version.status!==0||!version.stdout.startsWith('time (GNU Time)'))throw Error('PROCESSING_UNAVAILABLE');
- }
+ if(process.platform==='linux')timeExecutable=(await verifyBundledNativeTime(processors)).executable;
  const windows=process.platform==='win32', manifest=JSON.parse(await readFile(join(processors,'manifest.json'),'utf8'));
  const approvedArchive=windows?'e7bca5e004c2d13bcb374c3a4bd30c4588b08607a4b1a01369341a4f9678dff3':'5ae5939260c72671383f0a0d8785695bfe06c94c27d4daac2e63eb8576417927';
  if(manifest.sha256!==approvedArchive || manifest.version!=='n9.0.2-29-g6dfaba896f')throw Error('PROCESSING_UNAVAILABLE');

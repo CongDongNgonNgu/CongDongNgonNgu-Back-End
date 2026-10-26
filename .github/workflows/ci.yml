@@ -48,13 +48,16 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Native packaging and TEST target guards
+        run: node --test scripts/build-phase30-processors.test.cjs scripts/package-phase30-time.test.cjs scripts/phase30-sql-target.test.cjs
+
       - name: Package checksum-pinned TEST native processors
-        run: node scripts/package-phase30-processors.cjs /tmp/phase30-approved-ffmpeg.tar.xz /tmp/phase30-approved-processors --download
+        run: npm run build:attachments -- --download
 
       - name: Unit tests
         run: npm test -- --runInBand
         env:
-          PHASE30_PROCESSOR_DIR: /tmp/phase30-approved-processors
+          PHASE30_PROCESSOR_DIR: ${{ github.workspace }}/dist/attachments/processors
           PHASE30_REQUIRE_NATIVE_TESTS: 'true'
 
       - name: Bounded native video repeatability
@@ -68,7 +71,7 @@ jobs:
             npm test -- --runInBand --runTestsByPath src/attachments/video-processing/native-pipeline.spec.ts
           done
         env:
-          PHASE30_PROCESSOR_DIR: /tmp/phase30-approved-processors
+          PHASE30_PROCESSOR_DIR: ${{ github.workspace }}/dist/attachments/processors
           PHASE30_REQUIRE_NATIVE_TESTS: 'true'
 
       - name: End-to-end tests
