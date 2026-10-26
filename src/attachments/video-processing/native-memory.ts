@@ -33,13 +33,21 @@ function kernelExitFlag(stat:string,pid:number):boolean{
 }
 function needsExitProof(error:unknown,allowExited:boolean):error is NativeMemoryObservationError{return allowExited&&error instanceof NativeMemoryObservationError&&error.reason==='HWM_MISSING';}
 function validSamplePid(pid:number):void{if(!Number.isSafeInteger(pid)||pid<1||pid>0x7fffffff)throw new NativeMemoryObservationError('HWM_INVALID','UNKNOWN');}
+// proc_single_show returns -ESRCH when an already-open status/stat task vanishes:
+// https://raw.githubusercontent.com/torvalds/linux/master/fs/proc/base.c
+// A missing sampled task supplies no RSS value, lifetime peak or closure proof.
+function taskVanished(error:unknown,allowExited:boolean):boolean{return allowExited&&(error as {code?:unknown}|null)?.code==='ESRCH';}
 export function sampleLinuxHighWater(pid:number,read:(path:string)=>string,allowExited=false):number|null{
- validSamplePid(pid);const status=read('/proc/'+pid+'/status');
- try{return parseLinuxHighWater(status,allowExited);}catch(error){if(needsExitProof(error,allowExited)&&kernelExitFlag(read('/proc/'+pid+'/stat'),pid))return null;throw error;}
+ validSamplePid(pid);
+ const sampledRead=(path:string):string|null=>{try{return read(path);}catch(error){if(taskVanished(error,allowExited))return null;throw error;}};
+ const status=sampledRead('/proc/'+pid+'/status');if(status===null)return null;
+ try{return parseLinuxHighWater(status,allowExited);}catch(error){if(needsExitProof(error,allowExited)){const stat=sampledRead('/proc/'+pid+'/stat');if(stat===null||kernelExitFlag(stat,pid))return null;}throw error;}
 }
 export async function sampleLinuxHighWaterAsync(pid:number,read:(path:string)=>Promise<string>,allowExited=false):Promise<number|null>{
- validSamplePid(pid);const status=await read('/proc/'+pid+'/status');
- try{return parseLinuxHighWater(status,allowExited);}catch(error){if(needsExitProof(error,allowExited)&&kernelExitFlag(await read('/proc/'+pid+'/stat'),pid))return null;throw error;}
+ validSamplePid(pid);
+ const sampledRead=async(path:string):Promise<string|null>=>{try{return await read(path);}catch(error){if(taskVanished(error,allowExited))return null;throw error;}};
+ const status=await sampledRead('/proc/'+pid+'/status');if(status===null)return null;
+ try{return parseLinuxHighWater(status,allowExited);}catch(error){if(needsExitProof(error,allowExited)){const stat=await sampledRead('/proc/'+pid+'/stat');if(stat===null||kernelExitFlag(stat,pid))return null;}throw error;}
 }
 export function parseCompletedNativePeak(bytes:Buffer):number {
  if(!Buffer.isBuffer(bytes)||bytes.length>128)throw Error('PROCESSING_UNAVAILABLE');
