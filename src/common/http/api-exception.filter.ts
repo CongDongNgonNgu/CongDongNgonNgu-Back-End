@@ -11,6 +11,7 @@ import type { ApiFailure } from "./api-response";
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
+    exception = this.normalizeParserError(exception);
     const response = host.switchToHttp().getResponse<Response>();
     const status = exception instanceof HttpException
       ? exception.getStatus()
@@ -32,6 +33,21 @@ export class ApiExceptionFilter implements ExceptionFilter {
       },
     };
     response.status(status).json(body);
+  }
+
+  private normalizeParserError(exception: unknown): unknown {
+    if (!(exception instanceof Error) || exception instanceof HttpException) return exception;
+    // Express parser errors use http-errors rather than Nest HttpException.
+    // Preserve their client status without exposing payloads or decoder details.
+    if (!('status' in exception) || !('statusCode' in exception) ||
+        !('expose' in exception) || exception.expose !== true ||
+        exception.status !== exception.statusCode) return exception;
+    switch (exception.status) {
+      case 400: return new HttpException('Invalid request body', 400);
+      case 413: return new HttpException('Request body too large', 413);
+      case 415: return new HttpException('Unsupported request encoding', 415);
+      default: return exception;
+    }
   }
 
   private readMessage(exception: unknown, status: number): string {
