@@ -20,10 +20,7 @@ target="$CDNN_SSH_USER@$CDNN_SSH_HOST"
 release="/var/www/congdongngonngu/backend/.releases/$APPROVED_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 git archive --format=tar "$APPROVED_SHA" > "$scratch/source.tar"
 digest=$(sha256sum "$scratch/source.tar" | cut -d ' ' -f 1)
-# Every interpolated remote argument is a validated hex/digit value or a fixed path.
-remote_command="umask 077; test \"\$(id -un)\" = cdnn-deploy && mkdir -p /var/www/congdongngonngu/backend/.releases && mkdir '$release'"
-ssh "${options[@]}" "$target" "$remote_command"
-remote_command="cat > '$release/source.tar'"
-ssh "${options[@]}" "$target" "$remote_command" < "$scratch/source.tar"
-remote_command="set -eu; cd '$release'; printf '%s  source.tar\n' '$digest' | sha256sum -c -; tar -xf source.tar; rm source.tar; printf '%s\n' '$APPROVED_SHA' > .source-sha; bash scripts/deploy/release.sh '$APPROVED_SHA' '$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT'"
-ssh "${options[@]}" "$target" "$remote_command"
+# Send fixed shell programs through stdin; every substituted value is validated hex/digits or a fixed path.
+printf 'umask 077\nid -un | grep -qx cdnn-deploy\nmkdir -p /var/www/congdongngonngu/backend/.releases\nmkdir "%s"\n' "$release" | ssh "${options[@]}" "$target" 'bash -seu'
+scp "${options[@]}" "$scratch/source.tar" "$target:$release/source.tar"
+printf 'cd "%s"\necho "%s  source.tar" | sha256sum -c -\ntar -xf source.tar\nrm source.tar\necho "%s" > .source-sha\nbash scripts/deploy/release.sh "%s" "%s-%s"\n' "$release" "$digest" "$APPROVED_SHA" "$APPROVED_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" | ssh "${options[@]}" "$target" 'bash -seu'
