@@ -17,7 +17,7 @@ function listeningPorts(table,inodes){
  }
  return [...ports].sort((a,b)=>a-b);
 }
-function inspectProcess(pid,{procRoot='/proc'}={}){
+function inspectProcess(pid,{procRoot='/proc',expectedInterpreter='/usr/bin/node'}={}){
  if(!Number.isSafeInteger(pid)||pid<1)throw Error('Invalid process PID');
  const root=path.join(procRoot,String(pid)),before=startTicks(fs.readFileSync(path.join(root,'stat'),'utf8'));
  const cwd=fs.readlinkSync(path.join(root,'cwd')),exe=fs.readlinkSync(path.join(root,'exe')),inodes=new Set();
@@ -28,6 +28,6 @@ function inspectProcess(pid,{procRoot='/proc'}={}){
  const ports=new Set();
  for(const table of ['tcp','tcp6'])for(const port of listeningPorts(fs.readFileSync(path.join(root,'net',table),'utf8'),inodes))ports.add(port);
  if(startTicks(fs.readFileSync(path.join(root,'stat'),'utf8'))!==before||fs.readlinkSync(path.join(root,'exe'))!==exe||fs.readlinkSync(path.join(root,'cwd'))!==cwd)throw Error('Runtime process changed during inspection');
- return {pid,startTicks:before,cwdMatches:cwd==='/var/www/congdongngonngu/backend',executableMatches:exe==='/usr/bin/node',listeningOn3201:ports.has(3201)};
+ return {pid,startTicks:before,cwdMatches:cwd==='/var/www/congdongngonngu/backend',executableMatches:exe===expectedInterpreter,listeningOn3201:ports.has(3201)};
 }
 module.exports={startTicks,listeningPorts,inspectProcess};

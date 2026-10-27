@@ -33,7 +33,10 @@ service=congdongngonngu-backend, environment=production. Process titles can cont
 spaces: parse /proc/PID/stat after its final closing parenthesis; whitespace-only
 field splitting is invalid. The new diagnostic has regression coverage for this.
 These observations establish the measured listener and health identity, not an
-immutable PM2 launch declaration or a future restart test.
+immutable PM2 launch declaration or a future restart test. A PID-owned IPv6
+listener and a separate IPv4 localhost health response do not alone prove that
+the request reached that exact PID; address-family/reuse-port correlation remains
+an explicit limitation. Supplementary evidence cannot complete the contract.
 
 PM2 options observed: autorestart=true, watch=false, max_memory_restart=1073741824,
 treekill=true; kill_timeout, listen_timeout, restart_delay,

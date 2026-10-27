@@ -33,6 +33,7 @@ test('Linux fixture proves only PID-owned listener and allowlisted identity with
   fs.writeFileSync(path.join(proc,'net','tcp'),'header\n 0: 00000000:0C81 00000000:0000 0A 0:0 0:0 0 1001 0 22\n');
   fs.writeFileSync(path.join(proc,'net','tcp6'),'header\n');
   assert.deepEqual(inspectProcess(123,{procRoot:root}),{pid:123,startTicks:'456',cwdMatches:true,executableMatches:true,listeningOn3201:true});
+  assert.equal(inspectProcess(123,{procRoot:root,expectedInterpreter:'/usr/local/bin/node'}).executableMatches,false);
   fs.unlinkSync(path.join(proc,'fd','3'));assert.equal(inspectProcess(123,{procRoot:root}).listeningOn3201,false);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
