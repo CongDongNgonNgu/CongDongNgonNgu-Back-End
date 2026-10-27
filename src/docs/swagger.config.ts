@@ -52,7 +52,9 @@ export function parseSwaggerConfig(
         databasePassword,
       ].some(
         (value) =>
-          typeof value === "string" && value.length > 0 && password === value,
+          typeof value === "string" &&
+          value.length > 0 &&
+          (password === value || username === value),
       )
     )
       throw new Error(

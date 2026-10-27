@@ -75,6 +75,37 @@ describe("Swagger configuration", () => {
       ),
     ).toThrow("separate");
   });
+  it("rejects application or database secrets reused as the documentation username", () => {
+    const secret = password();
+    for (const field of [
+      "JWT_ACCESS_SECRET",
+      "JWT_REFRESH_SECRET",
+      "SESSION_SECRET",
+    ]) {
+      expect(() =>
+        parseSwaggerConfig(
+          {
+            SWAGGER_ENABLED: "true",
+            SWAGGER_USERNAME: secret,
+            SWAGGER_PASSWORD: password(),
+            [field]: secret,
+          },
+          "production",
+        ),
+      ).toThrow("separate");
+    }
+    expect(() =>
+      parseSwaggerConfig(
+        {
+          SWAGGER_ENABLED: "true",
+          SWAGGER_USERNAME: secret,
+          SWAGGER_PASSWORD: password(),
+          DATABASE_URL: "postgresql://test:" + secret + "@localhost/test",
+        },
+        "production",
+      ),
+    ).toThrow("separate");
+  });
   it("accepts independent credentials and only explicit loopback proxy trust", () => {
     const secret = password();
     expect(
