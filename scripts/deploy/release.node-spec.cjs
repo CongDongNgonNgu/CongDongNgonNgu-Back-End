@@ -8,6 +8,7 @@ for(const failure of ['none','build','health','swap','external'])test('isolated 
  try{
   const sha='a'.repeat(40),oldSha='b'.repeat(40),release=path.join(base,'.releases',sha+'-1-1'),old=path.join(base,'.releases','previous','dist'),bin=path.join(base,'bin');
   fs.mkdirSync(old,{recursive:true});fs.mkdirSync(release,{recursive:true});fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(path.dirname(old),'.source-sha'),oldSha);
   fs.writeFileSync(path.join(old,'cdnn-release.json'),JSON.stringify({sha:oldSha}));
   const original=failure==='external'?path.join(base,'outside','dist'):old;
   fs.mkdirSync(original,{recursive:true});
@@ -33,6 +34,7 @@ for(const failure of ['none','build','health','swap','external'])test('isolated 
   if(failure==='build'||failure==='external')assert.equal(fs.existsSync(path.join(base,'restarts')),false);
   else {
    const ledger=fs.readFileSync(path.join(base,'.deployment-ledger.jsonl'),'utf8');
+   assert.equal(JSON.parse(ledger.trim()).deployed_sha,failure==='none'?sha:oldSha);
    assert.equal(JSON.parse(ledger.trim()).result,failure==='none'?'verified':'rolled_back');
   }
   if(__dirname.includes('Front-End')&&failure==='none'){

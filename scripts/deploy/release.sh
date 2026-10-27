@@ -17,6 +17,8 @@ test -L "$base/dist" || { echo 'Reviewed dist symlink bootstrap required; no act
 previous=$(readlink -f "$base/dist")
 [[ "$previous" == "$base/.releases/"*/dist ]]
 test -d "$previous"
+previous_sha=$(cat "$(dirname "$previous")/.source-sha")
+[[ "$previous_sha" =~ ^[0-9a-f]{40}$ ]]
 
 export PM2_HOME=/home/cdnn-deploy/.pm2
 test -f "$base/.env" && test ! -L "$base/.env"
@@ -50,7 +52,9 @@ verify() {
   return 1
 }
 record() {
-  printf '{"sha":"%s","previous":"%s","timestamp":"%s","result":"%s"}\n' "$sha" "$previous" "$(date -u +%FT%TZ)" "$1" >> "$base/.deployment-ledger.jsonl"
+  local deployed_sha=unknown
+  case "$1" in verified) deployed_sha=$sha;; rolled_back) deployed_sha=$previous_sha;; esac
+  printf '{"attempted_sha":"%s","deployed_sha":"%s","previous":"%s","timestamp":"%s","result":"%s"}\n' "$sha" "$deployed_sha" "$previous" "$(date -u +%FT%TZ)" "$1" >> "$base/.deployment-ledger.jsonl"
 }
 recover() {
   local status=$?
