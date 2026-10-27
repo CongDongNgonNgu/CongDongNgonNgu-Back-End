@@ -127,3 +127,7 @@ No planned maintenance outage is required for a supported atomic exchange of byt
 `node --test scripts/deploy/*.node-spec.cjs` runs portable provenance/plan checks and Linux real-exchange integration. Linux tests use only mkdtemp synthetic files/dependencies, no network verifier, real VPS paths, Production .env or database. They cover umask077, module resolution after symlink activation, old assets/marker, stale evidence/approval, runtime drift, copy/exchange/health/fsync failures, path escapes, lock contention, tamper refusal, SIGKILL at journal boundaries and during recovery. Existing Linux release/rollback tests remain active. Windows skips kernel-specific tests; green Linux CI is required, not optional.
 
 Background references: [Node module realpath resolution](https://nodejs.org/api/modules.html), [Linux atomic exchange](https://man7.org/linux/man-pages/man2/renameat2.2.html), [PM2 runtime options](https://pm2.keymetrics.io/docs/usage/application-declaration/). Existing Workspace runbook remains the cross-repository policy; this procedure supplements its bootstrap gate without activating Production.
+
+## Runtime and provenance investigation
+
+See [the read-only evidence and separately gated migration design](../../docs/deployment/RUNTIME-PROVENANCE.md). Runtime review and artifact provenance remain BLOCKED; isolated comparison reports cannot approve bootstrap.

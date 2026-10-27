@@ -1,0 +1,77 @@
+name: Pinned artifact reproduction investigation
+
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: artifact-reproduction-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reproduce:
+    name: Isolated Linux build (${{ matrix.replica }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - name: Check out report helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: helpers
+          persist-credentials: false
+      - name: Check out exact Production source into isolated directory
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: '9f1d6b50dd5d33d312feba0fa23fa4d1e2d46682'
+          path: source
+          persist-credentials: false
+      - name: Set up observed Production runtime Node version
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.18.1'
+      - name: Pin observed npm version and verify source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global npm@11.16.0 --ignore-scripts
+          test "$(node --version)" = v24.18.1
+          test "$(npm --version)" = 11.16.0
+          test "$(git -C source rev-parse HEAD)" = '9f1d6b50dd5d33d312feba0fa23fa4d1e2d46682'
+      - name: Build without Production secrets or database access
+        working-directory: source
+        env:
+          VITE_API_BASE_URL: ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --include=dev
+          npm run build
+      - name: Compare complete artifact hashes without approving provenance
+        env:
+          VITE_API_BASE_URL: ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          node helpers/scripts/deploy/artifact-report.cjs "$GITHUB_WORKSPACE/source" > artifact-report.json
+          node -e 'const r=require("./artifact-report.json");console.log(JSON.stringify({sourceSha:r.sourceSha,hashes:r.hashes,comparisons:r.comparisons,provenanceStatus:r.provenanceStatus,blockers:r.blockers},null,2))'
+          printf 'Original Production build versions, flags, Linux distribution and settings remain UNVERIFIED. This is an investigation, not bootstrap approval.\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve comparison report and exact fresh build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-pinned-build-${{ matrix.replica }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            artifact-report.json
+            source/dist/
+            source/package.json
+            source/package-lock.json

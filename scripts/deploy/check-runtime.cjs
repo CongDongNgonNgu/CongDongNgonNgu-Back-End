@@ -26,8 +26,15 @@ async function collect(){
  const version=spawnSync(resolvedInterpreter,['--version'],{encoding:'utf8',timeout:5000,env:{PATH:process.env.PATH}});
  if(version.status!==0)throw Error('Cannot verify actual interpreter');
  const proof={resolvedInterpreter,nodeVersion:version.stdout.trim().replace(/^v/,'')};
+ const kernel=require('./runtime-proof.cjs').inspectProcess(matches[0].pid);
+ const {validHealth}=require('./release-checks.cjs');
+ let application={httpStatus:null,productionHealth:false};
+ try{const response=await fetch('http://127.0.0.1:3201/api/v1/health',{redirect:'error',signal:AbortSignal.timeout(5000)});application={httpStatus:response.status,productionHealth:validHealth(response.status,await response.json())};}catch{}
+ const after=require('./runtime-proof.cjs').inspectProcess(matches[0].pid);
+ if(JSON.stringify(after)!==JSON.stringify(kernel))throw Error('Process changed across health inspection');
+ const independentEvidence={pm2OnlineProcessCount:matches.length,kernel,application};
  const metadata=runtimeMetadata(rows,proof),contract=JSON.parse(fs.readFileSync(__dirname+'/runtime-contract.json','utf8'));
- return {reviewed:validateRuntime(rows,contract,proof),metadata,fingerprint:crypto.createHash('sha256').update(JSON.stringify({metadata,contract})).digest('hex')};
+ return {reviewed:validateRuntime(rows,contract,proof)&&kernel.cwdMatches&&kernel.listeningOn3201&&application.productionHealth,metadata,independentEvidence,fingerprint:crypto.createHash('sha256').update(JSON.stringify({metadata,contract,independentEvidence})).digest('hex')};
 }
 function capture(){
  const result=spawnSync(process.execPath,[__filename,'--capture'],{encoding:'utf8',maxBuffer:1024*1024,timeout:15000,env:{PATH:process.env.PATH,PM2_HOME:process.env.PM2_HOME}});
@@ -36,7 +43,7 @@ function capture(){
 }
 module.exports={capture};
 if(require.main===module)collect().then(result=>{
- if(process.argv.includes('--inspect'))console.log(JSON.stringify({reviewed:false,...result.metadata},null,2));
+ if(process.argv.includes('--inspect'))console.log(JSON.stringify({reviewed:false,...result.metadata,independentEvidence:result.independentEvidence,metadataSource:'PM2 getMonitorData; null means absent or unsupported, not an effective application default'},null,2));
  else if(process.argv.includes('--capture'))console.log(JSON.stringify(result));
  else if(!result.reviewed)throw Error('Runtime review incomplete');
 }).catch(()=>{console.error('PM2 runtime gate failed; inspect sanitized metadata and review contract. No daemon startup fallback is permitted.');process.exitCode=1;});
