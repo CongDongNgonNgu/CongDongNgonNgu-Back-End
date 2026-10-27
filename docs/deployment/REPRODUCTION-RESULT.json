@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "purpose": "reviewed-byte-reproduction-summary",
+  "app": "backend",
+  "byteReproducibility": "PASS",
+  "historicalBuildProvenance": "NOT_ESTABLISHED",
+  "bootstrapReadiness": "BLOCKED",
+  "sourceSha": "9f1d6b50dd5d33d312feba0fa23fa4d1e2d46682",
+  "toolchain": {
+    "osImage": "ubuntu-24.04",
+    "node": "24.18.1",
+    "npm": "11.16.0",
+    "originalBuildToolchainVerified": false
+  },
+  "commands": [
+    "npm ci --include=dev",
+    "npm run build"
+  ],
+  "hashes": {
+    "distHash": "80a19572e5f1def889327768a8e4a005bfd14069f17d6c1403ba40b7efebe4b4",
+    "modulesHash": "5ce1d6f9af1c4aef1b137841f228316c3ed3af358c45501c8679d42b16aea64f",
+    "packageHash": "07b0cd20cfdbd0d95c96386b97a4102074e1d1ac046b264fbfc969c1ac164a43",
+    "lockHash": "821fa821a2f350974d20f88f04d5c94e5f4605c902204aa17c7ad98d0ac35616"
+  },
+  "replicas": [
+    {
+      "replica": 1,
+      "reportSha256": "cedc2e76d10424d5715fa7fb7fd92e7caeb40ab82847444afce5202d1df32ebe",
+      "toolchain": {
+        "platform": "linux",
+        "arch": "x64",
+        "kernel": "7.0.0-1017-azure",
+        "node": "24.18.1",
+        "npm": "11.16.0"
+      },
+      "comparisons": {
+        "distHash": "MATCH",
+        "modulesHash": "MATCH",
+        "packageHash": "MATCH",
+        "lockHash": "MATCH"
+      },
+      "distDifferences": {
+        "onlyInProduction": [],
+        "onlyInBuild": [],
+        "changed": []
+      },
+      "artifact": {
+        "id": 12735767418,
+        "url": "https://github.com/CongDongNgonNgu/CongDongNgonNgu-Back-End/actions/runs/40508036840/artifacts/12735767418",
+        "digest": "sha256:7dc2bce0d6fa3891dbede35e6928c4ef66ec14a8baf99325ade51fe3f57b7f7f",
+        "expiresAt": "2026-11-26T12:59:00Z"
+      }
+    },
+    {
+      "replica": 2,
+      "reportSha256": "473a244849edc9b11527b6ac6d10b4502facf024b417b0c3a8e2e53f686beed6",
+      "toolchain": {
+        "platform": "linux",
+        "arch": "x64",
+        "kernel": "6.17.0-1022-azure",
+        "node": "24.18.1",
+        "npm": "11.16.0"
+      },
+      "comparisons": {
+        "distHash": "MATCH",
+        "modulesHash": "MATCH",
+        "packageHash": "MATCH",
+        "lockHash": "MATCH"
+      },
+      "distDifferences": {
+        "onlyInProduction": [],
+        "onlyInBuild": [],
+        "changed": []
+      },
+      "artifact": {
+        "id": 12734774618,
+        "url": "https://github.com/CongDongNgonNgu/CongDongNgonNgu-Back-End/actions/runs/40508036840/artifacts/12734774618",
+        "digest": "sha256:54318937fc171aadaf253af6b4ea7a32c2a70903443422f0b30bb8d38e5f2c90",
+        "expiresAt": "2026-11-26T12:59:03Z"
+      }
+    }
+  ],
+  "nonsecretBuildConfiguration": {},
+  "provenanceStatus": "PASS",
+  "provenanceMethod": "reproducible-build",
+  "reviewed": true,
+  "reviewedBy": "Codex coordinator; independent review /root/provenance",
+  "scope": "Exact content trees and package/lock bytes; excludes historical build chain, permissions, ownership, runtime and activation approval",
+  "run": {
+    "url": "https://github.com/CongDongNgonNgu/CongDongNgonNgu-Back-End/actions/runs/40508036840",
+    "id": 40508036840,
+    "attempt": 1,
+    "helperRevision": "362e1ef46d978fd3120a8e7e2ebf54a37b425ca8",
+    "status": "success"
+  }
+}

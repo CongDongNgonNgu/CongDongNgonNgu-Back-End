@@ -130,4 +130,4 @@ Background references: [Node module realpath resolution](https://nodejs.org/api/
 
 ## Runtime and provenance investigation
 
-See [the read-only evidence and separately gated migration design](../../docs/deployment/RUNTIME-PROVENANCE.md). Runtime review and artifact provenance remain BLOCKED; isolated comparison reports cannot approve bootstrap.
+See [the read-only evidence and separately gated migration design](../../docs/deployment/RUNTIME-PROVENANCE.md). Reproducible-build content provenance is reviewed PASS. Runtime/Nginx/bootstrap gates remain BLOCKED; isolated comparison reports alone cannot approve bootstrap.

@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "app": "backend",
+  "sourceSha": "9f1d6b50dd5d33d312feba0fa23fa4d1e2d46682",
+  "distHash": "80a19572e5f1def889327768a8e4a005bfd14069f17d6c1403ba40b7efebe4b4",
+  "modulesHash": "5ce1d6f9af1c4aef1b137841f228316c3ed3af358c45501c8679d42b16aea64f",
+  "packageHash": "07b0cd20cfdbd0d95c96386b97a4102074e1d1ac046b264fbfc969c1ac164a43",
+  "lockHash": "821fa821a2f350974d20f88f04d5c94e5f4605c902204aa17c7ad98d0ac35616",
+  "provenance": {
+    "method": "reproducible-build",
+    "reference": "https://github.com/CongDongNgonNgu/CongDongNgonNgu-Back-End/actions/runs/40508036840",
+    "reviewedBy": "Codex coordinator; independent review /root/provenance",
+    "summary": "REPRODUCTION-RESULT.json",
+    "historicalBuildProvenance": "NOT_ESTABLISHED"
+  }
+}

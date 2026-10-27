@@ -1,7 +1,9 @@
 ﻿# Runtime proof and artifact provenance investigation
 
-Status: RUNTIME_CONTRACT_STATUS=BLOCKED; BACKEND_PROVENANCE=BLOCKED;
-FRONTEND_PROVENANCE=BLOCKED; BOOTSTRAP_READINESS=BLOCKED.
+Status: RUNTIME_CONTRACT_STATUS=BLOCKED; BACKEND_PROVENANCE=PASS;
+FRONTEND_PROVENANCE=PASS; BOOTSTRAP_READINESS=BLOCKED.
+Provenance PASS is exact reproducible-build content evidence; original historical
+build procedures remain NOT_ESTABLISHED.
 This is preparation on dev only. Production activation remains locked.
 
 ## Observations on 2026-10-27
@@ -142,3 +144,35 @@ Operator approval=PENDING; operational recovery validation=PENDING.
 References: [PM2 options](https://pm2.keymetrics.io/docs/usage/application-declaration/),
 [Nest configuration](https://docs.nestjs.com/techniques/configuration),
 [Nginx symlink directive](https://nginx.org/en/docs/http/ngx_http_core_module.html#disable_symlinks).
+
+## Independently reviewed reproduction result
+
+Both replicas for both applications match every required observed content hash.
+Backend has zero differences across all 1161 dist records; Frontend has zero
+differences across all 143 records, including the complete assets tree. There are
+no unexplained historical extras in these snapshots. All Backend dependency,
+package and lockfile digests match as well. Unknown original tools/commands do
+not establish historical build history, but the demonstrated exact-SHA recipe
+independently reproduces every observed byte. No mismatch was normalized away.
+
+The coordinator and independent reviewer checked reports and downloaded ZIP
+digests against GitHub metadata. The original automated reports remain unchanged
+and unreviewed; the separate [reviewed result](REPRODUCTION-RESULT.json) records
+content provenance PASS with source/helper revisions, two replica identities,
+report hashes, exact component hashes and immutable artifact digests.
+[Provenance-only bootstrap evidence](bootstrap-evidence.provenance.json) does not
+approve runtime, Nginx traversal, bootstrap apply, or any other Production action.
+Backend runtime-contract.json remains reviewed=false. Frontend symlink policy
+review remains false. Do not mistake these files for operator apply approval.
+
+Reviewed backend run: https://github.com/CongDongNgonNgu/CongDongNgonNgu-Back-End/actions/runs/40508036840 (attempt 1).
+
+- Replica 1: [artifact 12735767418](https://github.com/CongDongNgonNgu/CongDongNgonNgu-Back-End/actions/runs/40508036840/artifacts/12735767418), archive `sha256:7dc2bce0d6fa3891dbede35e6928c4ef66ec14a8baf99325ade51fe3f57b7f7f`, report `cedc2e76d10424d5715fa7fb7fd92e7caeb40ab82847444afce5202d1df32ebe`.
+- Replica 2: [artifact 12734774618](https://github.com/CongDongNgonNgu/CongDongNgonNgu-Back-End/actions/runs/40508036840/artifacts/12734774618), archive `sha256:54318937fc171aadaf253af6b4ea7a32c2a70903443422f0b30bb8d38e5f2c90`, report `473a244849edc9b11527b6ac6d10b4502facf024b417b0c3a8e2e53f686beed6`.
+
+The GitHub artifact retention deadline is 2026-11-26. Reviewed results and
+content manifests are preserved in Git; the operator should retain the downloaded
+archives in approved durable storage before that deadline. Existing local copies
+are under the parent workspace runtime-provenance-evidence directory. No archive
+has been uploaded or copied to Production. The fallback migration design above
+remains a contingency, not a required replacement for proven content.
