@@ -1,3 +1,4 @@
+import { parseSwaggerConfig, type SwaggerConfig } from '../docs/swagger.config';
 import { parseAttachmentCapabilities } from '../attachments/attachment-policy';
 const BLOCKED_HOST_MARKERS = ["eduai", "giaoducso.org.vn"] as const;
 
@@ -8,6 +9,7 @@ export type StorageProviderSetting = OptionalProvider | "r2";
 export type PaymentProviderSetting = "disabled" | "payos";
 
 export interface ValidatedEnvironment {
+  SWAGGER: SwaggerConfig;
   ATTACHMENTS: ReturnType<typeof parseAttachmentCapabilities>;
   NODE_ENV: RuntimeEnvironment;
   PORT: number;
@@ -141,6 +143,7 @@ export function validateEnvironment(
     ValidatedEnvironment,
     'AUTH_PERSISTENCE' | 'AUTH_ACCESS_TTL_SECONDS' | 'AUTH_REFRESH_TTL_SECONDS' | 'AUTH_OAUTH_PROVIDERS'
   > = {
+    SWAGGER: parseSwaggerConfig(input, environment),
     ATTACHMENTS: parseAttachmentCapabilities(input),
     NODE_ENV: environment,
     PORT: port,

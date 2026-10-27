@@ -1,3 +1,4 @@
+import { configureSwagger } from './docs/swagger.setup';
 import { ValidationPipe, type INestApplication } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type { RuntimeConfig } from "./config/configuration";
@@ -34,4 +35,5 @@ export function configureApp(app: INestApplication): void {
     }
     next();
   });
+  configureSwagger(app);
 }

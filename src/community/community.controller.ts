@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -28,6 +29,8 @@ import {
 } from './community.dto';
 import { OptionalAccessTokenGuard } from './optional-access-token.guard';
 
+@ApiTags("Community")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('community')
 export class CommunityController {
   constructor(
@@ -35,6 +38,12 @@ export class CommunityController {
     private readonly sessions: SessionService,
   ) {}
 
+  @ApiOperation({ summary: "Create Post - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('posts')
   @UseGuards(AccessTokenGuard)
   async createPost(
@@ -48,6 +57,8 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "List Posts - Community", security: [{}, { bearer: [] }] })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('posts')
   @UseGuards(OptionalAccessTokenGuard)
   async listPosts(
@@ -60,6 +71,9 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Get Share Link - Community", security: [{}, { bearer: [] }] })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('posts/:postId/share')
   @UseGuards(OptionalAccessTokenGuard)
   async getShareLink(
@@ -71,6 +85,9 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Get Post - Community", security: [{}, { bearer: [] }] })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('posts/:postId')
   @UseGuards(OptionalAccessTokenGuard)
   async getPost(
@@ -83,6 +100,13 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Update Post - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Patch('posts/:postId')
   @UseGuards(AccessTokenGuard)
   async updatePost(
@@ -97,6 +121,13 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Delete Post - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete('posts/:postId')
   @UseGuards(AccessTokenGuard)
   async deletePost(
@@ -110,6 +141,13 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Create Comment - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('posts/:postId/comments')
   @UseGuards(AccessTokenGuard)
   async createComment(
@@ -124,6 +162,9 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "List Comments - Community", security: [{}, { bearer: [] }] })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('posts/:postId/comments')
   @UseGuards(OptionalAccessTokenGuard)
   async listComments(
@@ -137,6 +178,13 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Update Comment - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "commentId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Patch('comments/:commentId')
   @UseGuards(AccessTokenGuard)
   async updateComment(
@@ -151,6 +199,13 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Delete Comment - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "commentId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete('comments/:commentId')
   @UseGuards(AccessTokenGuard)
   async deleteComment(
@@ -164,6 +219,13 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Add Reaction - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('posts/:postId/reactions')
   @UseGuards(AccessTokenGuard)
   async addReaction(
@@ -178,6 +240,14 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Remove Reaction - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "type", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete('posts/:postId/reactions/:type')
   @UseGuards(AccessTokenGuard)
   async removeReaction(
@@ -192,6 +262,13 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Save Post - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('posts/:postId/save')
   @UseGuards(AccessTokenGuard)
   async savePost(
@@ -205,6 +282,13 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Unsave Post - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete('posts/:postId/save')
   @UseGuards(AccessTokenGuard)
   async unsavePost(
@@ -218,6 +302,10 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "List Saved Posts - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('saved-posts')
   @UseGuards(AccessTokenGuard)
   async listSavedPosts(
@@ -230,6 +318,12 @@ export class CommunityController {
     );
   }
 
+  @ApiOperation({ summary: "Report - Community" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('reports')
   @UseGuards(AccessTokenGuard)
   async report(

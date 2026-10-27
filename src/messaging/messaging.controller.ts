@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Body, Controller, Get, Header, Headers, HttpCode, Param, ParseUUIDPipe, Post, Query, Req,
   Sse, SseSignal, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -11,6 +12,10 @@ import { MessageFailure } from './message-failure';
 import { ConversationListDto, MarkDirectMessageReadDto, MessageHistoryDto, MessageStreamQueryDto,
   OpenDirectConversationDto, SendDirectMessageDto } from './messaging.dto';
 
+@ApiTags("Messaging")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
+@ApiBearerAuth('bearer')
+@ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('exchange/conversations')
 @UseGuards(AccessTokenGuard)
 export class MessagingController {
@@ -18,29 +23,46 @@ export class MessagingController {
     private readonly messages: PostgresDirectMessageRepository, private readonly streams: MessageStreamService,
     private readonly sessions: SessionService, private readonly config: ConfigService) {}
 
+  @ApiOperation({ summary: "Open - Messaging" })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post()
   async open(@Req() request: AuthenticatedRequest, @Body() input: OpenDirectConversationDto) {
     this.sessions.assertCsrfForCookie(request);
     return success(await this.conversations.open(request.user!.user.id, input.partnerUserId));
   }
 
+  @ApiOperation({ summary: "List - Messaging" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get()
   async list(@Req() request: AuthenticatedRequest, @Query() query: ConversationListDto) {
     return success(await this.conversations.list(request.user!.user.id, query));
   }
 
+  @ApiOperation({ summary: "Get - Messaging" })
+  @ApiParam({ name: "conversationId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':conversationId')
   async get(@Req() request: AuthenticatedRequest,
     @Param('conversationId', new ParseUUIDPipe({ version: '4' })) id: string) {
     return success(await this.conversations.get(request.user!.user.id, id));
   }
 
+  @ApiOperation({ summary: "History - Messaging" })
+  @ApiParam({ name: "conversationId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':conversationId/messages')
   async history(@Req() request: AuthenticatedRequest, @Query() query: MessageHistoryDto,
     @Param('conversationId', new ParseUUIDPipe({ version: '4' })) id: string) {
     return success(await this.messages.history(request.user!.user.id, id, query));
   }
 
+  @ApiOperation({ summary: "Send - Messaging" })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "conversationId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':conversationId/messages')
   async send(@Req() request: AuthenticatedRequest, @Body() input: SendDirectMessageDto,
     @Param('conversationId', new ParseUUIDPipe({ version: '4' })) id: string) {
@@ -48,6 +70,10 @@ export class MessagingController {
     return success(await this.messages.send(request.user!.user.id, id, input));
   }
 
+  @ApiOperation({ summary: "Context - Messaging" })
+  @ApiParam({ name: "conversationId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "messageId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':conversationId/messages/:messageId/context')
   async context(@Req() request: AuthenticatedRequest,
     @Param('conversationId', new ParseUUIDPipe({ version: '4' })) id: string,
@@ -55,6 +81,11 @@ export class MessagingController {
     return success(await this.messages.context(request.user!.user.id, id, messageId));
   }
 
+  @ApiOperation({ summary: "Read - Messaging" })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "conversationId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':conversationId/read')
   @HttpCode(200)
   async read(@Req() request: AuthenticatedRequest, @Body() input: MarkDirectMessageReadDto,
@@ -64,6 +95,10 @@ export class MessagingController {
     return success(null);
   }
 
+  @ApiOperation({ summary: "Stream - Messaging" })
+  @ApiParam({ name: "conversationId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "last-event-id", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Server-sent event stream; existing access and reconnect policies apply', content: { 'text/event-stream': { schema: { type: 'string' } } } })
   @Sse(':conversationId/stream')
   @Header('Cache-Control', 'private, no-store, no-transform')
   @Header('X-Accel-Buffering', 'no')

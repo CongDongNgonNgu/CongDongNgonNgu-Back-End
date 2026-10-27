@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -17,17 +18,21 @@ import type {
 } from './notification.contracts';
 
 export class NotificationPreferenceChangeDto {
+  @ApiProperty({ type: String, enum: Array.from(NOTIFICATION_CATEGORIES) })
   @IsIn(NOTIFICATION_CATEGORIES)
   category!: NotificationCategory;
 
+  @ApiProperty({ type: String, enum: Array.from(NOTIFICATION_DELIVERY_CHANNELS) })
   @IsIn(NOTIFICATION_DELIVERY_CHANNELS)
   channel!: NotificationDeliveryChannel;
 
+  @ApiProperty({ type: Boolean })
   @IsBoolean()
   enabled!: boolean;
 }
 
 export class UpdateNotificationPreferencesDto {
+  @ApiProperty({ type: () => NotificationPreferenceChangeDto, isArray: true, minItems: 1, maxItems: 32 })
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(32)

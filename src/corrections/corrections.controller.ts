@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -24,6 +25,8 @@ import {
   ListStructuredResponsesQueryDto,
 } from './corrections.dto';
 
+@ApiTags("Corrections")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('community')
 export class CorrectionsController {
   constructor(
@@ -31,6 +34,12 @@ export class CorrectionsController {
     private readonly sessions: SessionService,
   ) {}
 
+  @ApiOperation({ summary: "Create Correction Request - Corrections" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('correction-requests')
   @UseGuards(AccessTokenGuard)
   async createCorrectionRequest(
@@ -44,6 +53,9 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "Get Correction Request - Corrections", security: [{}, { bearer: [] }] })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('correction-requests/:postId')
   @UseGuards(OptionalAccessTokenGuard)
   async getCorrectionRequest(
@@ -56,6 +68,12 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "Create Question - Corrections" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('questions')
   @UseGuards(AccessTokenGuard)
   async createQuestion(
@@ -69,6 +87,9 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "Get Question - Corrections", security: [{}, { bearer: [] }] })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('questions/:postId')
   @UseGuards(OptionalAccessTokenGuard)
   async getQuestion(
@@ -81,6 +102,13 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "Create Structured Response - Corrections" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('posts/:postId/structured-responses')
   @UseGuards(AccessTokenGuard)
   async createStructuredResponse(
@@ -95,6 +123,9 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "List Structured Responses - Corrections", security: [{}, { bearer: [] }] })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('posts/:postId/structured-responses')
   @UseGuards(OptionalAccessTokenGuard)
   async listStructuredResponses(
@@ -112,6 +143,9 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "Get Structured Response - Corrections", security: [{}, { bearer: [] }] })
+  @ApiParam({ name: "responseId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('structured-responses/:responseId')
   @UseGuards(OptionalAccessTokenGuard)
   async getStructuredResponse(
@@ -127,6 +161,13 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "Add Structured Response Helpful Vote - Corrections" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "responseId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Put('structured-responses/:responseId/helpful')
   @UseGuards(AccessTokenGuard)
   async addStructuredResponseHelpfulVote(
@@ -143,6 +184,13 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "Remove Structured Response Helpful Vote - Corrections" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "responseId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete('structured-responses/:responseId/helpful')
   @UseGuards(AccessTokenGuard)
   async removeStructuredResponseHelpfulVote(
@@ -159,6 +207,13 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "Nominate Structured Response As Library Candidate - Corrections" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "responseId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('structured-responses/:responseId/library-candidate')
   @UseGuards(AccessTokenGuard)
   async nominateStructuredResponseAsLibraryCandidate(
@@ -175,6 +230,13 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "Accept Structured Response - Corrections" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Put('posts/:postId/accepted-response')
   @UseGuards(AccessTokenGuard)
   async acceptStructuredResponse(
@@ -193,6 +255,13 @@ export class CorrectionsController {
     );
   }
 
+  @ApiOperation({ summary: "Revoke Structured Response Acceptance - Corrections" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "postId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete('posts/:postId/accepted-response')
   @UseGuards(AccessTokenGuard)
   async revokeStructuredResponseAcceptance(

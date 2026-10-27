@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -26,6 +27,8 @@ import {
 } from './event.dto';
 import { EventService } from './event.service';
 
+@ApiTags("Events")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('events')
 export class EventController {
   constructor(
@@ -33,6 +36,8 @@ export class EventController {
     private readonly sessions: SessionService,
   ) {}
 
+  @ApiOperation({ summary: "List - Events", security: [{}, { bearer: [] }] })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get()
   @UseGuards(OptionalAccessTokenGuard)
   async list(@Query() query: ListEventsQueryDto) {
@@ -42,6 +47,9 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Detail - Events", security: [{}, { bearer: [] }] })
+  @ApiParam({ name: "eventId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':eventId')
   @UseGuards(OptionalAccessTokenGuard)
   async detail(
@@ -58,6 +66,12 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Create - Events" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post()
   @UseGuards(AccessTokenGuard)
   async create(
@@ -71,6 +85,13 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Cancel - Events" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "eventId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':eventId/cancel')
   @UseGuards(AccessTokenGuard)
   async cancel(
@@ -84,6 +105,13 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Invite - Events" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "eventId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':eventId/invitations')
   @HttpCode(200)
   @UseGuards(AccessTokenGuard)
@@ -104,6 +132,14 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Revoke Invitation - Events" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "eventId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete(':eventId/invitations/:userId')
   @HttpCode(200)
   @UseGuards(AccessTokenGuard)
@@ -124,6 +160,11 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Registration - Events" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "eventId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':eventId/registration')
   @UseGuards(AccessTokenGuard)
   async registration(
@@ -140,6 +181,13 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Register - Events" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "eventId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':eventId/register')
   @HttpCode(200)
   @UseGuards(AccessTokenGuard)
@@ -158,6 +206,13 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Unregister - Events" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "eventId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete(':eventId/register')
   @HttpCode(200)
   @UseGuards(AccessTokenGuard)
@@ -176,6 +231,13 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Reconcile Reminders - Events" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "eventId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':eventId/reminders/reconcile')
   @HttpCode(200)
   @UseGuards(AccessTokenGuard)
@@ -194,6 +256,11 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Reminders - Events" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "eventId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':eventId/reminders')
   @UseGuards(AccessTokenGuard)
   async reminders(
@@ -206,6 +273,13 @@ export class EventController {
     );
   }
 
+  @ApiOperation({ summary: "Attendance - Events" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "eventId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':eventId/attendance')
   @HttpCode(200)
   @UseGuards(AccessTokenGuard)

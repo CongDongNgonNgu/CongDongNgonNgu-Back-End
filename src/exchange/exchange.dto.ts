@@ -1,3 +1,4 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -26,9 +27,11 @@ const LANGUAGE_CODE_PATTERN = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/;
 const PROFILE_CODE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 export class ExchangeConnectionListDto {
+  @ApiProperty({ type: String, enum: Array.from(['INCOMING','OUTGOING','CONNECTED']) })
   @IsIn(['INCOMING','OUTGOING','CONNECTED'])
   kind: 'INCOMING' | 'OUTGOING' | 'CONNECTED' = 'CONNECTED';
 
+  @ApiPropertyOptional({ type: Number, nullable: true, format: 'int32', minimum: 1, maximum: 50 })
   @IsOptional()
   @Transform(({value}) => Number(value))
   @IsInt()
@@ -36,6 +39,7 @@ export class ExchangeConnectionListDto {
   @Max(50)
   limit?: number;
 
+  @ApiPropertyOptional({ type: String, nullable: true, maxLength: 512 })
   @IsOptional()
   @IsString()
   @MaxLength(512)
@@ -43,14 +47,17 @@ export class ExchangeConnectionListDto {
 }
 
 export class ExchangePreferenceUpdateDto {
+  @ApiPropertyOptional({ type: Boolean })
   @ValidateIf(({ value }) => value !== undefined)
   @IsBoolean()
   exchangeOptIn?: boolean;
 
+  @ApiPropertyOptional({ type: Boolean })
   @ValidateIf(({ value }) => value !== undefined)
   @IsBoolean()
   discoverable?: boolean;
 
+  @ApiPropertyOptional({ type: String, isArray: true, maxLength: 35, maxItems: 20, uniqueItems: true, pattern: (LANGUAGE_CODE_PATTERN).source })
   @Transform(({ value }) => normalizeArray(value, normalizeCode))
   @ValidateIf(({ value }) => value !== undefined)
   @IsArray()
@@ -61,6 +68,7 @@ export class ExchangePreferenceUpdateDto {
   @Matches(LANGUAGE_CODE_PATTERN, { each: true })
   offeredLanguageCodes?: string[];
 
+  @ApiPropertyOptional({ type: String, isArray: true, maxLength: 35, maxItems: 20, uniqueItems: true, pattern: (LANGUAGE_CODE_PATTERN).source })
   @Transform(({ value }) => normalizeArray(value, normalizeCode))
   @ValidateIf(({ value }) => value !== undefined)
   @IsArray()
@@ -71,6 +79,7 @@ export class ExchangePreferenceUpdateDto {
   @Matches(LANGUAGE_CODE_PATTERN, { each: true })
   wantedLanguageCodes?: string[];
 
+  @ApiPropertyOptional({ type: String, isArray: true, enum: Array.from(EXCHANGE_CEFR_LEVELS), maxItems: 6, uniqueItems: true })
   @Transform(({ value }) => normalizeArray(value, normalizeLevel))
   @ValidateIf(({ value }) => value !== undefined)
   @IsArray()
@@ -80,6 +89,7 @@ export class ExchangePreferenceUpdateDto {
   @IsIn(EXCHANGE_CEFR_LEVELS, { each: true })
   preferredPartnerLevels?: string[];
 
+  @ApiPropertyOptional({ type: String, isArray: true, maxLength: 64, maxItems: 10, uniqueItems: true, pattern: (PROFILE_CODE_PATTERN).source })
   @Transform(({ value }) => normalizeArray(value, normalizeCode))
   @ValidateIf(({ value }) => value !== undefined)
   @IsArray()
@@ -90,6 +100,7 @@ export class ExchangePreferenceUpdateDto {
   @Matches(PROFILE_CODE_PATTERN, { each: true })
   matchingGoalCodes?: string[];
 
+  @ApiPropertyOptional({ type: String, isArray: true, maxLength: 64, maxItems: 20, uniqueItems: true, pattern: (/\S/).source })
   @Transform(({ value }) => normalizeArray(value, normalizeInterest))
   @ValidateIf(({ value }) => value !== undefined)
   @IsArray()
@@ -100,18 +111,21 @@ export class ExchangePreferenceUpdateDto {
   @Matches(/\S/, { each: true })
   matchingInterestCodes?: string[];
 
+  @ApiPropertyOptional({ type: String, enum: Array.from(EXCHANGE_VISIBILITY_MODES) })
   @Transform(({ value }) => normalizeEnum(value))
   @ValidateIf(({ value }) => value !== undefined)
   @IsString()
   @IsIn(EXCHANGE_VISIBILITY_MODES)
   timezoneVisibility?: string;
 
+  @ApiPropertyOptional({ type: String, enum: Array.from(EXCHANGE_VISIBILITY_MODES) })
   @Transform(({ value }) => normalizeEnum(value))
   @ValidateIf(({ value }) => value !== undefined)
   @IsString()
   @IsIn(EXCHANGE_VISIBILITY_MODES)
   availabilityVisibility?: string;
 
+  @ApiPropertyOptional({ type: String, enum: Array.from(EXCHANGE_CONTACT_PERMISSIONS) })
   @Transform(({ value }) => normalizeEnum(value))
   @ValidateIf(({ value }) => value !== undefined)
   @IsString()
@@ -120,6 +134,7 @@ export class ExchangePreferenceUpdateDto {
 }
 
 export class ExchangeDiscoveryQueryDto {
+  @ApiPropertyOptional({ type: String, isArray: true, nullable: true, maxLength: 35, maxItems: 20, uniqueItems: true, pattern: (LANGUAGE_CODE_PATTERN).source })
   @Transform(({ value }) => normalizeQueryArray(value, normalizeCode))
   @IsOptional()
   @IsArray()
@@ -130,6 +145,7 @@ export class ExchangeDiscoveryQueryDto {
   @Matches(LANGUAGE_CODE_PATTERN, { each: true })
   offeredLanguageCodes?: string[];
 
+  @ApiPropertyOptional({ type: String, isArray: true, nullable: true, maxLength: 35, maxItems: 20, uniqueItems: true, pattern: (LANGUAGE_CODE_PATTERN).source })
   @Transform(({ value }) => normalizeQueryArray(value, normalizeCode))
   @IsOptional()
   @IsArray()
@@ -140,6 +156,7 @@ export class ExchangeDiscoveryQueryDto {
   @Matches(LANGUAGE_CODE_PATTERN, { each: true })
   wantedLanguageCodes?: string[];
 
+  @ApiPropertyOptional({ type: String, isArray: true, nullable: true, enum: Array.from(EXCHANGE_CEFR_LEVELS), maxItems: 6, uniqueItems: true })
   @Transform(({ value }) => normalizeQueryArray(value, normalizeLevel))
   @IsOptional()
   @IsArray()
@@ -149,6 +166,7 @@ export class ExchangeDiscoveryQueryDto {
   @IsIn(EXCHANGE_CEFR_LEVELS, { each: true })
   preferredPartnerLevels?: string[];
 
+  @ApiPropertyOptional({ type: String, isArray: true, nullable: true, maxLength: 64, maxItems: 10, uniqueItems: true, pattern: (PROFILE_CODE_PATTERN).source })
   @Transform(({ value }) => normalizeQueryArray(value, normalizeCode))
   @IsOptional()
   @IsArray()
@@ -159,6 +177,7 @@ export class ExchangeDiscoveryQueryDto {
   @Matches(PROFILE_CODE_PATTERN, { each: true })
   matchingGoalCodes?: string[];
 
+  @ApiPropertyOptional({ type: String, isArray: true, nullable: true, maxLength: 64, maxItems: 20, uniqueItems: true, pattern: (/\S/).source })
   @Transform(({ value }) => normalizeQueryArray(value, normalizeInterest))
   @IsOptional()
   @IsArray()
@@ -169,12 +188,14 @@ export class ExchangeDiscoveryQueryDto {
   @Matches(/\S/, { each: true })
   matchingInterestCodes?: string[];
 
+  @ApiPropertyOptional({ type: String, nullable: true, enum: Array.from(EXCHANGE_TIMEZONE_COMPATIBILITIES) })
   @Transform(({ value }) => normalizeEnum(value))
   @IsOptional()
   @IsString()
   @IsIn(EXCHANGE_TIMEZONE_COMPATIBILITIES)
   timezoneCompatibility?: string;
 
+  @ApiPropertyOptional({ type: Number, nullable: true, format: 'int32', minimum: 1, maximum: 100 })
   @Transform(({ value }) => typeof value === 'string' ? Number(value) : value)
   @IsOptional()
   @IsInt()
@@ -182,6 +203,7 @@ export class ExchangeDiscoveryQueryDto {
   @Max(100)
   page?: number;
 
+  @ApiPropertyOptional({ type: Number, nullable: true, format: 'int32', minimum: 1, maximum: 20 })
   @Transform(({ value }) => typeof value === 'string' ? Number(value) : value)
   @IsOptional()
   @IsInt()
@@ -191,11 +213,13 @@ export class ExchangeDiscoveryQueryDto {
 }
 
 export class ExchangeReportDto {
+  @ApiProperty({ type: String, enum: Array.from(EXCHANGE_REPORT_CATEGORIES) })
   @Transform(({ value }) => normalizeEnum(value))
   @IsString()
   @IsIn(EXCHANGE_REPORT_CATEGORIES)
   category!: string;
 
+  @ApiPropertyOptional({ type: String, nullable: true, maxLength: 1000 })
   @Transform(({ value }) => typeof value === 'string' ? value.normalize('NFKC').trim() : value)
   @IsOptional()
   @IsString()

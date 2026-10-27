@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {
   Controller,
   Delete,
@@ -17,6 +18,8 @@ import { ChallengeDiscoveryQueryDto } from './challenge.dto';
 import { toPublicParticipation } from './challenge.public';
 import { ChallengeService } from './challenge.service';
 
+@ApiTags("Challenges")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('challenges')
 export class ChallengeController {
   constructor(
@@ -24,6 +27,8 @@ export class ChallengeController {
     private readonly sessions: SessionService,
   ) {}
 
+  @ApiOperation({ summary: "List - Challenges" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get()
   async list(@Query() query: ChallengeDiscoveryQueryDto) {
     return success(
@@ -32,6 +37,11 @@ export class ChallengeController {
     );
   }
 
+  @ApiOperation({ summary: "Progress - Challenges" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "challengeId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':challengeId/progress')
   @UseGuards(AccessTokenGuard)
   async progress(
@@ -44,6 +54,13 @@ export class ChallengeController {
     );
   }
 
+  @ApiOperation({ summary: "Join - Challenges" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "challengeId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':challengeId/join')
   @HttpCode(200)
   @UseGuards(AccessTokenGuard)
@@ -59,6 +76,13 @@ export class ChallengeController {
     }, 'Đã tham gia thử thách');
   }
 
+  @ApiOperation({ summary: "Leave - Challenges" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "challengeId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete(':challengeId/join')
   @HttpCode(200)
   @UseGuards(AccessTokenGuard)
@@ -73,6 +97,9 @@ export class ChallengeController {
     );
   }
 
+  @ApiOperation({ summary: "Detail - Challenges" })
+  @ApiParam({ name: "challengeId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':challengeId')
   async detail(
     @Param('challengeId', new ParseUUIDPipe({ version: '4' })) challengeId: string,

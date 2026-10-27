@@ -1,6 +1,7 @@
 import type { ValidatedEnvironment } from "./env.validation";
 
 export interface RuntimeConfig {
+  swagger: ValidatedEnvironment["SWAGGER"];
   attachments: ValidatedEnvironment["ATTACHMENTS"];
   app: {
     environment: ValidatedEnvironment["NODE_ENV"];
@@ -64,6 +65,7 @@ export interface RuntimeConfig {
 
 export function buildConfiguration(env: ValidatedEnvironment): RuntimeConfig {
   return {
+    swagger: env.SWAGGER,
     attachments: env.ATTACHMENTS,
     app: {
       environment: env.NODE_ENV,

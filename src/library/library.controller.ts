@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { LibraryRelationsService } from './library-relations.service';
 import { RelatedLibraryResourcesDto } from './library.dto';
 import {
@@ -29,6 +30,8 @@ import {
 } from './library.dto';
 import type { LibraryActor } from './library.types';
 
+@ApiTags("Library")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('library')
 export class LibraryController {
   constructor(
@@ -37,6 +40,9 @@ export class LibraryController {
     private readonly relations: LibraryRelationsService,
   ) {}
 
+  @ApiOperation({ summary: "Get Related Resources - Library" })
+  @ApiParam({ name: "resourceId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('resources/:resourceId/related')
   async getRelatedResources(
     @Param('resourceId', new ParseUUIDPipe({ version: '4' })) resourceId: string,
@@ -45,6 +51,8 @@ export class LibraryController {
     return success(await this.relations.list(resourceId, input), 'Library related resources');
   }
 
+  @ApiOperation({ summary: "Get Contribution Policy - Library" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('contribution-policy')
   async getContributionPolicy() {
     return success(
@@ -53,6 +61,10 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "List Review Queue - Library" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('reviews')
   @UseGuards(AccessTokenGuard)
   async listReviewQueue(
@@ -65,6 +77,10 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "List Invalid Source Queue - Library" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('reviews/source-invalid')
   @UseGuards(AccessTokenGuard)
   async listInvalidSourceQueue(
@@ -77,6 +93,11 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "Get Review Detail - Library" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "resourceId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('reviews/:resourceId')
   @UseGuards(AccessTokenGuard)
   async getReviewDetail(
@@ -89,6 +110,13 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "Integrate Library Candidate - Library" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "candidateId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('reviews/candidates/:candidateId/integrate')
   @UseGuards(AccessTokenGuard)
   async integrateLibraryCandidate(
@@ -103,6 +131,13 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "Reconcile Source - Library" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "resourceId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('reviews/:resourceId/reconcile-source')
   @UseGuards(AccessTokenGuard)
   async reconcileSource(
@@ -117,6 +152,12 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "Create Draft Resource - Library" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('resources')
   @UseGuards(AccessTokenGuard)
   async createDraftResource(
@@ -130,6 +171,13 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "Attach Provenance - Library" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "resourceId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('resources/:resourceId/provenance')
   @UseGuards(AccessTokenGuard)
   async attachProvenance(
@@ -144,6 +192,13 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "Transition Review - Library" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "resourceId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('resources/:resourceId/review')
   @UseGuards(AccessTokenGuard)
   async transitionReview(
@@ -163,6 +218,13 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "Submit Contribution - Library" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "resourceId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('resources/:resourceId/submit-contribution')
   @UseGuards(AccessTokenGuard)
   async submitContribution(
@@ -177,6 +239,8 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "Search Public Resources - Library" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('resources')
   async searchPublicResources(@Query() input: SearchLibraryResourcesDto) {
     return success(
@@ -185,6 +249,9 @@ export class LibraryController {
     );
   }
 
+  @ApiOperation({ summary: "Get Public Resource - Library" })
+  @ApiParam({ name: "resourceId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('resources/:resourceId')
   async getPublicResource(
     @Param('resourceId', new ParseUUIDPipe({ version: '4' })) resourceId: string,
@@ -196,6 +263,9 @@ export class LibraryController {
     return success(resource, 'Library resource');
   }
 
+  @ApiOperation({ summary: "Get License - Library" })
+  @ApiParam({ name: "licenseKey", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('licenses/:licenseKey')
   async getLicense(@Param('licenseKey') licenseKey: string) {
     const license = await this.library.findLicense(licenseKey);

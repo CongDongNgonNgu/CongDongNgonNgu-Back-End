@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiBody, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -19,6 +20,8 @@ import { MembershipPaymentService } from './membership.payment.service';
 import { MembershipPolicyService } from './membership.policy';
 import { MembershipAuthorizationService } from './membership.service';
 
+@ApiTags("Membership")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('membership')
 export class MembershipController {
   constructor(
@@ -29,6 +32,8 @@ export class MembershipController {
     private readonly fulfillment: MembershipFulfillmentService,
   ) {}
 
+  @ApiOperation({ summary: "Catalog - Membership" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('catalog')
   async catalog() {
     return success(
@@ -37,6 +42,10 @@ export class MembershipController {
     );
   }
 
+  @ApiOperation({ summary: "Capabilities - Membership" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('capabilities')
   @UseGuards(AccessTokenGuard)
   async capabilities(@Req() request: AuthenticatedRequest) {
@@ -46,6 +55,10 @@ export class MembershipController {
     );
   }
 
+  @ApiOperation({ summary: "Policy Projection - Membership" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('policy')
   @UseGuards(AccessTokenGuard)
   async policyProjection(@Req() request: AuthenticatedRequest) {
@@ -55,6 +68,10 @@ export class MembershipController {
     );
   }
 
+  @ApiOperation({ summary: "Contribution Credit - Membership" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('contribution-credit')
   @UseGuards(AccessTokenGuard)
   async contributionCredit(@Req() request: AuthenticatedRequest) {
@@ -64,6 +81,11 @@ export class MembershipController {
     );
   }
 
+  @ApiOperation({ summary: "Redeem Contribution Credit - Membership" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: "idempotency-key", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('contribution-credit/redemptions')
   @UseGuards(AccessTokenGuard)
   async redeemContributionCredit(
@@ -77,6 +99,9 @@ export class MembershipController {
     );
   }
 
+  @ApiOperation({ summary: "Pay Os Webhook - Membership" })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
+  @ApiBody({ required: true, description: 'Provider webhook payload; signature, order and capability validation remain enforced by the payment integration', schema: { type: 'object', additionalProperties: true } })
   @Post('webhooks/payos')
   async payOsWebhook(@Body() payload: unknown) {
     return success(
@@ -85,6 +110,11 @@ export class MembershipController {
     );
   }
 
+  @ApiOperation({ summary: "Create Order - Membership" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: "idempotency-key", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('orders')
   @UseGuards(AccessTokenGuard)
   async createOrder(
@@ -98,6 +128,11 @@ export class MembershipController {
     );
   }
 
+  @ApiOperation({ summary: "Get Order - Membership" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "orderId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('orders/:orderId')
   @UseGuards(AccessTokenGuard)
   async getOrder(
@@ -110,6 +145,12 @@ export class MembershipController {
     );
   }
 
+  @ApiOperation({ summary: "Create Payment Attempt - Membership" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "orderId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "idempotency-key", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('orders/:orderId/payment-attempts')
   @UseGuards(AccessTokenGuard)
   async createPaymentAttempt(
@@ -123,6 +164,11 @@ export class MembershipController {
     );
   }
 
+  @ApiOperation({ summary: "Get Payment Attempt - Membership" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "attemptId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('payment-attempts/:attemptId')
   @UseGuards(AccessTokenGuard)
   async getPaymentAttempt(
