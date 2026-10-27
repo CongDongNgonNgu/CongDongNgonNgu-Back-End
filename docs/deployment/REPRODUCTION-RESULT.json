@@ -90,7 +90,9 @@
     "url": "https://github.com/CongDongNgonNgu/CongDongNgonNgu-Back-End/actions/runs/40508036840",
     "id": 40508036840,
     "attempt": 1,
-    "helperRevision": "362e1ef46d978fd3120a8e7e2ebf54a37b425ca8",
-    "status": "success"
+    "helperRevision": "4fa9e01c3aa71e533a0f388ec91589258e05b59e",
+    "status": "success",
+    "workflowHeadRevision": "362e1ef46d978fd3120a8e7e2ebf54a37b425ca8",
+    "helperRevisionEvidence": "actions/checkout output in both isolated build job logs"
   }
 }
