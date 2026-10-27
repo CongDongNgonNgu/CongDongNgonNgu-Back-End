@@ -43,7 +43,7 @@ jobs:
         run: npm ci
 
       - name: Deployment shell validation
-        run: bash -n scripts/deploy/transport.sh && bash -n scripts/deploy/release.sh && shellcheck scripts/deploy/*.sh
+        run: bash -n scripts/deploy/transport.sh && bash -n scripts/deploy/release.sh && bash -n scripts/deploy/bootstrap.sh && shellcheck scripts/deploy/*.sh
 
       - name: Deployment safety tests
         run: node --test scripts/deploy/*.node-spec.cjs
