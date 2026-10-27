@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -19,6 +20,8 @@ import { success } from '../common/http/api-response';
 import { ExchangeConnectionListDto, ExchangeDiscoveryQueryDto, ExchangePreferenceUpdateDto, ExchangeReportDto } from './exchange.dto';
 import { ExchangeService } from './exchange.service';
 
+@ApiTags("Language exchange")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('exchange')
 export class ExchangeController {
   constructor(
@@ -26,12 +29,20 @@ export class ExchangeController {
     private readonly sessions: SessionService,
   ) {}
 
+  @ApiOperation({ summary: "Connections - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('connections')
   @UseGuards(AccessTokenGuard)
   async connections(@Query() query: ExchangeConnectionListDto, @Req() request: AuthenticatedRequest) {
     return success(await this.exchanges.listConnections(request.user!.user.id,query),'Exchange connections');
   }
 
+  @ApiOperation({ summary: "Own Preferences - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('preferences')
   @UseGuards(AccessTokenGuard)
   async ownPreferences(@Req() request: AuthenticatedRequest) {
@@ -41,6 +52,12 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Update Own Preferences - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Patch('preferences')
   @UseGuards(AccessTokenGuard)
   async updateOwnPreferences(
@@ -54,6 +71,11 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Block Status - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('blocks/:userId')
   @UseGuards(AccessTokenGuard)
   async blockStatus(
@@ -66,6 +88,13 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Block - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('blocks/:userId')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AccessTokenGuard)
@@ -80,6 +109,13 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Unblock - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete('blocks/:userId')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AccessTokenGuard)
@@ -94,6 +130,13 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Report - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('reports/:userId')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AccessTokenGuard)
@@ -109,6 +152,11 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Contact Permission - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('contact-permission/:userId')
   @UseGuards(AccessTokenGuard)
   async contactPermission(
@@ -121,6 +169,11 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Public Buddy Preview - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('profile-preview/:userId')
   @UseGuards(AccessTokenGuard)
   async publicBuddyPreview(
@@ -133,6 +186,11 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Relationship - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('relationships/:userId')
   @UseGuards(AccessTokenGuard)
   async relationship(
@@ -145,6 +203,13 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Request Connection - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('relationships/:userId/request')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AccessTokenGuard)
@@ -159,6 +224,13 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Accept Connection - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('relationships/:userId/accept')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AccessTokenGuard)
@@ -173,6 +245,13 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Decline Connection - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('relationships/:userId/decline')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AccessTokenGuard)
@@ -187,6 +266,13 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Cancel Connection - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('relationships/:userId/cancel')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AccessTokenGuard)
@@ -201,6 +287,13 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Disconnect - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: HttpStatus.OK, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('relationships/:userId/disconnect')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AccessTokenGuard)
@@ -215,6 +308,10 @@ export class ExchangeController {
     );
   }
 
+  @ApiOperation({ summary: "Discovery - Language exchange" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('discovery')
   @UseGuards(AccessTokenGuard)
   async discovery(

@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -20,6 +21,8 @@ import {
 } from './profile.dto';
 import { ProfileService } from './profile.service';
 
+@ApiTags("Profiles")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller()
 export class ProfileController {
   constructor(
@@ -27,6 +30,9 @@ export class ProfileController {
     private readonly sessions: SessionService,
   ) {}
 
+  @ApiOperation({ summary: "Languages - Profiles" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
+  @ApiTags('Languages')
   @Get('languages')
   async languages(@Query() query: LanguageCatalogQueryDto) {
     return success(
@@ -35,6 +41,9 @@ export class ProfileController {
     );
   }
 
+  @ApiOperation({ summary: "Language Overview - Profiles" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
+  @ApiTags('Languages')
   @Get('languages/:slug/overview')
   async languageOverview(
     @Param() params: LanguageSlugParamsDto,
@@ -46,6 +55,9 @@ export class ProfileController {
     );
   }
 
+  @ApiOperation({ summary: "Language - Profiles" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
+  @ApiTags('Languages')
   @Get('languages/:slug')
   async language(@Param() params: LanguageSlugParamsDto) {
     return success(
@@ -54,6 +66,10 @@ export class ProfileController {
     );
   }
 
+  @ApiOperation({ summary: "Own Profile - Profiles" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('profile')
   @UseGuards(AccessTokenGuard)
   async ownProfile(@Req() request: AuthenticatedRequest) {
@@ -63,6 +79,12 @@ export class ProfileController {
     );
   }
 
+  @ApiOperation({ summary: "Update Own Profile - Profiles" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Patch('profile')
   @UseGuards(AccessTokenGuard)
   async updateOwnProfile(
@@ -76,6 +98,9 @@ export class ProfileController {
     );
   }
 
+  @ApiOperation({ summary: "Public Profile - Profiles" })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('profiles/:userId')
   async publicProfile(
     @Param('userId', new ParseUUIDPipe({ version: '4' })) userId: string,

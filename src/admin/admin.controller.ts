@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -30,6 +31,10 @@ import {
 } from './admin.dto';
 import { AdminService, type AdminActor } from './admin.service';
 
+@ApiTags("Administration")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
+@ApiBearerAuth('bearer')
+@ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('admin')
 @UseGuards(AccessTokenGuard)
 export class AdminController {
@@ -38,6 +43,9 @@ export class AdminController {
     private readonly sessions: SessionService,
   ) {}
 
+  @ApiOperation({ summary: "Metrics - Administration", description: "Required roles: MODERATOR, ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('metrics')
   @UseGuards(RolesGuard)
   @Roles('MODERATOR', 'ADMIN')
@@ -45,6 +53,9 @@ export class AdminController {
     return success(await this.admin.metrics(toAdminActor(user)), 'Admin metrics');
   }
 
+  @ApiOperation({ summary: "List Reports - Administration", description: "Required roles: MODERATOR, ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('reports')
   @UseGuards(RolesGuard)
   @Roles('MODERATOR', 'ADMIN')
@@ -52,6 +63,10 @@ export class AdminController {
     return success(await this.admin.listReports(toAdminActor(user), query), 'Moderation reports');
   }
 
+  @ApiOperation({ summary: "Get Report - Administration", description: "Required roles: MODERATOR, ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "reportId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('reports/:reportId')
   @UseGuards(RolesGuard)
   @Roles('MODERATOR', 'ADMIN')
@@ -62,6 +77,11 @@ export class AdminController {
     return success(await this.admin.getReport(toAdminActor(user), reportId), 'Moderation report');
   }
 
+  @ApiOperation({ summary: "Assign Report - Administration", description: "Required roles: MODERATOR, ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "reportId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Patch('reports/:reportId/assignment')
   @UseGuards(RolesGuard)
   @Roles('MODERATOR', 'ADMIN')
@@ -75,6 +95,11 @@ export class AdminController {
     return success(await this.admin.assignReport(toAdminActor(user), reportId, input.assignedToUserId ?? null), 'Moderation report assigned');
   }
 
+  @ApiOperation({ summary: "Resolve Report - Administration", description: "Required roles: MODERATOR, ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "reportId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('reports/:reportId/resolve')
   @UseGuards(RolesGuard)
   @Roles('MODERATOR', 'ADMIN')
@@ -88,6 +113,11 @@ export class AdminController {
     return success(await this.admin.resolveReport(toAdminActor(user), reportId, input.state, input.reason ?? null), 'Moderation report updated');
   }
 
+  @ApiOperation({ summary: "Add Report Note - Administration", description: "Required roles: MODERATOR, ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "reportId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('reports/:reportId/notes')
   @UseGuards(RolesGuard)
   @Roles('MODERATOR', 'ADMIN')
@@ -101,6 +131,10 @@ export class AdminController {
     return success(await this.admin.addReportNote(toAdminActor(user), reportId, input.body), 'Moderation note added');
   }
 
+  @ApiOperation({ summary: "List Report Notes - Administration", description: "Required roles: MODERATOR, ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "reportId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('reports/:reportId/notes')
   @UseGuards(RolesGuard)
   @Roles('MODERATOR', 'ADMIN')
@@ -111,6 +145,12 @@ export class AdminController {
     return success(await this.admin.listReportNotes(toAdminActor(user), reportId), 'Moderation notes');
   }
 
+  @ApiOperation({ summary: "Moderate Content - Administration", description: "Required roles: MODERATOR, ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "targetType", required: true, schema: { type: 'string' } })
+  @ApiParam({ name: "targetId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('content/:targetType/:targetId/action')
   @UseGuards(RolesGuard)
   @Roles('MODERATOR', 'ADMIN')
@@ -130,6 +170,11 @@ export class AdminController {
     }), 'Content moderation action applied');
   }
 
+  @ApiOperation({ summary: "Moderate User - Administration", description: "Required roles: ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('users/:userId/action')
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
@@ -143,6 +188,9 @@ export class AdminController {
     return success(await this.admin.moderateUser(toAdminActor(user), { targetUserId: userId, action: input.action, reason: input.reason }), 'User moderation action applied');
   }
 
+  @ApiOperation({ summary: "List Users - Administration", description: "Required roles: ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('users')
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
@@ -156,6 +204,11 @@ export class AdminController {
     }), 'Admin users');
   }
 
+  @ApiOperation({ summary: "Replace Roles - Administration", description: "Required roles: ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Patch('users/:userId/roles')
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
@@ -169,6 +222,11 @@ export class AdminController {
     return success(await this.admin.replaceRoles(toAdminActor(user), userId, input.roles as RoleKey[]), 'User roles updated');
   }
 
+  @ApiOperation({ summary: "Reverse Reputation - Administration", description: "Required roles: ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "entryId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('reputation/:entryId/reverse')
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
@@ -182,6 +240,9 @@ export class AdminController {
     return success(await this.admin.reverseReputation(toAdminActor(user), { entryId, ...input }), 'Reputation reversal recorded');
   }
 
+  @ApiOperation({ summary: "List Audit - Administration", description: "Required roles: ADMIN." })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('audit')
   @UseGuards(RolesGuard)
   @Roles('ADMIN')

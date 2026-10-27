@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiCookieAuth, ApiHeader, ApiOperation, ApiParam, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { OAuthService } from './oauth/oauth.service';
 import {
   Body,
@@ -24,6 +25,8 @@ import {
 } from './oauth/oauth-state-cookie';
 import { SessionService } from './session/session.service';
 
+@ApiTags("Authentication")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -33,11 +36,15 @@ export class AuthController {
     private readonly config: ConfigService,
   ) {}
 
+  @ApiOperation({ summary: "Providers - Authentication" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('providers')
   providers() {
     return success(this.oauth.providers(), 'Các phương thức đăng nhập hiện có');
   }
 
+  @ApiOperation({ summary: "Register - Authentication" })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('register')
   @HttpCode(201)
   async register(@Body() input: RegisterDto, @Req() request: Request) {
@@ -45,6 +52,10 @@ export class AuthController {
     return success(data, 'Kiểm tra email để hoàn tất đăng ký');
   }
 
+  @ApiOperation({ summary: "Login - Authentication" })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
+  @ApiResponse({ status: 401, description: 'Invalid credentials', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Account disabled or email verification required', schema: { $ref: '#/components/schemas/ApiError' } })
   @Post('login')
   async login(
     @Body() input: LoginDto,
@@ -55,11 +66,15 @@ export class AuthController {
     return success(data, 'Đăng nhập thành công');
   }
 
+  @ApiOperation({ summary: "Verify Email - Authentication" })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('verify-email')
   async verifyEmail(@Body() input: TokenDto) {
     return success(await this.auth.verifyEmail(input), 'Email đã được xác minh');
   }
 
+  @ApiOperation({ summary: "Resend Verification - Authentication" })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('resend-verification')
   async resendVerification(@Body() input: EmailDto, @Req() request: Request) {
     return success(
@@ -68,6 +83,8 @@ export class AuthController {
     );
   }
 
+  @ApiOperation({ summary: "Forgot Password - Authentication" })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('forgot-password')
   async forgotPassword(@Body() input: EmailDto, @Req() request: Request) {
     return success(
@@ -76,11 +93,19 @@ export class AuthController {
     );
   }
 
+  @ApiOperation({ summary: "Reset Password - Authentication" })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('reset-password')
   async resetPassword(@Body() input: ResetPasswordDto) {
     return success(await this.auth.resetPassword(input), 'Mật khẩu đã được cập nhật');
   }
 
+  @ApiOperation({ summary: "Refresh - Authentication" })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
+  @ApiCookieAuth('refresh')
+  @ApiHeader({ name: 'X-CSRF-Token', required: true, description: 'Must match the CSRF cookie accompanying the refresh-session cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 401, description: 'Refresh session is missing, invalid or expired', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Cookie origin or CSRF validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
   @Post('refresh')
   async refresh(
     @Req() request: Request,
@@ -93,6 +118,10 @@ export class AuthController {
     }, 'Phiên đăng nhập đã được gia hạn');
   }
 
+  @ApiOperation({ summary: "Oauth Start - Authentication" })
+  @ApiParam({ name: "provider", required: true, schema: { type: 'string' } })
+  @ApiQuery({ name: "mode", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 302, description: 'OAuth redirect', headers: { Location: { schema: { type: 'string', format: 'uri' } } } })
   @Get('oauth/:provider/start')
   async oauthStart(
     @Param('provider') provider: string,
@@ -105,6 +134,13 @@ export class AuthController {
     return response.redirect(url);
   }
 
+  @ApiOperation({ summary: "Oauth Link Start - Authentication" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "provider", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('oauth/:provider/link/start')
   @UseGuards(AccessTokenGuard)
   async oauthLinkStart(
@@ -118,6 +154,9 @@ export class AuthController {
     return success({ authorizationUrl: url }, 'Đang mở liên kết tài khoản');
   }
 
+  @ApiOperation({ summary: "Oauth Callback - Authentication" })
+  @ApiParam({ name: "provider", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 302, description: 'OAuth redirect', headers: { Location: { schema: { type: 'string', format: 'uri' } } } })
   @Get('oauth/:provider/callback')
   async oauthCallback(
     @Param('provider') provider: string,
@@ -141,6 +180,10 @@ export class AuthController {
     return this.config.get<string>('app.environment') === 'production';
   }
 
+  @ApiOperation({ summary: 'Logout - Authentication', security: [{}, { bearer: [] }, { refresh: [] }], description: 'Revokes an available session and clears authentication cookies; anonymous logout remains supported' })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('logout')
   async logout(
     @Req() request: AuthenticatedRequest,
@@ -155,6 +198,12 @@ export class AuthController {
     return success(await this.auth.logout(principal, response), 'Đã đăng xuất');
   }
 
+  @ApiOperation({ summary: "Logout All - Authentication" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post('logout-all')
   @UseGuards(AccessTokenGuard)
   async logoutAll(
@@ -165,6 +214,10 @@ export class AuthController {
     return success(await this.auth.logoutAll(request.user!, response), 'Đã đăng xuất khỏi mọi thiết bị');
   }
 
+  @ApiOperation({ summary: "Me - Authentication" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get('me')
   @UseGuards(AccessTokenGuard)
   me(@Req() request: AuthenticatedRequest) {

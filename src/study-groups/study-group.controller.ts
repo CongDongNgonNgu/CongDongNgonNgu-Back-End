@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { Header, Headers, Sse, SseSignal } from '@nestjs/common';
 import { SessionFailure } from '../auth/session/session.service';
@@ -41,6 +42,10 @@ import {
   StudyGroupTextDto,
 } from "./study-group.dto";
 const uuidPipe = new ParseUUIDPipe({ version: "4" });
+@ApiTags("Study groups")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
+@ApiBearerAuth('bearer')
+@ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller("study-groups")
 @UseGuards(AccessTokenGuard)
 export class StudyGroupController {
@@ -50,6 +55,8 @@ export class StudyGroupController {
     private readonly streams:GroupStreamService,
     private readonly config:ConfigService,
   ) {}
+  @ApiOperation({ summary: "List Groups - Study groups" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get("")
   async listGroups(
     @Query() query: GroupPageDto,
@@ -60,6 +67,8 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Create Group - Study groups" })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post("")
   async createGroup(
     @Body() input: CreateStudyGroupDto,
@@ -70,6 +79,8 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Accept Invitation - Study groups" })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post("invitations/accept")
   @HttpCode(200)
   async acceptInvitation(
@@ -81,6 +92,9 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Get Group - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(":groupId")
   async getGroup(
     @Param("groupId", uuidPipe) groupId: string,
@@ -91,6 +105,9 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "List Members - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(":groupId/members")
   async listMembers(
     @Param("groupId", uuidPipe) groupId: string,
@@ -102,6 +119,9 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Issue Invitation - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(":groupId/invitations")
   @HttpCode(200)
   async issueInvitation(
@@ -114,6 +134,9 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Issue Connected Partner Invitation - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(":groupId/invitations/connected-partner")
   @HttpCode(200)
   async issueConnectedPartnerInvitation(
@@ -126,6 +149,9 @@ export class StudyGroupController {
     ));
   }
 
+  @ApiOperation({ summary: "List Invitations - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(":groupId/invitations")
   async listInvitations(
     @Param("groupId", uuidPipe) groupId: string,
@@ -141,6 +167,10 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Revoke Invitation - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiParam({ name: "inviteId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete(":groupId/invitations/:inviteId")
   async revokeInvitation(
     @Param("groupId", uuidPipe) groupId: string,
@@ -156,6 +186,9 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Leave Group - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(":groupId/leave")
   @HttpCode(200)
   async leaveGroup(
@@ -168,6 +201,10 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Remove Member - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Delete(":groupId/members/:userId")
   async removeMember(
     @Param("groupId", uuidPipe) groupId: string,
@@ -183,6 +220,10 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Set Role - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiParam({ name: "userId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Patch(":groupId/members/:userId/role")
   async setRole(
     @Param("groupId", uuidPipe) groupId: string,
@@ -200,6 +241,9 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Transfer Ownership - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(":groupId/ownership")
   @HttpCode(200)
   async transferOwnership(
@@ -216,6 +260,9 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Archive Group - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(":groupId/archive")
   @HttpCode(200)
   async archiveGroup(
@@ -228,6 +275,9 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Sync - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':groupId/texts/sync')
   @HttpCode(200)
   async sync(
@@ -239,6 +289,9 @@ export class StudyGroupController {
       await this.groups.syncTexts(this.actor(request, true), groupId, input),
     );
   }
+  @ApiOperation({ summary: "Mark Read - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':groupId/read')
   @HttpCode(200)
   async markRead(
@@ -254,6 +307,10 @@ export class StudyGroupController {
       ),
     );
   }
+  @ApiOperation({ summary: "Context - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiParam({ name: "textId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':groupId/texts/:textId/context')
   async context(
     @Param('groupId', uuidPipe) groupId: string,
@@ -268,6 +325,10 @@ export class StudyGroupController {
       ),
     );
   }
+  @ApiOperation({ summary: "Stream - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiHeader({ name: "last-event-id", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Server-sent event stream; existing access and reconnect policies apply', content: { 'text/event-stream': { schema: { type: 'string' } } } })
   @Sse(':groupId/stream')
   @Header('Cache-Control', 'private, no-store, no-transform')
   @Header('X-Accel-Buffering', 'no')
@@ -304,6 +365,9 @@ export class StudyGroupController {
       lastEventId,
     );
   }
+  @ApiOperation({ summary: "List Texts - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(":groupId/texts")
   async listTexts(
     @Param("groupId", uuidPipe) groupId: string,
@@ -315,6 +379,9 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Create Text - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(":groupId/texts")
   async createText(
     @Param("groupId", uuidPipe) groupId: string,
@@ -326,6 +393,10 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Hide Text - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiParam({ name: "textId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(":groupId/texts/:textId/hide")
   @HttpCode(200)
   async hideText(
@@ -339,6 +410,10 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Report Text - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiParam({ name: "textId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(":groupId/texts/:textId/reports")
   @HttpCode(200)
   async reportText(
@@ -357,6 +432,9 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "List Reports - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(":groupId/reports")
   async listReports(
     @Param("groupId", uuidPipe) groupId: string,
@@ -368,6 +446,10 @@ export class StudyGroupController {
     );
   }
 
+  @ApiOperation({ summary: "Resolve Report - Study groups" })
+  @ApiParam({ name: "groupId", required: true, schema: { type: 'string' } })
+  @ApiParam({ name: "reportId", required: true, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(":groupId/reports/:reportId/resolve")
   @HttpCode(200)
   async resolveReport(

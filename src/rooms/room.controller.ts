@@ -1,3 +1,4 @@
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -30,6 +31,8 @@ import {
 } from './room.dto';
 import { SpeakingRoomService } from './room.service';
 
+@ApiTags("Speaking rooms")
+@ApiResponse({ status: 400, description: 'Request validation failed', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('rooms')
 export class SpeakingRoomController {
   constructor(
@@ -37,6 +40,12 @@ export class SpeakingRoomController {
     private readonly sessions: SessionService,
   ) {}
 
+  @ApiOperation({ summary: "Create Room - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post()
   @UseGuards(AccessTokenGuard)
   async createRoom(
@@ -50,6 +59,8 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "List Rooms - Speaking rooms", security: [{}, { bearer: [] }] })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get()
   @UseGuards(OptionalAccessTokenGuard)
   async listRooms(
@@ -62,6 +73,10 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Get Room - Speaking rooms", security: [{}, { bearer: [] }] })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':roomId')
   @UseGuards(OptionalAccessTokenGuard)
   async getRoom(
@@ -75,6 +90,14 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Join Room - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/join')
   @UseGuards(AccessTokenGuard)
   async joinRoom(
@@ -90,6 +113,14 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Leave Room - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/leave')
   @UseGuards(AccessTokenGuard)
   async leaveRoom(
@@ -105,6 +136,14 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Heartbeat - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/presence/heartbeat')
   @UseGuards(AccessTokenGuard)
   async heartbeat(
@@ -120,6 +159,12 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "List Participants - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':roomId/participants')
   @UseGuards(AccessTokenGuard)
   async listParticipants(
@@ -133,6 +178,14 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Raise Hand - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/queue/raise-hand')
   @UseGuards(AccessTokenGuard)
   async raiseHand(
@@ -148,6 +201,14 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Cancel Hand - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/queue/cancel')
   @UseGuards(AccessTokenGuard)
   async cancelHand(
@@ -163,6 +224,12 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "List Queue - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':roomId/queue')
   @UseGuards(AccessTokenGuard)
   async listQueue(
@@ -176,6 +243,15 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Decide Queue - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "queueEntryId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/queue/:queueEntryId/decision')
   @UseGuards(AccessTokenGuard)
   async decideQueue(
@@ -192,6 +268,15 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Promote Participant - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "participantId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/participants/:participantId/promote')
   @UseGuards(AccessTokenGuard)
   async promoteParticipant(
@@ -208,6 +293,15 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Demote Participant - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "participantId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/participants/:participantId/demote')
   @UseGuards(AccessTokenGuard)
   async demoteParticipant(
@@ -224,6 +318,15 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Mute Participant - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "participantId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/participants/:participantId/mute')
   @UseGuards(AccessTokenGuard)
   async muteParticipant(
@@ -240,6 +343,15 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Unmute Participant - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "participantId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/participants/:participantId/unmute')
   @UseGuards(AccessTokenGuard)
   async unmuteParticipant(
@@ -256,6 +368,15 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Remove Participant - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "participantId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/participants/:participantId/remove')
   @UseGuards(AccessTokenGuard)
   async removeParticipant(
@@ -272,6 +393,15 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Block Participant - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "participantId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/participants/:participantId/block')
   @UseGuards(AccessTokenGuard)
   async blockParticipant(
@@ -288,6 +418,15 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Unblock Participant - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "participantId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/participants/:participantId/unblock')
   @UseGuards(AccessTokenGuard)
   async unblockParticipant(
@@ -304,6 +443,15 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Report Participant - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiParam({ name: "participantId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/participants/:participantId/report')
   @UseGuards(AccessTokenGuard)
   async reportParticipant(
@@ -320,6 +468,12 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Moderation Audit - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':roomId/moderation/audit')
   @UseGuards(AccessTokenGuard)
   async moderationAudit(
@@ -333,6 +487,14 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Send Chat - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/chat')
   @UseGuards(AccessTokenGuard)
   async sendChat(
@@ -348,6 +510,12 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "List Chat - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiHeader({ name: "x-room-access-token", required: false, schema: { type: 'string' } })
+  @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':roomId/chat')
   @UseGuards(AccessTokenGuard)
   async listChat(
@@ -362,6 +530,13 @@ export class SpeakingRoomController {
     );
   }
 
+  @ApiOperation({ summary: "Issue Media Session - Speaking rooms" })
+  @ApiBearerAuth('bearer')
+  @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiResponse({ status: 403, description: 'Authorization or CSRF policy rejected the request', schema: { $ref: '#/components/schemas/ApiError' } })
+  @ApiHeader({ name: 'X-CSRF-Token', required: false, description: 'Required with the refresh-session cookie; must match the CSRF cookie', schema: { type: 'string' } })
+  @ApiParam({ name: "roomId", required: true, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Post(':roomId/media-session')
   @UseGuards(AccessTokenGuard)
   async issueMediaSession(
