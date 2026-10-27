@@ -15,7 +15,8 @@ flock -n 9 || { echo 'Application deployment is already running' >&2; exit 1; }
 # One-time conversion of existing dist must be reviewed separately. Never replace a real directory automatically.
 test -L "$base/dist" || { echo 'Reviewed dist symlink bootstrap required; no activation performed' >&2; exit 1; }
 previous=$(readlink -f "$base/dist")
-[[ "$previous" == "$base/.releases/"*/dist ]] && test -d "$previous"
+[[ "$previous" == "$base/.releases/"*/dist ]]
+test -d "$previous"
 
 export PM2_HOME=/home/cdnn-deploy/.pm2
 test -f "$base/.env" && test ! -L "$base/.env"
@@ -43,6 +44,7 @@ swap() {
 verify() {
   for attempt in $(seq 1 12); do
     if node scripts/deploy/verify.cjs; then return 0; fi
+    printf 'Verification retry %s/12\n' "$attempt"
     sleep 5
   done
   return 1

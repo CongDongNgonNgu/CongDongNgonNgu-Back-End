@@ -21,6 +21,9 @@ release="/var/www/congdongngonngu/backend/.releases/$APPROVED_SHA-$GITHUB_RUN_ID
 git archive --format=tar "$APPROVED_SHA" > "$scratch/source.tar"
 digest=$(sha256sum "$scratch/source.tar" | cut -d ' ' -f 1)
 # Every interpolated remote argument is a validated hex/digit value or a fixed path.
-ssh "${options[@]}" "$target" "umask 077; test \"\$(id -un)\" = cdnn-deploy && mkdir -p /var/www/congdongngonngu/backend/.releases && mkdir '$release'"
-ssh "${options[@]}" "$target" "cat > '$release/source.tar'" < "$scratch/source.tar"
-ssh "${options[@]}" "$target" "set -eu; cd '$release'; printf '%s  source.tar\n' '$digest' | sha256sum -c -; tar -xf source.tar; rm source.tar; printf '%s\n' '$APPROVED_SHA' > .source-sha; bash scripts/deploy/release.sh '$APPROVED_SHA' '$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT'"
+remote_command="umask 077; test \"\$(id -un)\" = cdnn-deploy && mkdir -p /var/www/congdongngonngu/backend/.releases && mkdir '$release'"
+ssh "${options[@]}" "$target" "$remote_command"
+remote_command="cat > '$release/source.tar'"
+ssh "${options[@]}" "$target" "$remote_command" < "$scratch/source.tar"
+remote_command="set -eu; cd '$release'; printf '%s  source.tar\n' '$digest' | sha256sum -c -; tar -xf source.tar; rm source.tar; printf '%s\n' '$APPROVED_SHA' > .source-sha; bash scripts/deploy/release.sh '$APPROVED_SHA' '$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT'"
+ssh "${options[@]}" "$target" "$remote_command"
