@@ -1,0 +1,40 @@
+name: Production (prepared, activation locked)
+on:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: production-backend
+  cancel-in-progress: false
+jobs:
+  deploy:
+    # Remove this literal false only through the reviewed activation PR after TEST approval.
+    if: ${{ false && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify immutable source and current main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPROVED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$APPROVED_SHA"
+      - name: Stage, activate, verify, or roll back application
+        env:
+          APPROVED_SHA: ${{ github.sha }}
+          CDNN_SSH_PRIVATE_KEY: ${{ secrets.CDNN_SSH_PRIVATE_KEY }}
+          CDNN_KNOWN_HOSTS: ${{ secrets.CDNN_KNOWN_HOSTS }}
+          CDNN_SSH_HOST: ${{ secrets.CDNN_SSH_HOST }}
+          CDNN_SSH_USER: ${{ secrets.CDNN_SSH_USER }}
+        shell: bash
+        run: bash scripts/deploy/transport.sh
