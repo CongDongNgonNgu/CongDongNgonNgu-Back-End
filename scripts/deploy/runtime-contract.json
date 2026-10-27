@@ -1,7 +1,16 @@
 {
   "reviewed": false,
-  "cwd": null,
-  "script": null,
-  "interpreter": null,
-  "exec_mode": null
+  "cwd": "/var/www/congdongngonngu/backend",
+  "script": "/var/www/congdongngonngu/backend/dist/main.js",
+  "interpreter": "node",
+  "resolvedInterpreter": null,
+  "nodeVersion": null,
+  "exec_mode": "fork_mode",
+  "instances": null,
+  "node_args": null,
+  "args": null,
+  "node_options": null,
+  "port": "3201",
+  "environment": "production",
+  "options": null
 }

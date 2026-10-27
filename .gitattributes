@@ -1,2 +1,4 @@
 scripts/deploy/*.sh text eol=lf
 .github/workflows/*.yml text eol=lf
+
+scripts/deploy/*.py text eol=lf
