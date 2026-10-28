@@ -89,9 +89,13 @@ rehearsal. Linux results must come from green CI; Windows skips are not PASS.
    Future live release-symlink traversal and public asset acceptance remain a
    separate post-activation requirement.
 4. The authorized representative PM2 rehearsal is enforced by Backend quality CI.
-   Its configuration/health-slice result is separate from the unverified VPS
-   systemd startup and actual Production operational rollback requirements.
-5. Fresh read-only plans must match existing provenance, filesystem/env metadata,
+   Its configuration/health-slice result is separate from untested Production
+   restart/reboot and operational rollback. Host systemd configuration identity
+   and configured persistence source are now operator-verified.
+5. Lock-held post-exchange process/drift enforcement and tested restoration/stop
+   semantics are a separate implementation gate; current helpers do not enforce
+   every condition in BOOTSTRAP-ROLLBACK-ACCEPTANCE.md.
+6. Fresh read-only plans must match existing provenance, filesystem/env metadata,
    free-space reserve and runtime. Atomic exchange support remains a host gate
    checked only during a separately authorized operation, never inferred from CI.
 
@@ -105,8 +109,17 @@ host persistence/correlation and post-activation requirements are listed in
 ## PM2 persistence and representative rehearsal follow-up
 
 See [PM2-PERSISTENCE-RECOVERY.md](PM2-PERSISTENCE-RECOVERY.md). Current/saved
-metadata equality verifies the compared allowlist, not the host systemd unit,
-launch source or resurrection behavior. PM2 instances/PORT/NODE_ENV remain null;
+metadata equality verifies the compared allowlist. Separately supplied host
+systemd configuration identity and persistence-source configuration are verified;
+actual Production resurrection/reboot behavior and original launch history are not. PM2 instances/PORT/NODE_ENV remain null;
 the application reports production after loading its own configuration. Neither
 that health response nor observation PASS may approve restart. The strict
 runtime contract remains reviewed=false.
+
+## Host configuration and remaining acceptance
+
+[Host systemd evidence](HOST-SYSTEMD-EVIDENCE-2026-10-28.json) closes the
+configuration-identity/source-selection request. [Endpoint correlation design](ENDPOINT-CORRELATION-DESIGN.md)
+and [bootstrap/rollback acceptance](BOOTSTRAP-ROLLBACK-ACCEPTANCE.md) separate
+remaining read-only checks from actions needing separate Production approval.
+Do not re-run completed provenance/helper/Nginx/isolated PM2 experiments.
