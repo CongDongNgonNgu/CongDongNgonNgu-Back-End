@@ -42,6 +42,24 @@ isolated rehearsal do not authorize restart or bootstrap. Any future contract
 alternative must be separately reviewed with explicit persistence/configuration
 source evidence and equivalent restart guarantees.
 
+### Pinned PM2 7.0.3 implementation review
+
+The [integrity-bound package source review](PM2-7.0.3-SOURCE-REVIEW.json) records
+public npm source, independent of Production state. Startup.js intentionally omits
+instances from saved declarations (along with transient PM2 identifiers/delay),
+and resurrection can fall back to the backup dump if the primary cannot be read
+or parsed. Thus a null saved instances field need not mean the observed fork
+process is missing; it still does not satisfy the existing strict contract.
+Do not manufacture instances=1 or mistake one observed row for a saved declaration.
+Host source selection and backup state remain separate review requirements.
+
+ProcessContainerFork.js loads the CommonJS application through Node's module
+loader using pm_exec_path. The rehearsal tests the resulting real module path
+and release-local dependencies rather than assuming symlink resolution. The
+7.0.3 CLI accepts max-restarts but has no min-uptime option. The first isolated
+CI run rejected that unsupported test flag before application launch; the test
+removes it and records the actual default instead. No Production flag is changed.
+
 ## Representative Linux PM2 rehearsal
 
 The Backend required quality job runs an explicit bounded rehearsal after build,

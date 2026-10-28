@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "package": "pm2",
+  "version": "7.0.3",
+  "source": "https://registry.npmjs.org/pm2/7.0.3",
+  "tarball": "https://registry.npmjs.org/pm2/-/pm2-7.0.3.tgz",
+  "integrity": "sha512-zRJOdburpb9OEPB0uqoNT8C1Gp7hPJPVy4Kr67XJNuT9UlMQcOt1WXrYQUmwqKPHk8FyauvP1CPhqoCrCaPw0Q==",
+  "reviewedFiles": [
+    "lib/binaries/CLI.js",
+    "lib/API/Startup.js",
+    "lib/ProcessContainerFork.js"
+  ],
+  "findings": {
+    "cliMinUptimeOption": "NOT_SUPPORTED; use measured default, not invented CLI flag",
+    "saveOmits": [
+      "instances",
+      "pm_id",
+      "prev_restart_delay"
+    ],
+    "resurrectFallback": "Uses backup dump if reading/parsing primary fails",
+    "forkLoader": "CommonJS application is loaded through Node Module._load using pm_exec_path"
+  },
+  "scope": "Public pinned package source review; no Production metadata fields changed; strict validator unchanged"
+}

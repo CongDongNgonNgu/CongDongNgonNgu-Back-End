@@ -12,6 +12,21 @@ const report={schema:1,scope:'Private Linux PM2 7.0.3 daemon with actual compile
 let stage='preflight',root,home,pm2Home,pm2Bin,env,base,cfg,initial,envBytes,envIdentity,runnerTemp;
 const tracked=new Map();
 class AcceptanceError extends Error{constructor(code){super(code);this.code=code;}}
+function diagnosticTokens(text){
+ const tokens=[];
+ for(const [token,pattern] of [['CLI_UNKNOWN_OPTION',/unknown option/i],['MODULE_NOT_FOUND',/Cannot find module|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND/],['NEST_DI',/Nest can't resolve dependencies|UnknownDependenciesException/],['CONFIG_VALIDATION_HINT',/PUBLIC_APP_URL|DATABASE_URL|JWT_ACCESS_SECRET|JWT_REFRESH_SECRET|CORS_ALLOWED_ORIGINS/],['EADDRINUSE',/EADDRINUSE/],['SYNTAX_ERROR',/SyntaxError/]])if(pattern.test(text))tokens.push(token);
+ for(const [name,token] of [['@nestjs/core','MISSING_NEST_CORE'],['@nestjs/config','MISSING_NEST_CONFIG'],['reflect-metadata','MISSING_REFLECT_METADATA']])if(text.includes("Cannot find module '"+name+"'"))tokens.push(token);
+ return tokens;
+}
+function privateLogDiagnostics(){
+ if(!root||!pm2Home)return [];
+ const logs=path.join(pm2Home,'logs'),tokens=new Set();
+ try{if(fs.realpathSync(logs)!==logs||!fs.lstatSync(logs).isDirectory())return [];for(const name of fs.readdirSync(logs)){
+  const file=path.join(logs,name),st=fs.lstatSync(file);if(!st.isFile()||st.nlink!==1||st.uid!==process.getuid())continue;
+  const fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const buf=Buffer.alloc(Math.min(st.size,512*1024));const n=fs.readSync(fd,buf,0,buf.length,0);for(const token of diagnosticTokens(buf.subarray(0,n).toString('utf8')))tokens.add(token);}finally{fs.closeSync(fd);}
+ }}catch{tokens.add('PRIVATE_LOG_CLASSIFICATION_UNAVAILABLE');}
+ return [...tokens].sort();
+}
 function identity(pid){
  if(!Number.isInteger(pid)||pid<1)return null;
  try{const proc='/proc/'+pid,stat=fs.readFileSync(proc+'/stat','utf8');if(fs.statSync(proc).uid!==process.getuid())throw Error('Foreign process identity');return {pid,start:startTicks(stat),state:stat.slice(stat.lastIndexOf(') ')+2).trim().split(/\s+/)[0]};}catch(error){if(error.code==='ENOENT'||error.code==='ESRCH')return null;throw error;}
@@ -26,7 +41,7 @@ function guard(){
 }
 function pm2(args,{allowFailure=false}={}){
  guard();const r=spawnSync(process.execPath,[pm2Bin,'--silent',...args],{cwd:root,env,encoding:'utf8',timeout:20000,maxBuffer:8*1024*1024});
- if(!allowFailure&&(r.error||r.status!==0))throw Error('Isolated PM2 command failed');
+ if(r.error||r.status!==0){if(!report.firstPm2CommandFailure)report.firstPm2CommandFailure={stage,command:['start','save','kill','resurrect','jlist'].includes(args[0])?args[0]:'UNLISTED',exitCode:Number.isInteger(r.status)?r.status:null,timedOut:r.error?.code==='ETIMEDOUT',tokens:diagnosticTokens(String(r.stdout||'')+String(r.stderr||''))};if(!allowFailure)throw Error('Isolated PM2 command failed');}
  return r;
 }
 function rows(){const r=pm2(['jlist']);try{const value=JSON.parse(r.stdout);if(!Array.isArray(value))throw Error();return value;}catch{throw Error('Invalid isolated PM2 response');}}
@@ -73,7 +88,7 @@ async function response(port,route){try{const r=await fetch('http://127.0.0.1:'+
 async function health(port,{release,expectGood=true}={}){
  let last;
  for(let n=0;n<50;n++){
-  const h=await response(port,'/api/v1/health');last=h;
+  const h=await response(port,'/api/v1/health');last=h;report.lastHealthStatus=h.status;
   if(validHealth(h.status,h.body)){
    if(!expectGood)throw Error('Injected startup failure unexpectedly healthy');
    const diagnostics=await response(port,'/__rehearsal');assert.equal(diagnostics.status,200);
@@ -127,7 +142,7 @@ async function main(){
  await app.listen(cfg.get('app.port'),'127.0.0.1');})().catch(()=>process.exit(81));
  `);
  cfg={app:'backend',base,baselineSha:'1'.repeat(40)};initial=core.inventory(cfg);const evidence={schema:1,app:'backend',sourceSha:cfg.baselineSha,...Object.fromEntries(['distHash','modulesHash','packageHash','lockHash'].map(k=>[k,initial[k]])),provenance:{method:'trusted-build-manifest',reference:'isolated-generated-fixture-only',reviewedBy:'automated-rehearsal-fixture'}};const runtime={reviewed:true,scope:'synthetic-fixture-only-not-production-contract'};
- stage='initial-launch';pm2(['start',path.join(base,'dist','main.js'),'--name',appName,'--cwd',base,'--interpreter',process.execPath,'--max-memory-restart','1G','--max-restarts','2','--min-uptime','1000']);const first=await health(port);report.launchDeclarations=first.metadata;for(const key of ['cwd','script','interpreter'])assert.equal(first.metadata[key],true,key);assert.equal(first.metadata.mode,'fork_mode');assert.equal(Object.values(first.metadata.options).includes('<UNREVIEWED>'),false);for(const key of ['nodeArgs','args','nodeOptions'])assert.ok(Array.isArray(first.metadata[key]),key);report.checks.initialActualNestHealth=true;
+ stage='initial-launch';pm2(['start',path.join(base,'dist','main.js'),'--name',appName,'--cwd',base,'--interpreter',process.execPath,'--max-memory-restart','1G','--max-restarts','2']);const first=await health(port);report.launchDeclarations=first.metadata;for(const key of ['cwd','script','interpreter'])assert.equal(first.metadata[key],true,key);assert.equal(first.metadata.mode,'fork_mode');assert.equal(Object.values(first.metadata.options).includes('<UNREVIEWED>'),false);for(const key of ['nodeArgs','args','nodeOptions'])assert.ok(Array.isArray(first.metadata[key]),key);report.checks.initialActualNestHealth=true;
  stage='save-resurrect';pm2(['save','--force']);const declared=declaration(saved());assert.deepEqual(declared,first.metadata);report.checks.currentSavedMetadataEqual=true;await killDaemon();const restored=await resurrect(port);assert.notEqual(restored.pid,first.pid);assert.deepEqual(restored.metadata,first.metadata);report.checks.originalColdResurrection=true;
  stage='symlink-bootstrap';const planned=core.plan(cfg,evidence,runtime);assert.equal(planned.ready,true,planned.blockers.join('; '));const applied=core.apply(cfg,evidence,planned.digest,{runtime,verify:()=>{}});assert.equal(fs.lstatSync(path.join(base,'dist')).isSymbolicLink(),true);assert.equal((await health(port)).pid,restored.pid);await killDaemon();const active=await resurrect(port,{release:applied.release});report.symlinkLaunchDeclarations=active.metadata;report.symlinkCurrentSavedMetadataEqual=JSON.stringify(active.metadata)===JSON.stringify(declaration(saved()));assert.equal(report.symlinkCurrentSavedMetadataEqual,true,'Symlink resurrection drifted from saved launch declaration');assert.deepEqual(active.metadata,first.metadata,'Symlink resurrection drifted from original declaration');report.checks.symlinkResurrectionPreservesCompleteComparedDeclaration=true;report.checks.symlinkResurrectionReleaseLocalDependencies=true;report.checks.applicationLoadsCwdConfigurationWithoutLaunchDeclarations=true;assert.equal(active.metadata.port,null);assert.equal(active.metadata.environment,null);assert.equal(fs.existsSync(path.join(applied.release,'.env')),false);restoreEnvInvariant();
  stage='missing-env';await killDaemon();fs.renameSync(path.join(base,'.env'),path.join(base,'.held-env'));await resurrect(port,{expectGood:false});await killDaemon();fs.renameSync(path.join(base,'.held-env'),path.join(base,'.env'));await resurrect(port,{release:applied.release});restoreEnvInvariant();report.checks.missingEnvironmentFileFailsStartupAndRestores=true;
@@ -137,10 +152,12 @@ async function main(){
  const final=core.inventory(cfg);for(const key of ['distHash','modulesHash','packageHash','lockHash','env'])assert.deepEqual(final[key],initial[key],key);restoreEnvInvariant();assert.equal(core.recoveryPlan(cfg).state,'original');report.checks.exactOriginalHashesAndEnvironmentIdentityRestored=true;
  stage='strict-gate';const productionContract=require('./runtime-contract.json');assert.equal(productionContract.reviewed,false);report.checks.productionRestartContractRemainsUnreviewed=true;report.result='PASS';
 }
-(async()=>{
- try{await main();}catch{report.result='FAIL';report.failedStage=stage;process.exitCode=1;}
+module.exports={diagnosticTokens};
+if(require.main===module)(async()=>{
+ try{await main();}catch(error){report.result='FAIL';report.failedStage=stage;report.failureClass=error instanceof AcceptanceError?error.code:error?.code==='ERR_ASSERTION'?'ACCEPTANCE_ASSERTION':'HARNESS_OR_COMMAND_FAILURE';process.exitCode=1;}
  finally{
   if(root&&env){try{await killDaemon();report.checks.isolatedDaemonStopped=true;}catch{report.checks.isolatedDaemonStopped=false;report.result='FAIL';process.exitCode=1;}}
+  report.privateLogTokens=privateLogDiagnostics();
   if(root&&report.checks.isolatedDaemonStopped){try{guard();fs.rmSync(root,{recursive:true,force:true});report.checks.privateFixtureRemoved=true;}catch{report.checks.privateFixtureRemoved=false;report.result='FAIL';process.exitCode=1;}}else if(root){report.checks.privateFixtureRemoved=false;report.retainedFixture=root;}
   const output=process.env.CDNN_PM2_REHEARSAL_REPORT;if(output){try{const permitted=fs.realpathSync(process.env.RUNNER_TEMP||'/tmp');assert.equal(path.resolve(output),path.join(permitted,'cdnn-pm2-rehearsal-summary.json'));assert.equal(fs.statSync(permitted).uid,process.getuid());assert.equal(permitted.startsWith('/var/www'),false);fs.writeFileSync(output,JSON.stringify(report,null,2)+'\n',{flag:'wx',mode:0o600});}catch{console.error('SANITIZED_REPORT_WRITE_FAILED');process.exitCode=1;}}
   console.log(JSON.stringify(report,null,2));
