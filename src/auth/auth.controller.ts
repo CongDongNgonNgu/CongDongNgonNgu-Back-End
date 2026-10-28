@@ -81,6 +81,13 @@ export class AuthController {
     return success(await this.auth.resetPassword(input), 'Mật khẩu đã được cập nhật');
   }
 
+  @Get('csrf')
+  csrf(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('Pragma', 'no-cache');
+    return success({ csrfToken: this.sessions.csrfToken(request) }, 'CSRF token');
+  }
+
   @Post('refresh')
   async refresh(
     @Req() request: Request,
