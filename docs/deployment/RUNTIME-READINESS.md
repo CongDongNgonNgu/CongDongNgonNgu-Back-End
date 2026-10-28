@@ -92,9 +92,9 @@ rehearsal. Linux results must come from green CI; Windows skips are not PASS.
    Its configuration/health-slice result is separate from untested Production
    restart/reboot and operational rollback. Host systemd configuration identity
    and configured persistence source are now operator-verified.
-5. Lock-held post-exchange process/drift enforcement and tested restoration/stop
-   semantics are a separate implementation gate; current helpers do not enforce
-   every condition in BOOTSTRAP-ROLLBACK-ACCEPTANCE.md.
+5. Lock-held post-exchange identity/artifact/endpoint guards and fail-closed
+   restoration are implemented; mandatory Linux CI and review must pass.
+   Operational Production rollback remains untested.
 6. Fresh read-only plans must match existing provenance, filesystem/env metadata,
    free-space reserve and runtime. Atomic exchange support remains a host gate
    checked only during a separately authorized operation, never inferred from CI.
@@ -123,3 +123,11 @@ configuration-identity/source-selection request. [Endpoint correlation design](E
 and [bootstrap/rollback acceptance](BOOTSTRAP-ROLLBACK-ACCEPTANCE.md) separate
 remaining read-only checks from actions needing separate Production approval.
 Do not re-run completed provenance/helper/Nginx/isolated PM2 experiments.
+
+## Implemented technical safeguards
+
+See [IMPLEMENTED-SAFETY-HANDOFF.md](IMPLEMENTED-SAFETY-HANDOFF.md) and
+[REVIEWED-SAFETY-HELPERS.json](REVIEWED-SAFETY-HELPERS.json) for probe/caller
+trust boundaries and guard/recovery semantics. [RUNTIME-CONTRACT-DECISION.md](RUNTIME-CONTRACT-DECISION.md)
+retains BLOCKED rather than inferring PM2 declarations from application config.
+No new Production probe or helper transfer has occurred.

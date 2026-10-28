@@ -128,7 +128,8 @@ test-tool lock also have 30-day CI retention; retain them with the source receip
 3. Production listener-to-health-responder correlation is still UNVERIFIED.
    Independent listener and health PASS must not be described as exact endpoint
    identity. The [read-only correlation design](ENDPOINT-CORRELATION-DESIGN.md) is prepared;
-   implementation/Linux negative-path validation and operator execution remain pending.
+   implementation is present; mandatory Linux acceptance and separate operator
+   execution remain gates. No Production observation has been performed.
 4. Operational Production rollback requires an approved concrete plan, fresh
    host provenance/metadata/storage checks, retained verified originals, actual
    atomic-exchange compatibility and restoration/public-asset acceptance.
@@ -166,3 +167,13 @@ The operator verified systemd identity and configured persistence source on
 This does not prove the original launch command, actual Production restart or
 host reboot. The strict runtime contract remains unchanged and blocked. See
 [the concrete bootstrap/rollback acceptance plan](BOOTSTRAP-ROLLBACK-ACCEPTANCE.md).
+
+## Guarded implementation follow-up
+
+The strengthened core refuses path recovery after a restarted/unknown process.
+The updated isolated PM2 regression therefore asserts that refusal, then performs
+a separately controlled temporary-fixture path exchange and cold resurrection.
+That explicit synthetic action does not relax Production helper behavior or
+authorize manual recovery there. See IMPLEMENTED-SAFETY-HANDOFF.md. Earlier15-check
+PASS remains accepted historical mechanism evidence; changed callers/regressions
+are validated by the current required CI, not by repeating provenance reviews.
