@@ -37,4 +37,19 @@ function validateRuntime(rows,review,proof={}){
   return runtimeKeys.every(k=>JSON.stringify(actual[k])===JSON.stringify(review[k]));
  }catch{return false;}
 }
-module.exports={migrationState,validHealth,validateRuntime,runtimeMetadata,safeArgs};
+// Observation review is deliberately independent of restart authorization.
+function assessRuntime(rows,review,proof,evidence){
+ let actual;try{actual=runtimeMetadata(rows,proof);}catch{return {observedDeployment:'BLOCKED',restartSafety:'BLOCKED',reviewed:false,blockers:['PM2_IDENTITY_AMBIGUOUS']};}
+ const blockers=[];
+ for(const [key,code] of [['instances','INSTANCES'],['port','PORT'],['environment','ENVIRONMENT']])if(actual[key]===null)blockers.push('PM2_'+code+'_UNDECLARED');
+ if(review?.reviewed!==true)blockers.push('RESTART_CONTRACT_UNREVIEWED');
+ const matches=rows.filter(x=>x.name==='cdnn-backend'),kernel=evidence?.kernel,app=evidence?.application;
+ const metadataMatches=review?.observationReviewed===true&&runtimeKeys.every(k=>JSON.stringify(actual[k])===JSON.stringify(review[k]));
+ const supported=actual.cwd&&actual.script&&actual.interpreter&&actual.resolvedInterpreter&&/^24\.[0-9]+\.[0-9]+$/.test(actual.nodeVersion)&&actual.exec_mode==='fork_mode'&&[actual.node_args,actual.args,actual.node_options].every(Array.isArray)&&!Object.values(actual.options).includes('<UNREVIEWED>');
+ const observed=!!(metadataMatches&&supported&&matches[0].pm2_env.status==='online'&&evidence?.pm2OnlineProcessCount===1&&Number.isSafeInteger(kernel?.pid)&&kernel.pid>0&&kernel.pid===matches[0].pid&&/^[0-9]+$/.test(kernel.startTicks)&&kernel.cwdMatches===true&&kernel.executableMatches===true&&kernel.listeningOn3201===true&&app?.httpStatus===200&&app.productionHealth===true);
+ if(!observed)blockers.push('OBSERVATION_MISSING_OR_DRIFTED');
+ const restart=validateRuntime(rows,review,proof);
+ if(!restart&&!blockers.length)blockers.push('RESTART_CONTRACT_MISMATCH');
+ return {observationScope:'PM2 metadata match; PID-owned listener and separate localhost health',endpointCorrelation:'UNVERIFIED',observedDeployment:observed?'PASS':'BLOCKED',restartSafety:restart?'PASS':'BLOCKED',reviewed:observed&&restart,blockers};
+}
+module.exports={migrationState,validHealth,validateRuntime,runtimeMetadata,safeArgs,assessRuntime};
