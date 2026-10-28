@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "project": "CongDongNgonNgu",
+  "evidenceDate": "2026-10-28",
+  "source": "Operator-provided sanitized evidence in FINAL_RUNTIME_RESTART_SAFETY_PREPARATION; no new VPS access by Codex",
+  "helpers": {
+    "status": "PASS",
+    "matchedFiles": 5,
+    "totalFiles": 5,
+    "reviewedBackendSha": "14776388b914fcb72d7e8f212fe60409536b5026"
+  },
+  "pm2": {
+    "observedDeployment": "PASS",
+    "currentSavedLaunchMetadataDifferences": 0,
+    "comparisonExcludes": [
+      "resolvedInterpreter",
+      "nodeVersion"
+    ],
+    "processCount": 1,
+    "execMode": "fork_mode",
+    "nodeVersion": "24.18.1",
+    "resolvedInterpreter": "/usr/bin/node",
+    "listener3201": "PASS",
+    "applicationHealthStatus": 200,
+    "applicationEnvironment": "production",
+    "launchDeclarations": {
+      "instances": null,
+      "port": null,
+      "environment": null
+    },
+    "restartSafety": "BLOCKED",
+    "endpointCorrelation": "UNVERIFIED"
+  },
+  "nginx": {
+    "syntaxTest": "PASS",
+    "dumpPipelineStatus": 0,
+    "disableSymlinksToken": "ABSENT",
+    "effectiveSymlinkPolicy": "off",
+    "effectiveSymlinkPolicyReview": "PASS",
+    "currentWorkerAccess": "PASS",
+    "futureLiveReleaseSymlinkTraversal": "NOT_ACTIVATED_NOT_VERIFIED",
+    "warnings": [
+      "Protocol options redefined for unrelated domain",
+      "Proxy headers hash optimization warnings"
+    ],
+    "configurationChangeRequested": false
+  },
+  "productionActivationAuthorized": false
+}

@@ -163,7 +163,8 @@ report hashes, exact component hashes and immutable artifact digests.
 [Provenance-only bootstrap evidence](bootstrap-evidence.provenance.json) does not
 approve runtime, Nginx traversal, bootstrap apply, or any other Production action.
 Backend runtime-contract.json remains reviewed=false. Frontend symlink policy
-review remains false. Do not mistake these files for operator apply approval.
+review was false at that investigation; the operator follow-up below now verifies
+the effective policy while future live traversal remains unverified. Do not mistake these files for operator apply approval.
 
 Reviewed backend run: https://github.com/CongDongNgonNgu/CongDongNgonNgu-Back-End/actions/runs/40508036840 (attempt 1).
 
@@ -180,3 +181,7 @@ remains a contingency, not a required replacement for proven content.
 ## Readiness follow-up ? 2026-10-28
 
 Current operator Nginx evidence and runtime/recovery decisions are recorded in [RUNTIME-READINESS.md](RUNTIME-READINESS.md). The provenance PASS results above remain unchanged. Historical pending Nginx/current-path statements above are superseded by that evidence; restart/activation gates remain blocked.
+
+## Verified operator follow-up - 2026-10-28
+
+Five reviewed PR #63 helper hashes match; observed deployment passes with zero compared current/saved launch differences. PM2 instances/PORT/NODE_ENV remain null. Nginx syntax and full-dump status pass, disable_symlinks is absent, effective default off and current worker access are reviewed. Future live release traversal remains a post-activation check. See [operator evidence](OPERATOR-EVIDENCE-2026-10-28.json) and [PM2 persistence/recovery preparation](PM2-PERSISTENCE-RECOVERY.md). Provenance remains PASS without a new build experiment; strict restart/bootstrap and Production activation gates remain blocked.

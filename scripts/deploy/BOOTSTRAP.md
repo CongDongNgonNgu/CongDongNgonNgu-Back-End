@@ -130,8 +130,12 @@ Background references: [Node module realpath resolution](https://nodejs.org/api/
 
 ## Runtime and provenance investigation
 
-See [the read-only evidence and separately gated migration design](../../docs/deployment/RUNTIME-PROVENANCE.md). Reproducible-build content provenance is reviewed PASS. Runtime/Nginx/bootstrap gates remain BLOCKED; isolated comparison reports alone cannot approve bootstrap.
+See [the read-only evidence and separately gated migration design](../../docs/deployment/RUNTIME-PROVENANCE.md). Reproducible-build content provenance is reviewed PASS. Runtime/bootstrap gates remain BLOCKED; effective Nginx policy is reviewed and future live traversal remains pending; isolated comparison reports alone cannot approve bootstrap.
 
 ## Runtime readiness follow-up ? 2026-10-28
 
 See [RUNTIME-READINESS.md](../../docs/deployment/RUNTIME-READINESS.md) for the separate observation/restart gates, operator Nginx evidence, remaining blockers and minimal read-only commands. Reuse the reviewed reproduction result. Production gates remain disabled; no apply or restart is authorized.
+
+## Verified operator evidence and PM2 rehearsal - 2026-10-28
+
+Effective Nginx policy is reviewed off after successful syntax/dump checks; current worker access passes. Future live release traversal remains a post-activation check. Five inspection helper hashes match reviewed Backend PR #63; current/saved compared launch metadata has no differences, while instances/PORT/NODE_ENV remain null. See [operator evidence](../../docs/deployment/OPERATOR-EVIDENCE-2026-10-28.json) and [PM2 persistence/recovery scope](../../docs/deployment/PM2-PERSISTENCE-RECOVERY.md). Observation PASS cannot authorize restart; strict Production gates remain unchanged.
