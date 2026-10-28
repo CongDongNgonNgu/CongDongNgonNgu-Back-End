@@ -267,6 +267,10 @@ describe('auth API', () => {
       .join('; ');
     const csrf = cookieValue(login.headers['set-cookie'] as unknown as string[], 'cdn_csrf');
 
+    const delivery = await api.get('/api/v1/auth/csrf').set('Origin', 'http://localhost:5173')
+      .set('Cookie', cookies).expect(200);
+    expect(delivery.body.data.csrfToken).toBe(csrf);
+    await api.post('/api/v1/auth/refresh').set('Cookie', cookies).expect(403);
     await api.post('/api/v1/auth/refresh')
       .set('Cookie', cookies)
       .set('X-CSRF-Token', 'wrong-csrf')
@@ -283,6 +287,39 @@ describe('auth API', () => {
       .set('Origin', 'http://localhost:5173')
       .set('X-CSRF-Token', csrf)
       .expect(201);
+  });
+
+  it('delivers host-only CSRF only to an allowed origin without changing cookies', async () => {
+    const api = request(app.getHttpServer());
+    const token = 'legacy-host-only-csrf';
+    const result = await api.get('/api/v1/auth/csrf').set('Origin', 'http://localhost:5173')
+      .set('Cookie', 'cdn_csrf=' + token).expect(200);
+    expect(result.body.data).toEqual({ csrfToken: token });
+    expect(result.headers['cache-control']).toContain('no-store');
+    expect(result.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+    expect(result.headers['access-control-allow-credentials']).toBe('true');
+    expect(result.headers['set-cookie']).toBeUndefined();
+    for (const origin of ['https://attacker.example', 'null', 'http://localhost:5173.attacker.example']) {
+      await api.get('/api/v1/auth/csrf').set('Origin', origin)
+        .set('Cookie', 'cdn_csrf=' + token).expect(403)
+        .expect(({ body }) => expect(body.error.code).toBe('AUTH_CSRF_INVALID'));
+    }
+    await api.get('/api/v1/auth/csrf').set('Cookie', 'cdn_csrf=' + token).expect(403);
+    await api.get('/api/v1/auth/csrf').set('Origin', 'http://localhost:5173')
+      .expect(200).expect(({ body }) => expect(body.data.csrfToken).toBeNull());
+  });
+
+  it('rejects ambiguous legacy CSRF and refresh cookies regardless of order', async () => {
+    const api = request(app.getHttpServer());
+    for (const cookies of ['cdn_csrf=one; cdn_csrf=two', 'cdn_csrf=two; cdn_csrf=one']) {
+      await api.get('/api/v1/auth/csrf').set('Origin', 'http://localhost:5173')
+        .set('Cookie', cookies).expect(403);
+      await api.post('/api/v1/auth/refresh').set('Origin', 'http://localhost:5173')
+        .set('Cookie', 'cdn_refresh=refresh; ' + cookies).set('X-CSRF-Token', 'one').expect(403);
+    }
+    await api.post('/api/v1/auth/refresh').set('Origin', 'http://localhost:5173')
+      .set('Cookie', 'cdn_refresh=one; cdn_refresh=two; cdn_csrf=csrf')
+      .set('X-CSRF-Token', 'csrf').expect(403);
   });
 
   it('keeps recovery generic and invalidates prior sessions after reset', async () => {

@@ -100,6 +100,14 @@ export class AuthController {
     return success(await this.auth.resetPassword(input), 'Mật khẩu đã được cập nhật');
   }
 
+  @ApiOperation({ summary: 'Deliver the API-host CSRF token to an allowed frontend origin' })
+  @Get('csrf')
+  csrf(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('Pragma', 'no-cache');
+    return success({ csrfToken: this.sessions.csrfToken(request) }, 'CSRF token');
+  }
+
   @ApiOperation({ summary: "Refresh - Authentication" })
   @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @ApiCookieAuth('refresh')
