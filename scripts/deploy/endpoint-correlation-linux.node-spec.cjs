@@ -46,13 +46,19 @@ test('Linux missing process and unavailable listener fail closed',{skip:!enabled
 
 test('Linux insufficient existing permissions cannot become exclusive ownership',{skip:!enabled},async()=>{
  const f=await fixture('healthy');
+ const os=require('node:os'), publicDir=fs.mkdtempSync(path.join(os.tmpdir(),'cdnn-unprivileged-probe-'));
  try{
+  // Only this synthetic temp directory is made readable; checkout/host permissions stay untouched.
+  fs.chmodSync(publicDir,0o755);
+  const publicProbe=path.join(publicDir,'endpoint-correlation.cjs');
+  fs.copyFileSync(path.join(__dirname,'endpoint-correlation.cjs'),publicProbe);fs.chmodSync(publicProbe,0o644);
   const {spawnSync}=require('node:child_process');
-  const program='require('+JSON.stringify(path.join(__dirname,'endpoint-correlation.cjs'))+').probe('+JSON.stringify(f.options)+').then(r=>console.log(JSON.stringify(r)))';
-  const child=spawnSync(process.execPath,['-e',program],{uid:65534,gid:65534,cwd:'/tmp',env:{},encoding:'utf8',timeout:7000});
+  const program='require('+JSON.stringify(publicProbe)+').probe('+JSON.stringify(f.options)+').then(r=>console.log(JSON.stringify(r)))';
+  const child=spawnSync(process.execPath,['-e',program],{uid:65534,gid:65534,cwd:publicDir,env:{},encoding:'utf8',timeout:7000});
   assert.equal(child.status,0);const result=JSON.parse(child.stdout);assert.equal(result.status,'UNVERIFIED');assert.equal(result.ownershipAfter,false);assert.doesNotMatch(child.stdout,/credential|private|stack/);
- }finally{await f.stop();}
+ }finally{try{await f.stop();}finally{fs.rmSync(publicDir,{recursive:true,force:true});}}
 });
+
 test('Linux namespace mismatch fails before opening any connection',{skip:!enabled},async()=>{
  const os=require('node:os');const root=fs.mkdtempSync(path.join(os.tmpdir(),'cdnn-namespace-test-'));
  try{

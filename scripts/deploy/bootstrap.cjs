@@ -36,4 +36,17 @@ try{
   }
  }
  console.log(JSON.stringify(result,null,2));
-}catch(error){console.error(JSON.stringify({status:'BOOTSTRAP_BLOCKED',recoveryClassification:error.recoveryClassification||'NO_RECOVERY_CLAIM',reasonCode:['PROCESS_DRIFT','PROCESS_IDENTITY_UNVERIFIED'].includes(error.code)?error.code:'VERIFICATION_OR_OPERATION_FAILED'}));process.exitCode=1;}
+}catch(error){
+ const text=String(error.message||'');
+ let reasonCode=['PROCESS_DRIFT','PROCESS_IDENTITY_UNVERIFIED'].includes(error.code)?error.code:'VERIFICATION_OR_OPERATION_FAILED';
+ if(reasonCode==='VERIFICATION_OR_OPERATION_FAILED'){
+  if(/ENDPOINT_CORRELATION_UNVERIFIED/.test(text))reasonCode='ENDPOINT_CORRELATION_UNVERIFIED';
+  else if(/approval digest/.test(text))reasonCode='APPROVAL_DIGEST_MISMATCH';
+  else if(/source identity|ordinary metadata/.test(text))reasonCode='RELEASE_IDENTITY_UNVERIFIED';
+  else if(/artifact|snapshot|Provenance/.test(text))reasonCode='ARTIFACT_INTEGRITY_UNVERIFIED';
+  else if(/endpoints|postcondition|recovery journal/.test(text))reasonCode='RECOVERY_ENDPOINTS_UNVERIFIED';
+  else if(/exchange unavailable/.test(text))reasonCode='EXCHANGE_UNSUPPORTED_OR_FAILED';
+  else if(/health/.test(text))reasonCode='HEALTH_UNVERIFIED';
+ }
+ console.error(JSON.stringify({status:'BOOTSTRAP_BLOCKED',recoveryClassification:['PATH_RESTORED_RUNTIME_UNVERIFIED','PATH_RESTORED','STOPPED_RUNTIME_REVIEW_REQUIRED'].includes(error.recoveryClassification)?error.recoveryClassification:'NO_RECOVERY_CLAIM',reasonCode}));process.exitCode=1;
+}
