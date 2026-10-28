@@ -36,7 +36,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version: '24.18.1'
           cache: npm
 
       - name: Install dependencies
@@ -85,6 +85,33 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Representative isolated PM2 launch, resurrection and recovery
+        timeout-minutes: 8
+        env:
+          CDNN_TEST_PM2_ROOT: ${{ runner.temp }}/cdnn-pm2-tools-7.0.3/node_modules/pm2
+          CDNN_PM2_REHEARSAL_REPORT: ${{ runner.temp }}/cdnn-pm2-rehearsal-summary.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.18.1
+          tool_root="$RUNNER_TEMP/cdnn-pm2-tools-7.0.3"
+          test ! -e "$tool_root"
+          mkdir -m 700 "$tool_root"
+          npm install --prefix "$tool_root" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org --save-exact pm2@7.0.3
+          node -e 'const fs=require("node:fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));for(const x of Object.values(p.packages||{})){if(x.resolved){const u=new URL(x.resolved);if(u.origin!=="https://registry.npmjs.org"||u.username||u.password||u.search||u.hash)throw Error("Unexpected public test-tool lock source");}}' "$tool_root/package-lock.json"
+          node scripts/deploy/pm2-recovery-rehearsal.cjs
+
+      - name: Preserve sanitized PM2 rehearsal and public test-tool lock
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: isolated-pm2-recovery-evidence
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/cdnn-pm2-rehearsal-summary.json
+            ${{ runner.temp }}/cdnn-pm2-tools-7.0.3/package-lock.json
 
       - name: PostgreSQL18 study-group transaction proof
         run: npm run test:study-groups

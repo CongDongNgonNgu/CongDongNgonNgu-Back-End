@@ -20,7 +20,7 @@ one online PM2 row, a matching PID/start identity, expected cwd/executable/liste
 and successful application health. It reports observationScope and
 endpointCorrelation=UNVERIFIED: an owned tcp6 listener and separate IPv4 request
 are not proof that the request reached that PID. Historical observations are not
-fresh evidence; this turn did not access the VPS.
+fresh evidence; the operator has now confirmed five pinned helper hashes, observation PASS and zero current/saved launch-metadata differences. Codex did not access the VPS.
 
 The strict restart validator remains unchanged. reviewed=false, null launch fields,
 unsupported arguments/options, drift or missing evidence keep runtime.reviewed=false.
@@ -40,14 +40,20 @@ FRONTEND_TRAVERSAL=PASS and NGINX_READ=PASS were obtained as www-data.
 getfacl was unavailable; do not install it merely for this task. Direct access
 checks establish effective current access despite unavailable ACL detail.
 
-CURRENT_PATH_ACCESS=PASS. EFFECTIVE_SYMLINK_POLICY=AWAITING_OPERATOR_CONFIRMATION.
-The projection omitted nginx's validation result/exit code, config boundaries and
-location context, and its anchored filter can miss inline directives. Therefore
-absence in that projection alone cannot approve the complete effective policy.
-Nginx documents disable_symlinks off as its default; confirm no inherited or
-location override applies before approving symlinkTraversalReviewed. No setting
-or permission change is proposed. Future .releases ancestors do not exist on the
-host; isolated worker tests validate the proposed 711/755/644 layout only.
+CURRENT_PATH_ACCESS=PASS. EFFECTIVE_SYMLINK_POLICY=VERIFIED_OFF.
+On 2026-10-28 the operator confirmed nginx -t PASS, complete dump pipeline
+status 0 and no disable_symlinks token. This supports the documented global
+default off and closes the earlier projection/parse-status limitation. The
+reported protocol-option and proxy-header hash warnings do not invalidate the
+successful syntax test; the protocol warning concerns an unrelated domain. No
+Nginx configuration change is requested.
+
+Effective policy review is separate from future live release traversal. No
+Production path conversion has occurred; worker traversal/read access through
+actual .releases ancestors and public old/new assets must be verified after any
+separately approved activation. Current-path access is not that future check.
+The [operator evidence](OPERATOR-EVIDENCE-2026-10-28.json) preserves the exact
+reported scope, nullable launch declarations and unverified endpoint identity.
 
 ## Provenance and recovery evidence
 
@@ -66,7 +72,7 @@ release-local dependency resolution, live health before/during/after exchange,
 new process launch through the symlink, original process survival, complete
 restored hashes/env metadata and original marker absence. Frontend tests execute
 reads as www-data through the actual proposed symlink layout, inject traversal
-denial and verify restoration and old-asset access. These tests use temporary
+denial and verify restoration and old-asset access. Those existing tests use temporary
 paths, synthetic configuration and ephemeral loopback ports only. No PM2 daemon,
 Production database or Production secret is used. They are Linux mechanism and
 runtime-assumption evidence, not a real PM2 launch/restart or Production recovery
@@ -79,51 +85,28 @@ rehearsal. Linux results must come from green CI; Windows skips are not PASS.
    contract are required; the current strict gate remains blocked.
 2. Exact listener-to-health responder correlation remains unverified. Current
    independent observations must not be described as complete endpoint identity.
-3. Confirm successful full effective Nginx parse and applicable symlink policy.
-   Current worker access passes; future host symlink traversal is not live-tested.
-4. Actual PM2 dependency/configuration behavior after path conversion and
-   operational rollback require a separately authorized isolated representative
-   PM2 rehearsal or Production maintenance/recovery plan. Synthetic Node tests
-   do not close that requirement.
+3. Effective Nginx syntax/symlink policy and current worker access are verified.
+   Future live release-symlink traversal and public asset acceptance remain a
+   separate post-activation requirement.
+4. The authorized representative PM2 rehearsal is enforced by Backend quality CI.
+   Its configuration/health-slice result is separate from the unverified VPS
+   systemd startup and actual Production operational rollback requirements.
 5. Fresh read-only plans must match existing provenance, filesystem/env metadata,
    free-space reserve and runtime. Atomic exchange support remains a host gate
    checked only during a separately authorized operation, never inferred from CI.
 
-## Minimal read-only operator actions
+## Operator evidence request satisfied
 
-Run in the existing authorized host terminal. Review locally and return only
-sanitized results. Do not return raw PM2 dump/env, .env, full nginx config or
-arbitrary command lines. No helper transfer is authorized by these commands;
-use the exact reviewed helpers only if already available in the private
-preparation directory.
+The earlier helper/current/saved/Nginx requests are satisfied by the operator
+evidence dated 2026-10-28. Do not rerun them without changed inputs. Remaining
+host persistence/correlation and post-activation requirements are listed in
+[PM2-PERSISTENCE-RECOVERY.md](PM2-PERSISTENCE-RECOVERY.md).
 
-~~~bash
-# Syntax and full include graph; no reload or config change.
-sudo nginx -t
-# In bash, retain nginx's status; detect the policy name even with multiline arguments.
-set -o pipefail
-sudo nginx -T 2>&1 | awk '{if (index($0,"disable_symlinks")) found=1} END {if(found) print "SYMLINK_POLICY_PRESENT_LOCAL_REVIEW_REQUIRED"; else print "NO_DISABLE_SYMLINKS_TOKEN"}'
-printf 'NGINX_DUMP_PIPELINE_STATUS=%s\n' "$?"
-# As cdnn-deploy; connect-only inspection, no PM2 CLI/daemon startup.
-PM2_HOME=/home/cdnn-deploy/.pm2 node /home/cdnn-deploy/bootstrap-preparation/backend/scripts/deploy/check-runtime.cjs --inspect
-# Read saved launch metadata in memory and emit only the helper allowlist.
-node - <<'NODE'
-const fs=require('node:fs');
-const {runtimeMetadata}=require('/home/cdnn-deploy/bootstrap-preparation/backend/scripts/deploy/release-checks.cjs');
-try {
- const saved=JSON.parse(fs.readFileSync('/home/cdnn-deploy/.pm2/dump.pm2','utf8'));
- console.log(JSON.stringify(runtimeMetadata(saved.map(p=>({name:p.name,pm2_env:p}))),null,2));
-} catch {console.log('SAVED_LAUNCH_METADATA=UNAVAILABLE_OR_UNSUPPORTED');process.exitCode=1;}
-NODE
-~~~
+## PM2 persistence and representative rehearsal follow-up
 
-If NO_DISABLE_SYMLINKS_TOKEN is emitted with both syntax validation and dump pipeline
-status zero, the documented default applies globally. If a policy token appears (even in a comment or string, conservatively),
-review their http/server/location inheritance locally and return only this
-project's effective policy. No full-config publication is required. Repeating
-namei/getfacl/current-path tests is unnecessary unless permissions changed.
-Saved dump output is supporting evidence, not proof it was the launch source or
-that systemd will restore it. If it also lacks launch fields, report that exact
-result; do not edit/save/restart PM2 to make the gate pass. A future independently
-reviewed contract can model persisted singleton semantics and app configuration
-sources, but must prove restart behavior and preserve strict consumer gates.
+See [PM2-PERSISTENCE-RECOVERY.md](PM2-PERSISTENCE-RECOVERY.md). Current/saved
+metadata equality verifies the compared allowlist, not the host systemd unit,
+launch source or resurrection behavior. PM2 instances/PORT/NODE_ENV remain null;
+the application reports production after loading its own configuration. Neither
+that health response nor observation PASS may approve restart. The strict
+runtime contract remains reviewed=false.
