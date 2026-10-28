@@ -1,8 +1,8 @@
 # Read-only endpoint connection correlation design
 
-Status: DESIGN_REVIEWED_NOT_IMPLEMENTED_NOT_EXECUTED. Date: 2026-10-28.
-Current Production endpoint correlation: UNVERIFIED. This document is not an
-executable probe, a helper transfer request or an activation/restart approval.
+Status: IMPLEMENTED_SOURCE_REVIEWED; mandatory Linux CI required. Date: 2026-10-28.
+Current Production endpoint correlation: UNVERIFIED. The Backend source now implements this design; this document grants no helper
+transfer, Production probe execution or activation/restart approval.
 Do not replace the existing helper or change its strict gate under this task.
 
 ## Why a separate listener and HTTP response are insufficient
@@ -16,8 +16,8 @@ attach strace/eBPF/ptrace or change app instrumentation to claim correlation.
 
 ## Proposed one-stream probe
 
-A later implementation must be independently reviewed and tested in isolated
-Linux, then hashed for operator execution. It uses native Node built-ins, no npm
+The implementation must pass independent review and mandatory isolated Linux
+CI before operator use. REVIEWED-SAFETY-HELPERS.json records exact helper hashes. It uses native Node built-ins, no npm
 install, no PM2 CLI/API startup path, no file or configuration writes. The ordinary
 health GET can increment existing counters or access logs; no logging is disabled.
 
@@ -81,12 +81,15 @@ namespace mismatch, denied/incomplete visibility, fd disappearance/transfer,
 server closes early, unavailable response, malformedJSON200/503, oversized or
 ambiguous framing, timeout. Test with synthetic processes only; assert no helper
 lifecycle/Production path/environment access and no private-output leakage.
-A passing design review is not these execution tests; do not claim them done.
+The implementation includes these portable/synthetic and real Linux cases;
+required CI results remain authoritative. Do not turn Windows skips or source
+review into Linux or Production execution claims.
 
-NEXT_OPERATOR_ACTION for this item: none executable yet. First implement/test and
-review a standalone probe in a separate authorized source task, then hand its
-exact SHA and one read-only invocation to the operator. Do not run an unreviewed
-one-liner or repeat already accepted listener/health observations as correlation.
+NEXT_OPERATOR_ACTION: do not execute the probe on Production in this task.
+After green required CI, separately review any transfer and read-only execution
+request using IMPLEMENTED-SAFETY-HANDOFF.md. Existing permissions may correctly
+produce UNVERIFIED; no root/escalation bypass is authorized. The accepted legacy
+five-file hash proof does not authenticate the new helper dependency set.
 
 References: [Linux proc network namespace data](https://man7.org/linux/man-pages/man5/proc_pid_net.5.html),
 [Socket inode fd links](https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html),

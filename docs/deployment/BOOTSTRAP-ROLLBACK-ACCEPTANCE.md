@@ -39,7 +39,7 @@ Do not rename a launch declaration into invented source provenance.
 1. Consolidate existing operator evidence. Complete; no new systemctl inspection
    needed unless the unit/home/source changes. PID2902322 is the observed daemon
    PID, not an enduring identity or the backend application's PID.
-2. Implement and review ENDPOINT-CORRELATION-DESIGN.md in an isolated Linux test,
+2. ENDPOINT-CORRELATION-DESIGN.md is implemented; require green mandatory Linux CI,
    including wrong PID, IPv4/mappedIPv6, sharing, denied visibility, close/drift and
    malformed response paths. Only then hand the exact hashed inspector to the
    operator for one bounded loopback GET. No installed helper is changed here.
@@ -79,22 +79,21 @@ Linux filesystem metadata alone cannot prove renameat2 exchange support. An
 exchange probe writes scratch paths; it is not a read-only command and is not
 allowed now. Existing isolated tests prove mechanism only, not this host mount.
 
-## Implementation gap before operation approval
+## Implemented safety gate before operation approval
 
-The current helpers do NOT enforce every acceptance condition below. The runtime
-probe is checked before exchange; bootstrap.cjs post-verify checks public health
-and assets, without lock-held post-exchange PID/start/restart-counter comparison.
-The catch path can automatically restore dist even if a process restarted after
-exchange; path restoration is not restoration of loaded process memory.
+The implementation now persists the initial Backend PID/start/restart identity
+and checks it inside the existing outer flock immediately around exchanges and
+restoration, after expensive hashing, after verification and before acceptance.
+It also rechecks live/backup endpoints, source marker and all artifact hashes.
+The CLI requires same-stream correlation plus public verification for Backend.
+Process drift/unavailable evidence stops without automatic reverse, retaining
+originals and journal; stable path restore is explicitly runtime-unverified.
 
-Before PhaseB can be authorized, a separate independently reviewed implementation
-and focused Linux failure tests must enforce post-exchange identity/drift checks
-inside the deployment lock and define tested safe restoration/stop semantics for
-concurrent exit/restart. If a process restarted, automatic path-only recovery
-cannot be labelled operational recovery; retain evidence and require separate
-app-scoped recovery approval. No current code is changed or approved as sufficient
-by this plan. This implementation gate is in addition to contract/correlation,
-not replaced by an operator checklist or public health.
+This code must pass mandatory Linux failure/regression tests and independent
+review; see IMPLEMENTED-SAFETY-HANDOFF.md and helper hashes. Its implementation
+does not close the strict contract or host correlation gate and does not prove
+Production operational recovery. A separately requested --verify observation is
+not evidence that an earlier exchange was lock-held. No original is pruned.
 
 ## Phase B: concrete separately approved operation
 

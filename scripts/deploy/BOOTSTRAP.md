@@ -143,3 +143,7 @@ Effective Nginx policy is reviewed off after successful syntax/dump checks; curr
 ## Consolidated host configuration and acceptance
 
 Host systemd configuration identity and configured persistence source are operator-verified; actual Production restart/reboot is not tested. Use [BOOTSTRAP-ROLLBACK-ACCEPTANCE.md](../../docs/deployment/BOOTSTRAP-ROLLBACK-ACCEPTANCE.md) for preservation, exact approval boundaries, acceptance and rollback stop conditions. Correlation remains a separately designed read-only check; strict runtime and activation gates remain blocked.
+
+## Implemented process and restoration guard
+
+Backend apply/recover now requires measured persisted PID/start/restart identity. The CLI verifies same-stream endpoint correlation and public health; process and artifact/endpoint guards recheck around exchange/verification. Drift or missing evidence stops without automatic reverse; originals/journal are retained. A stable Backend path restore is PATH_RESTORED_RUNTIME_UNVERIFIED, not operational recovery. Legacy journals missing initial identity are refused. See [implemented handoff](../../docs/deployment/IMPLEMENTED-SAFETY-HANDOFF.md) and [runtime contract decision](../../docs/deployment/RUNTIME-CONTRACT-DECISION.md). Existing mutation examples above remain separate-approval-only; no Production execution is requested by this task.

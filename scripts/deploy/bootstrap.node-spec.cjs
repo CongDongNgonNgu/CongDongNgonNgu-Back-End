@@ -15,7 +15,7 @@ function fixture(){
  const cfg={...config,base};
  const snap=core.inventory(cfg);
  const evidence={schema:1,app:cfg.app,sourceSha:cfg.baselineSha,distHash:snap.distHash,modulesHash:snap.modulesHash,packageHash:snap.packageHash,lockHash:snap.lockHash,provenance:{method:'trusted-build-manifest',reference:'isolated-fixture-manifest',reviewedBy:'fixture-reviewer'},nginx:{root:base+'/dist',symlinkTraversalReviewed:true},productionApiOrigin:'https://api.congdongngonngu.vn/api/v1'};
- const runtime={reviewed:true,fingerprint:'fixture-runtime'};
+ const runtime={reviewed:true,fingerprint:'fixture-runtime',independentEvidence:{kernel:{pid:41,startTicks:'991'},pm2RestartCounter:0}};
  return {base,cfg,evidence,runtime,done:()=>fs.rmSync(base,{recursive:true,force:true})};
 }
 test('plan is read-only, SHA is pinned and HEAD is not provenance',()=>{
@@ -36,14 +36,14 @@ test('stale content, missing runtime review and secret files block before mutati
 for(const failure of ['none','copy','exchange','postcheck','runtime'])test('real Linux atomic bootstrap and rollback: '+failure,{skip:process.platform!=='linux'},()=>{
  const oldUmask=process.umask(0o077),f=fixture();try{
   const p=core.plan(f.cfg,f.evidence,f.runtime),env=fs.statSync(path.join(f.base,'.env'));
-  const options={runtime:f.runtime,runtimeProbe:failure==='runtime'?()=>({reviewed:false}):()=>f.runtime,verify:()=>{if(failure==='postcheck')throw Error('injected health');},checkpoint:name=>{if(failure==='copy'&&name==='copied')throw Error('injected copy');},exchange:failure==='exchange'?()=>{throw Error('injected exchange');}:undefined};
+  const options={processGuard:()=>({pid:41,startTicks:'991',restartCount:0}),runtime:f.runtime,runtimeProbe:failure==='runtime'?()=>({reviewed:false}):()=>f.runtime,verify:()=>{if(failure==='postcheck')throw Error('injected health');},checkpoint:name=>{if(failure==='copy'&&name==='copied')throw Error('injected copy');},exchange:failure==='exchange'?()=>{throw Error('injected exchange');}:undefined};
   if(failure==='none'){
    const result=core.apply(f.cfg,f.evidence,p.digest,options);assert.equal(result.state,'verified');assert.ok(fs.lstatSync(path.join(f.base,'dist')).isSymbolicLink());
    if(f.cfg.app==='backend'){
     const run=spawnSync(process.execPath,[path.join(f.base,'dist','main.js')],{encoding:'utf8'});assert.equal(run.status,0,run.stderr);assert.equal(run.stdout.trim(),'dependency-ok');
     assert.ok(fs.existsSync(path.join(result.release,'node_modules','probe','index.js')));
    }else{assert.equal(JSON.parse(fs.readFileSync(path.join(f.base,'dist','cdnn-release.json'))).sha,f.cfg.baselineSha);assert.equal(fs.statSync(result.release).mode&0o777,0o711);assert.equal(fs.statSync(path.dirname(result.release)).mode&0o777,0o711);assert.equal(fs.statSync(path.join(f.base,'dist','assets','old.js')).mode&0o777,0o644);}
-   const recovery=core.recoveryPlan(f.cfg);core.recover(f.cfg,recovery.digest);assert.ok(fs.lstatSync(path.join(f.base,'dist')).isDirectory());
+   const recovery=core.recoveryPlan(f.cfg);core.recover(f.cfg,recovery.digest,{processGuard:()=>({pid:41,startTicks:'991',restartCount:0})});assert.ok(fs.lstatSync(path.join(f.base,'dist')).isDirectory());
    assert.equal(core.recoveryPlan(f.cfg).state,'original');
   }else{
    assert.throws(()=>core.apply(f.cfg,f.evidence,p.digest,options),/injected|runtime changed/);assert.ok(fs.lstatSync(path.join(f.base,'dist')).isDirectory());
@@ -54,28 +54,28 @@ for(const failure of ['none','copy','exchange','postcheck','runtime'])test('real
 });
 test('Linux exit after exchange and stale recovery approval',{skip:process.platform!=='linux'},()=>{
  const f=fixture();try{
-  const child=spawnSync(process.execPath,['-e',`const c=require(process.argv[1]);const x=JSON.parse(process.argv[2]);c.apply(x.cfg,x.evidence,c.plan(x.cfg,x.evidence,x.runtime).digest,{runtime:x.runtime,verify:()=>{},checkpoint:n=>{if(n==='exchanged')process.exit(73)}});`,path.join(__dirname,'bootstrap-core.cjs'),JSON.stringify(f)],{encoding:'utf8'});
+  const child=spawnSync(process.execPath,['-e',`const c=require(process.argv[1]);const x=JSON.parse(process.argv[2]);c.apply(x.cfg,x.evidence,c.plan(x.cfg,x.evidence,x.runtime).digest,{processGuard:()=>({pid:41,startTicks:'991',restartCount:0}),runtime:x.runtime,verify:()=>{},checkpoint:n=>{if(n==='exchanged')process.exit(73)}});`,path.join(__dirname,'bootstrap-core.cjs'),JSON.stringify(f)],{encoding:'utf8'});
   assert.equal(child.status,73,child.stderr);const recovery=core.recoveryPlan(f.cfg);assert.equal(recovery.state,'exchanged');
-  assert.throws(()=>core.recover(f.cfg,'0'.repeat(64)),/approval/);core.recover(f.cfg,recovery.digest);assert.equal(core.recoveryPlan(f.cfg).state,'original');
+  assert.throws(()=>core.recover(f.cfg,'0'.repeat(64)),/approval/);core.recover(f.cfg,recovery.digest,{processGuard:()=>({pid:41,startTicks:'991',restartCount:0})});assert.equal(core.recoveryPlan(f.cfg).state,'original');
  }finally{f.done();}
 });
 for(const stage of ['journal','prepared','exchanged','verified'])test('SIGKILL at durable boundary: '+stage,{skip:process.platform!=='linux'},()=>{
  const f=fixture();try{
-  const child=spawnSync(process.execPath,['-e',`const c=require(process.argv[1]),x=JSON.parse(process.argv[2]);c.apply(x.cfg,x.evidence,c.plan(x.cfg,x.evidence,x.runtime).digest,{runtime:x.runtime,verify:()=>{},checkpoint:n=>{if(n===process.argv[3])process.kill(process.pid,'SIGKILL')}});`,path.join(__dirname,'bootstrap-core.cjs'),JSON.stringify(f),stage],{encoding:'utf8'});
-  assert.equal(child.signal,'SIGKILL',child.stderr);const r=core.recoveryPlan(f.cfg);core.recover(f.cfg,r.digest);assert.equal(core.recoveryPlan(f.cfg).state,'original');
+  const child=spawnSync(process.execPath,['-e',`const c=require(process.argv[1]),x=JSON.parse(process.argv[2]);c.apply(x.cfg,x.evidence,c.plan(x.cfg,x.evidence,x.runtime).digest,{processGuard:()=>({pid:41,startTicks:'991',restartCount:0}),runtime:x.runtime,verify:()=>{},checkpoint:n=>{if(n===process.argv[3])process.kill(process.pid,'SIGKILL')}});`,path.join(__dirname,'bootstrap-core.cjs'),JSON.stringify(f),stage],{encoding:'utf8'});
+  assert.equal(child.signal,'SIGKILL',child.stderr);const r=core.recoveryPlan(f.cfg);core.recover(f.cfg,r.digest,{processGuard:()=>({pid:41,startTicks:'991',restartCount:0})});assert.equal(core.recoveryPlan(f.cfg).state,'original');
  }finally{f.done();}
 });
 test('recovery survives SIGKILL after reverse exchange',{skip:process.platform!=='linux'},()=>{
  const f=fixture();try{
-  core.apply(f.cfg,f.evidence,core.plan(f.cfg,f.evidence,f.runtime).digest,{runtime:f.runtime,verify:()=>{}});
-  const child=spawnSync(process.execPath,['-e',`const c=require(process.argv[1]),x=JSON.parse(process.argv[2]);c.recover(x.cfg,c.recoveryPlan(x.cfg).digest,{checkpoint:()=>process.kill(process.pid,'SIGKILL')});`,path.join(__dirname,'bootstrap-core.cjs'),JSON.stringify(f)],{encoding:'utf8'});
-  assert.equal(child.signal,'SIGKILL',child.stderr);const r=core.recoveryPlan(f.cfg);assert.equal(r.state,'original');core.recover(f.cfg,r.digest);
+  core.apply(f.cfg,f.evidence,core.plan(f.cfg,f.evidence,f.runtime).digest,{processGuard:()=>({pid:41,startTicks:'991',restartCount:0}),runtime:f.runtime,verify:()=>{}});
+  const child=spawnSync(process.execPath,['-e',`const c=require(process.argv[1]),x=JSON.parse(process.argv[2]);c.recover(x.cfg,c.recoveryPlan(x.cfg).digest,{processGuard:()=>({pid:41,startTicks:'991',restartCount:0}),checkpoint:()=>process.kill(process.pid,'SIGKILL')});`,path.join(__dirname,'bootstrap-core.cjs'),JSON.stringify(f)],{encoding:'utf8'});
+  assert.equal(child.signal,'SIGKILL',child.stderr);const r=core.recoveryPlan(f.cfg);assert.equal(r.state,'original');core.recover(f.cfg,r.digest,{processGuard:()=>({pid:41,startTicks:'991',restartCount:0})});
  }finally{f.done();}
 });
 test('recovery refuses changed backup and baseline; no target is overwritten',{skip:process.platform!=='linux'},()=>{
  for(const target of ['backup','baseline']){
   const f=fixture();try{
-   const result=core.apply(f.cfg,f.evidence,core.plan(f.cfg,f.evidence,f.runtime).digest,{runtime:f.runtime,verify:()=>{}});
+   const result=core.apply(f.cfg,f.evidence,core.plan(f.cfg,f.evidence,f.runtime).digest,{processGuard:()=>({pid:41,startTicks:'991',restartCount:0}),runtime:f.runtime,verify:()=>{}});
    const changed=path.join(target==='backup'?result.original:path.join(result.release,'dist'),'assets','old.js');fs.appendFileSync(changed,'tamper');
    assert.throws(()=>core.recoveryPlan(f.cfg),/recovery|Baseline|endpoints/);assert.ok(fs.lstatSync(path.join(f.base,'dist')).isSymbolicLink());
   }finally{f.done();}
@@ -83,7 +83,7 @@ test('recovery refuses changed backup and baseline; no target is overwritten',{s
 });
 test('stale approvals, unexpected targets, and escaping symlinks fail closed',{skip:process.platform!=='linux'},()=>{
  const f=fixture(),outside=fs.mkdtempSync(path.join(os.tmpdir(),'cdnn-outside-'));try{
-  assert.throws(()=>core.apply(f.cfg,f.evidence,'0'.repeat(64),{runtime:f.runtime}),/approval/);assert.equal(fs.existsSync(path.join(f.base,'.releases')),false);
+  assert.throws(()=>core.apply(f.cfg,f.evidence,'0'.repeat(64),{processGuard:()=>({pid:41,startTicks:'991',restartCount:0}),verify:()=>{},runtime:f.runtime}),/approval/);assert.equal(fs.existsSync(path.join(f.base,'.releases')),false);
   fs.symlinkSync(outside,path.join(f.base,'.releases'));assert.throws(()=>core.plan(f.cfg,f.evidence,f.runtime),/canonical/);fs.unlinkSync(path.join(f.base,'.releases'));
   fs.symlinkSync(outside,path.join(f.base,'dist','escape'));assert.throws(()=>core.inventory(f.cfg),/symlink/);
  }finally{f.done();fs.rmSync(outside,{recursive:true,force:true});}
@@ -91,7 +91,7 @@ test('stale approvals, unexpected targets, and escaping symlinks fail closed',{s
 test('fsync failure retains original live directory',{skip:process.platform!=='linux'},()=>{
  const f=fixture(),realSync=fs.fsyncSync;try{
   const p=core.plan(f.cfg,f.evidence,f.runtime);let injected=false;fs.fsyncSync=(fd)=>{if(!injected){injected=true;throw Error('injected fsync');}return realSync(fd);};
-  assert.throws(()=>core.apply(f.cfg,f.evidence,p.digest,{runtime:f.runtime}),/injected fsync/);assert.ok(fs.lstatSync(path.join(f.base,'dist')).isDirectory());
+  assert.throws(()=>core.apply(f.cfg,f.evidence,p.digest,{processGuard:()=>({pid:41,startTicks:'991',restartCount:0}),verify:()=>{},runtime:f.runtime}),/injected fsync/);assert.ok(fs.lstatSync(path.join(f.base,'dist')).isDirectory());
  }finally{fs.fsyncSync=realSync;f.done();}
 });
 test('same deployment flock rejects concurrent operator work',{skip:process.platform!=='linux'},()=>{

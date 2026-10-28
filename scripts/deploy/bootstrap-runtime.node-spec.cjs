@@ -34,10 +34,12 @@ async function cleanup(f,children){for(const child of children){if(child.exitCod
 test('isolated Linux starts from cwd env through baseline symlink and restored original without restarting original process',{skip:process.platform!=='linux'||config.app!=='backend',timeout:20000},async()=>{
  const f=fixture(),children=[];try{
   const original=await start(f,children);await health(original);
-  const result=core.apply(f.cfg,f.evidence,core.plan(f.cfg,f.evidence,f.runtime).digest,{runtime:f.runtime,verify:()=>{}});
+  const processGuard=()=>{if(original.child.exitCode!==null||original.child.signalCode!==null)throw Error('FIXTURE_PROCESS_EXITED');return {pid:original.pid,startTicks:require('./runtime-proof.cjs').startTicks(fs.readFileSync('/proc/'+original.pid+'/stat','utf8')),restartCount:0};};
+  const identity=processGuard();f.runtime.independentEvidence={kernel:{pid:identity.pid,startTicks:identity.startTicks},pm2RestartCounter:identity.restartCount};
+  const result=core.apply(f.cfg,f.evidence,core.plan(f.cfg,f.evidence,f.runtime).digest,{runtime:f.runtime,processGuard,verify:()=>{}});
   await health(original);const candidate=await start(f,children);await health(candidate);
   assert.equal(fs.existsSync(path.join(result.release,'.env')),false);
-  const r=core.recoveryPlan(f.cfg);core.recover(f.cfg,r.digest);
+  const r=core.recoveryPlan(f.cfg);core.recover(f.cfg,r.digest,{processGuard});
   await health(original);await health(candidate);await health(await start(f,children));
   const restored=core.inventory(f.cfg);for(const key of ['distHash','modulesHash','packageHash','lockHash','env'])assert.deepEqual(restored[key],f.snapshot[key],key);
   assert.equal(original.child.exitCode,null);assert.equal(fs.existsSync(path.join(f.base,'dist','cdnn-release.json')),false);

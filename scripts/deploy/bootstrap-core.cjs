@@ -2,6 +2,7 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {createRequire}=require('node:module');
 const {spawnSync}=require('node:child_process');
+const {captureIdentity,assertIdentity}=require('./bootstrap-process-guard.cjs');
 const hash=x=>crypto.createHash('sha256').update(x).digest('hex');
 const read=p=>{try{return JSON.parse(fs.readFileSync(p,'utf8').replace(/^\uFEFF/,''));}catch{throw Error('Invalid JSON metadata');}};
 const identity=p=>{const s=fs.lstatSync(p);return {dev:s.dev,ino:s.ino,uid:s.uid,mode:s.mode&0o777,mtime:s.mtimeMs};};
@@ -87,9 +88,28 @@ function dependencies(cfg,release){
 }
 function copiedHashes(cfg,release){return {distHash:tree(path.join(release,'dist')),modulesHash:cfg.app==='backend'?tree(path.join(release,'node_modules'),true):null,packageHash:cfg.app==='backend'?fileHash(path.join(release,'package.json')):null,lockHash:cfg.app==='backend'?fileHash(path.join(release,'package-lock.json')):null};}
 function sameOriginal(p,snapshot){return fs.lstatSync(p).isDirectory()&&identity(p).dev===snapshot.dist.dev&&identity(p).ino===snapshot.dist.ino&&tree(p)===snapshot.distHash;}
+function artifactIntegrity(cfg,state){
+ const p=paths(cfg),snapshot=state.snapshot;
+ safeBase(cfg);
+ const baseIdentity=identity(cfg.base);delete baseIdentity.mtime;
+ if(JSON.stringify(baseIdentity)!==JSON.stringify(snapshot.base))throw Error('App root identity or permissions changed');
+ if(cfg.app==='backend'){
+  if(tree(path.join(cfg.base,'node_modules'),true)!==snapshot.modulesHash||fileHash(path.join(cfg.base,'package.json'))!==snapshot.packageHash||fileHash(path.join(cfg.base,'package-lock.json'))!==snapshot.lockHash||JSON.stringify(identity(path.join(cfg.base,'.env')))!==JSON.stringify(snapshot.env))throw Error('Original runtime artifact integrity changed');
+ }
+ if(state.stagedHash){
+  directory(p.release);directory(p.target);
+  fileHash(path.join(p.release,'.source-sha')); // Reject symlink/hardlink identity markers before reading.
+  if(fs.readFileSync(path.join(p.release,'.source-sha'),'utf8')!==cfg.baselineSha+'\n')throw Error('Baseline source identity changed');
+  const actual=copiedHashes(cfg,p.release);
+  for(const key of ['distHash','modulesHash','packageHash','lockHash'])if(actual[key]!== (key==='distHash'?state.stagedHash:snapshot[key]))throw Error('Baseline artifact integrity changed: '+key);
+  dependencies(cfg,p.release);
+ }
+}
+function processIdentityGuard(cfg,state,options){if(cfg.app==='backend')assertIdentity(options.processGuard,state.processIdentity);}
 function recoveryPlan(cfg){
- safeBase(cfg);const p=paths(cfg),s=read(p.journal);
+ safeBase(cfg);const p=paths(cfg);fileHash(p.journal);const s=read(p.journal);
  if(s.app!==cfg.app||s.sourceSha!==cfg.baselineSha||JSON.stringify(s.paths)!==JSON.stringify(p)||s.base!==cfg.base||s.snapshot.base.ino!==identity(cfg.base).ino||s.snapshot.base.dev!==identity(cfg.base).dev)throw Error('Ambiguous recovery journal');
+ artifactIntegrity(cfg,s);
  const live=path.join(cfg.base,'dist');let state;
  if(exists(live)&&sameOriginal(live,s.snapshot)){
   if(exists(p.backup)&&(!fs.lstatSync(p.backup).isSymbolicLink()||fs.readlinkSync(p.backup)!==p.link))throw Error('Unexpected pre-exchange backup');
@@ -99,15 +119,27 @@ function recoveryPlan(cfg){
   if(fs.readFileSync(path.join(p.release,'.source-sha'),'utf8').trim()!==cfg.baselineSha||tree(p.target)!==s.stagedHash)throw Error('Baseline changed; recovery refused');
   state='exchanged';
  }else throw Error('Unexpected endpoints; manual recovery review required');
- const payload={operation:'recover',app:cfg.app,base:cfg.base,sourceSha:cfg.baselineSha,state,journalHash:fileHash(p.journal),live:identity(live),backup:exists(p.backup)?identity(p.backup):null};
+ const payload={operation:'recover',app:cfg.app,base:cfg.base,sourceSha:cfg.baselineSha,state,runtimeRecoveryRequired:cfg.app==='backend',operationalRecovery:'UNVERIFIED',journalHash:fileHash(p.journal),live:identity(live),backup:exists(p.backup)?identity(p.backup):null};
  return {...payload,digest:hash(JSON.stringify(payload))};
 }
 function recover(cfg,approval,options={}){
  const r=recoveryPlan(cfg);if(approval!==r.digest)throw Error('Recovery approval digest mismatch');
  const p=paths(cfg),s=read(p.journal);
- if(r.state==='exchanged'){exchange(path.join(cfg.base,'dist'),p.backup);options.checkpoint?.('recovered-exchange');}
- if(!sameOriginal(path.join(cfg.base,'dist'),s.snapshot))throw Error('Recovery verification failed');
- writeState(p.journal,{...s,state:'rolled_back'});return {state:'original',retainedRelease:p.release};
+ try{
+  processIdentityGuard(cfg,s,options);artifactIntegrity(cfg,s);
+  processIdentityGuard(cfg,s,options); // Adjacent to mutation, after potentially expensive artifact hashing.
+  if(r.state==='exchanged'){(options.exchange||exchange)(path.join(cfg.base,'dist'),p.backup);options.checkpoint?.('recovered-exchange');}
+  processIdentityGuard(cfg,s,options);artifactIntegrity(cfg,s);
+  if(!sameOriginal(path.join(cfg.base,'dist'),s.snapshot))throw Error('Recovery verification failed');
+  processIdentityGuard(cfg,s,options);
+  const classification=cfg.app==='backend'?'PATH_RESTORED_RUNTIME_UNVERIFIED':'PATH_RESTORED';
+  writeState(p.journal,{...s,state:'rolled_back',recoveryClassification:classification,runtimeRecoveryRequired:cfg.app==='backend'});
+  processIdentityGuard(cfg,s,options);
+  return {state:'original',classification,runtimeRecoveryRequired:cfg.app==='backend',retainedRelease:p.release,retainedOriginal:path.join(cfg.base,'dist')};
+ }catch(error){
+  writeState(p.journal,{...s,state:'recovery_stopped',recoveryClassification:'STOPPED_RUNTIME_REVIEW_REQUIRED',runtimeRecoveryRequired:true});
+  error.recoveryClassification='STOPPED_RUNTIME_REVIEW_REQUIRED';throw error;
+ }
 }
 function apply(cfg,evidence,approval,options={}){
  const p=plan(cfg,evidence,options.runtime),where=p.paths;
@@ -115,8 +147,11 @@ function apply(cfg,evidence,approval,options={}){
  if(approval!==p.digest)throw Error('Apply approval digest mismatch');
  if(process.platform!=='linux')throw Error('Linux atomic exchange required');
  const checkpoint=options.checkpoint||(()=>{}),performExchange=options.exchange||exchange;
+ if(cfg.app==='backend'&&typeof options.verify!=='function')throw Error('Backend health and correlation verification callback required');
+ const initialProcess=cfg.app==='backend'?captureIdentity(options.processGuard):null;
+ if(cfg.app==='backend')assertIdentity(()=>initialProcess,{pid:p.runtime?.independentEvidence?.kernel?.pid,startTicks:p.runtime?.independentEvidence?.kernel?.startTicks,restartCount:p.runtime?.independentEvidence?.pm2RestartCounter});
  // Approved apply includes immediate restoration of original dist on ordinary verification failure.
- let state={app:cfg.app,base:cfg.base,sourceSha:cfg.baselineSha,paths:where,snapshot:p.snapshot,planDigest:p.digest,state:'staging'};
+ let state={app:cfg.app,base:cfg.base,sourceSha:cfg.baselineSha,paths:where,snapshot:p.snapshot,planDigest:p.digest,processIdentity:initialProcess,state:'staging'};
  try{
   if(!exists(path.dirname(where.release))){fs.mkdirSync(path.dirname(where.release),{mode:0o700});fs.chmodSync(path.dirname(where.release),cfg.app==='frontend'?0o711:0o700);syncDir(cfg.base);}
   directory(path.dirname(where.release));fs.mkdirSync(where.release,{mode:0o700});fs.chmodSync(where.release,cfg.app==='frontend'?0o711:0o700);syncDir(path.dirname(where.release));
@@ -143,16 +178,36 @@ function apply(cfg,evidence,approval,options={}){
   if(options.runtimeProbe&&JSON.stringify(options.runtimeProbe())!==JSON.stringify(options.runtime))throw Error('PM2 runtime changed during staging');
   fs.symlinkSync(where.link,where.backup);syncDir(cfg.base);
   state={...state,stagedHash:tree(where.target),state:'prepared'};writeState(where.journal,state);checkpoint('prepared');
-  performExchange(where.backup,path.join(cfg.base,'dist'));checkpoint('exchanged');
+  processIdentityGuard(cfg,state,options);artifactIntegrity(cfg,state);
+  if(!sameOriginal(path.join(cfg.base,'dist'),state.snapshot))throw Error('Live original artifact changed before exchange');
+  processIdentityGuard(cfg,state,options); // Immediately before exchange; hashing above can take time.
+  performExchange(where.backup,path.join(cfg.base,'dist'));
+  processIdentityGuard(cfg,state,options);artifactIntegrity(cfg,state);checkpoint('exchanged');
+  processIdentityGuard(cfg,state,options);
   if(recoveryPlan(cfg).state!=='exchanged')throw Error('Exchange postcondition failed');
+  processIdentityGuard(cfg,state,options);
   dependencies(cfg,where.release);
   if(cfg.app==='backend'&&JSON.stringify(identity(path.join(cfg.base,'.env')))!==JSON.stringify(p.snapshot.env))throw Error('Production env metadata changed');
   if(options.verify)options.verify();
+  processIdentityGuard(cfg,state,options);artifactIntegrity(cfg,state);
+  if(recoveryPlan(cfg).state!=='exchanged')throw Error('Exchange endpoints changed after verification');
+  processIdentityGuard(cfg,state,options);
   state={...state,state:'verified'};writeState(where.journal,state);checkpoint('verified');
+  processIdentityGuard(cfg,state,options);artifactIntegrity(cfg,state);
+  if(recoveryPlan(cfg).state!=='exchanged')throw Error('Exchange endpoints changed before acceptance');
+  processIdentityGuard(cfg,state,options);
   return {state:'verified',release:where.release,original:where.backup,serviceRestarted:false};
  }catch(error){
   if(exists(where.journal)){
-   try{const r=recoveryPlan(cfg);recover(cfg,r.digest);}catch(recoveryError){error.message+='; recovery requires operator review: '+recoveryError.message;}
+   try{
+    processIdentityGuard(cfg,state,options);artifactIntegrity(cfg,state);
+    const r=recoveryPlan(cfg),restored=recover(cfg,r.digest,{processGuard:options.processGuard});
+    error.recoveryClassification=restored.classification;
+   }catch(recoveryError){
+    writeState(where.journal,{...state,state:'recovery_stopped',recoveryClassification:'STOPPED_RUNTIME_REVIEW_REQUIRED',runtimeRecoveryRequired:true});
+    error.recoveryClassification='STOPPED_RUNTIME_REVIEW_REQUIRED';
+    error.message+='; recovery requires operator review: '+recoveryError.message;
+   }
   }
   throw error;
  }

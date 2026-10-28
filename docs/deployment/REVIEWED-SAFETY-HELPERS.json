@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "sourceRevision": "4ab1461910e1e382591dc3a699cfc4950cb1c7a6",
+  "byteSource": "Exact Git blobs, no Windows checkout conversion",
+  "status": "SOURCE_REVIEW_COMPLETE_LINUX_RESULTS_PENDING",
+  "scope": "Inspection and bootstrap safety helpers; no transfer/Production execution approved. All helpers must be verified together from one pinned revision.",
+  "files": [
+    {
+      "path": "scripts/deploy/bootstrap-core.cjs",
+      "sha256": "95af889f88590220400009b49ba68277c5e2b55fd5ac4612fe8a9a4a8c12520b",
+      "bytes": 18687
+    },
+    {
+      "path": "scripts/deploy/bootstrap-process-guard.cjs",
+      "sha256": "14d72e76f808355e1b909268984bb7e5764758461f833ed1db2896ef1b9a786b",
+      "bytes": 1015
+    },
+    {
+      "path": "scripts/deploy/bootstrap.cjs",
+      "sha256": "166c4da451646151236361e1e713aa44392dcd2ba674cc8abdea7aa7929b6e35",
+      "bytes": 4070
+    },
+    {
+      "path": "scripts/deploy/bootstrap.sh",
+      "sha256": "e6fe25ef3fd0081c0f0c8514f568b10911e20782f1015d880016f0712b19ff8e",
+      "bytes": 996
+    },
+    {
+      "path": "scripts/deploy/bootstrap-config.json",
+      "sha256": "99e32b6b8ae61838c7216ec068af19d90ff95bba1d4a07a83d355b83a6b01f46",
+      "bytes": 117
+    },
+    {
+      "path": "scripts/deploy/verify.cjs",
+      "sha256": "71462d7dbd781cf8162ed4ab6156389bf4e63d869c042c8f2d9298628ab1c450",
+      "bytes": 359
+    },
+    {
+      "path": "scripts/deploy/exchange.py",
+      "sha256": "bc28c3de93d6293585ed9713227fea8e3072ae67bf6c7364996ef3279e7b81d8",
+      "bytes": 771
+    },
+    {
+      "path": "scripts/deploy/endpoint-correlation.cjs",
+      "sha256": "21be712e945cf09e797b20e3a6449719a45b3e965d0ec552b328d4ceee2dfc10",
+      "bytes": 12805
+    },
+    {
+      "path": "scripts/deploy/check-runtime.cjs",
+      "sha256": "1fdafcc918e6f2fe44c3c677699ff752ebf27ce678b5e3d7f7c08efa8433d929",
+      "bytes": 5556
+    },
+    {
+      "path": "scripts/deploy/runtime-process.cjs",
+      "sha256": "d2b2591e82245268f00b9000791d783e6ceac63b6dc9af160374697add35be2d",
+      "bytes": 1526
+    },
+    {
+      "path": "scripts/deploy/runtime-proof.cjs",
+      "sha256": "b0ad389a39b44411f062832cea0c549169d561098720f13d185d98883526cea4",
+      "bytes": 2089
+    },
+    {
+      "path": "scripts/deploy/pm2-socket.cjs",
+      "sha256": "93865e7751dc715193beeaff92fbbffd86bb875b5440c424c87c6c6c7f3c6129",
+      "bytes": 936
+    },
+    {
+      "path": "scripts/deploy/release-checks.cjs",
+      "sha256": "6a3d0de3924a26d4899ddda902de07c6455a669f40802fab9c858f23e2bd99aa",
+      "bytes": 6001
+    },
+    {
+      "path": "scripts/deploy/runtime-contract.json",
+      "sha256": "1bb7a020df7106529c2d8f5d8bc039aae9909381088908199b845a94cdf5ebea",
+      "bytes": 757
+    }
+  ]
+}
