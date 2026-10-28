@@ -139,3 +139,7 @@ See [RUNTIME-READINESS.md](../../docs/deployment/RUNTIME-READINESS.md) for the s
 ## Verified operator evidence and PM2 rehearsal - 2026-10-28
 
 Effective Nginx policy is reviewed off after successful syntax/dump checks; current worker access passes. Future live release traversal remains a post-activation check. Five inspection helper hashes match reviewed Backend PR #63; current/saved compared launch metadata has no differences, while instances/PORT/NODE_ENV remain null. See [operator evidence](../../docs/deployment/OPERATOR-EVIDENCE-2026-10-28.json) and [PM2 persistence/recovery scope](../../docs/deployment/PM2-PERSISTENCE-RECOVERY.md). Observation PASS cannot authorize restart; strict Production gates remain unchanged.
+
+## Consolidated host configuration and acceptance
+
+Host systemd configuration identity and configured persistence source are operator-verified; actual Production restart/reboot is not tested. Use [BOOTSTRAP-ROLLBACK-ACCEPTANCE.md](../../docs/deployment/BOOTSTRAP-ROLLBACK-ACCEPTANCE.md) for preservation, exact approval boundaries, acceptance and rollback stop conditions. Correlation remains a separately designed read-only check; strict runtime and activation gates remain blocked.
