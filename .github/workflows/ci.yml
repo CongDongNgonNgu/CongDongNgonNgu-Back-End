@@ -15,6 +15,9 @@ concurrency:
 
 jobs:
   quality:
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -86,9 +89,34 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Stage already-reviewed pinned application for PM2 rehearsal
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
+          (async()=>{
+            const temp=fs.realpathSync(process.env.RUNNER_TEMP),root=path.join(temp,'cdnn-pinned-application');
+            if(fs.statSync(temp).uid!==process.getuid()||temp.startsWith('/var/www'))throw Error('Unsafe runner temp');
+            fs.mkdirSync(root,{mode:0o700});
+            const response=await fetch('https://api.github.com/repos/CongDongNgonNgu/CongDongNgonNgu-Back-End/actions/artifacts/12735767418/zip',{headers:{Authorization:'Bearer '+process.env.GH_TOKEN,Accept:'application/vnd.github+json'},signal:AbortSignal.timeout(60000)});
+            if(!response.ok)throw Error('Reviewed baseline artifact unavailable; do not substitute a new source or build');
+            const bytes=Buffer.from(await response.arrayBuffer());
+            if(crypto.createHash('sha256').update(bytes).digest('hex')!=='7dc2bce0d6fa3891dbede35e6928c4ef66ec14a8baf99325ade51fe3f57b7f7f')throw Error('Reviewed baseline archive mismatch');
+            fs.writeFileSync(path.join(root,'reviewed-baseline.zip'),bytes,{flag:'wx',mode:0o600});
+            console.log('Reviewed pinned9f baseline archive digest verified; no provenance rebuild');
+          })().catch(()=>{console.error('PINNED_BASELINE_STAGING_FAILED');process.exitCode=1;});
+          NODE
+          unzip -q "$RUNNER_TEMP/cdnn-pinned-application/reviewed-baseline.zip" -d "$RUNNER_TEMP/cdnn-pinned-application"
+          npm ci --prefix "$RUNNER_TEMP/cdnn-pinned-application/source" --include=dev --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
+
       - name: Representative isolated PM2 launch, resurrection and recovery
         timeout-minutes: 8
         env:
+          CDNN_TEST_APPLICATION_ROOT: ${{ runner.temp }}/cdnn-pinned-application/source
           CDNN_TEST_PM2_ROOT: ${{ runner.temp }}/cdnn-pm2-tools-7.0.3/node_modules/pm2
           CDNN_PM2_REHEARSAL_REPORT: ${{ runner.temp }}/cdnn-pm2-rehearsal-summary.json
         shell: bash

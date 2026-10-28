@@ -4,11 +4,11 @@ const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),cryp
 const assert=require('node:assert/strict');
 const {spawnSync}=require('node:child_process'),{createRequire}=require('node:module');
 const core=require('./bootstrap-core.cjs'),{validHealth,safeArgs}=require('./release-checks.cjs'),{listeningPorts,startTicks}=require('./runtime-proof.cjs');
-const repository=path.resolve(__dirname,'../..'),built=path.join(repository,'dist');
+let application,built;
 const appName='cdnn-rehearsal-backend';
 const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-const report={schema:1,scope:'Private Linux PM2 7.0.3 daemon with actual compiled AppConfigModule and HealthModule; no business modules, database connection, Production service or systemd boot',checks:{},limitations:['Not a Production restart/rollback authorization','No actual systemd boot test','Application business/database/provider modules excluded','Release-local dependency fallback must be rejected by acceptance checks']};
+const report={schema:1,scope:'Private Linux PM2 7.0.3 daemon with actual compiled AppConfigModule and HealthModule from the proven Production source artifact9f1d6b5; no business modules, database connection, Production service or systemd boot',checks:{},limitations:['Not a Production restart/rollback authorization','No actual systemd boot test','Application business/database/provider modules excluded','Release-local dependency fallback must be rejected by acceptance checks']};
 let stage='preflight',root,home,pm2Home,pm2Bin,env,base,cfg,initial,envBytes,envIdentity,runnerTemp;
 const tracked=new Map();
 class AcceptanceError extends Error{constructor(code){super(code);this.code=code;}}
@@ -45,7 +45,7 @@ function pm2(args,{allowFailure=false}={}){
  return r;
 }
 function rows(){const r=pm2(['jlist']);try{const value=JSON.parse(r.stdout);if(!Array.isArray(value))throw Error();return value;}catch{throw Error('Invalid isolated PM2 response');}}
-function selected(){const list=rows().filter(r=>r.name===appName);assert.equal(list.length,1,'Expected one isolated application');remember(list[0].pid);return list[0];}
+function selected(){const all=rows();assert.equal(all.length,1,'Only one private PM2 process is permitted');const list=all.filter(r=>r.name===appName);assert.equal(list.length,1,'Expected one isolated application');remember(list[0].pid);return list[0];}
 function declaration(p){
  const options={};
  for(const key of ['autorestart','watch','max_memory_restart','kill_timeout','listen_timeout','restart_delay','exp_backoff_restart_delay','cron_restart','wait_ready','stop_exit_codes','shutdown_with_message','treekill','max_restarts','min_uptime']){
@@ -54,6 +54,19 @@ function declaration(p){
  }
  return {cwd:p.pm_cwd===base,script:p.pm_exec_path===path.join(base,'dist','main.js'),interpreter:p.exec_interpreter===process.execPath,mode:p.exec_mode,instances:Number.isInteger(p.instances)?p.instances:null,port:p.PORT===undefined&&p.env?.PORT===undefined?null:'PRESENT',environment:p.NODE_ENV===undefined&&p.env?.NODE_ENV===undefined?null:'PRESENT',nodeArgs:safeArgs(p.node_args??p.interpreter_args),args:safeArgs(p.args,true),nodeOptions:safeArgs(p.NODE_OPTIONS??p.env?.NODE_OPTIONS),options};
 }
+function verifySavedTransformation(original,savedDeclaration){
+ assert.deepEqual(Object.keys(savedDeclaration).sort(),Object.keys(original).sort(),'Compared declaration schema must remain identical');
+ assert.equal(original.instances,1,'Pinned CLI fixture must declare the measured singleton');
+ assert.equal(savedDeclaration.instances,null,'Pinned PM2 save must omit the instance declaration');
+ const different=Object.keys(original).filter(key=>JSON.stringify(original[key])!==JSON.stringify(savedDeclaration[key]));
+ assert.deepEqual(different,['instances'],'Only the source-reviewed instances omission is accepted during save');
+ return different;
+}
+function verifyResurrectedDeclaration(actual,savedDeclaration,original){
+ assert.deepEqual(actual,savedDeclaration,'Resurrection must preserve every saved declaration field');
+ verifySavedTransformation(original,actual);
+}
+
 function saved(){const dump=JSON.parse(fs.readFileSync(path.join(pm2Home,'dump.pm2'),'utf8'));assert.ok(Array.isArray(dump));const found=dump.filter(p=>p.name===appName);assert.equal(found.length,1);return found[0];}
 function copyCompiled(entry,seen=new Set()){
  const source=path.join(built,entry);if(seen.has(source))return;seen.add(source);
@@ -64,7 +77,7 @@ function copyCompiled(entry,seen=new Set()){
  }
 }
 function copyDependencies(names){
- const sourceModules=fs.realpathSync(path.join(repository,'node_modules')),targetModules=path.join(base,'node_modules'),copied=new Map();fs.mkdirSync(targetModules);
+ const sourceModules=fs.realpathSync(path.join(application,'node_modules')),targetModules=path.join(base,'node_modules'),copied=new Map();fs.mkdirSync(targetModules);
  function locate(name,from){
   for(const dir of createRequire(path.join(from,'package.json')).resolve.paths(name)||[]){const candidate=path.join(dir,name,'package.json');if(fs.existsSync(candidate)){const result=fs.realpathSync(path.dirname(candidate));assert.ok(result.startsWith(sourceModules+path.sep),'Dependency outside installed repository');return result;}}
   return null;
@@ -80,7 +93,7 @@ function copyDependencies(names){
   for(const dep of Object.keys(pkg.dependencies||{}))install(dep,source,path.join(target,'node_modules'),Boolean(pkg.optionalDependencies?.[dep]));
   for(const dep of Object.keys({...pkg.optionalDependencies,...pkg.peerDependencies}))install(dep,source,path.join(target,'node_modules'),true);
  }
- for(const name of names)install(name,repository,targetModules);
+ for(const name of names)install(name,application,targetModules);
  return Object.fromEntries(names.map(name=>[name,JSON.parse(fs.readFileSync(path.join(targetModules,name,'package.json'),'utf8')).version]));
 }
 async function unusedPort(){const s=net.createServer();await new Promise((resolve,reject)=>s.once('error',reject).listen(0,'127.0.0.1',resolve));const port=s.address().port;await new Promise(resolve=>s.close(resolve));return port;}
@@ -92,7 +105,7 @@ async function health(port,{release,expectGood=true}={}){
   if(validHealth(h.status,h.body)){
    if(!expectGood)throw Error('Injected startup failure unexpectedly healthy');
    const diagnostics=await response(port,'/__rehearsal');assert.equal(diagnostics.status,200);
-   const d=diagnostics.body,p=selected();assert.equal(p.pm2_env.status,'online');assert.equal(d.pid,p.pid);assert.equal(d.environment,'production');assert.equal(d.configPort,port);assert.equal(d.launchHadNodeEnv,false);assert.equal(d.launchHadPort,false);
+   const d=diagnostics.body,p=selected();assert.equal(p.pm2_env.status,'online');assert.equal(p.pm2_env.exec_mode,'fork_mode');assert.equal(d.pid,p.pid);assert.equal(d.environment,'production');assert.equal(d.configPort,port);assert.equal(d.launchHadNodeEnv,false);assert.equal(d.launchHadPort,false);
    assert.equal(fs.realpathSync('/proc/'+p.pid+'/exe'),fs.realpathSync(process.execPath));assert.equal(fs.realpathSync('/proc/'+p.pid+'/cwd'),base);
    const inode=new Set();for(const fd of fs.readdirSync('/proc/'+p.pid+'/fd')){try{const m=/^socket:\[(\d+)\]$/.exec(fs.readlinkSync('/proc/'+p.pid+'/fd/'+fd));if(m)inode.add(m[1]);}catch{}}
    const ports=['tcp','tcp6'].flatMap(table=>listeningPorts(fs.readFileSync('/proc/'+p.pid+'/net/'+table,'utf8'),inode));assert.ok(ports.includes(port),'Health PID must own listener');
@@ -121,13 +134,20 @@ async function main(){
  if(process.platform!=='linux'||process.version!=='v24.18.1')throw Error('Explicit Linux Node24.18.1 rehearsal required');
  const tools=path.resolve(process.env.CDNN_TEST_PM2_ROOT||'');assert.ok(process.env.CDNN_TEST_PM2_ROOT,'Explicit private PM2 tools root required');
  runnerTemp=fs.realpathSync(process.env.RUNNER_TEMP||'/tmp');assert.equal(tools,path.join(runnerTemp,'cdnn-pm2-tools-7.0.3','node_modules','pm2'),'PM2 tools must be the dedicated runner-temp package');assert.equal(fs.realpathSync(tools),tools,'PM2 tools must be canonical');assert.equal(fs.statSync(runnerTemp).uid,process.getuid());assert.equal(runnerTemp.startsWith('/var/www'),false);
+ application=path.resolve(process.env.CDNN_TEST_APPLICATION_ROOT||'');assert.ok(process.env.CDNN_TEST_APPLICATION_ROOT,'Explicit pinned application artifact required');
+ assert.equal(application,path.join(runnerTemp,'cdnn-pinned-application','source'),'Application must be the dedicated reused artifact');assert.equal(fs.realpathSync(application),application);assert.equal(fs.statSync(application).uid,process.getuid());assert.equal(fs.statSync(application).mode&0o022,0);
+ built=path.join(application,'dist');
+ const expectedArtifacts={sourceSha:'9f1d6b50dd5d33d312feba0fa23fa4d1e2d46682',distHash:'80a19572e5f1def889327768a8e4a005bfd14069f17d6c1403ba40b7efebe4b4',packageHash:'07b0cd20cfdbd0d95c96386b97a4102074e1d1ac046b264fbfc969c1ac164a43',lockHash:'821fa821a2f350974d20f88f04d5c94e5f4605c902204aa17c7ad98d0ac35616'};
+ for(const [file,key] of [['package.json','packageHash'],['package-lock.json','lockHash']]){const filePath=path.join(application,file),st=fs.lstatSync(filePath);assert.ok(st.isFile()&&st.nlink===1&&st.uid===process.getuid()&&!(st.mode&0o022));assert.equal(digest(fs.readFileSync(filePath)),expectedArtifacts[key],key);}
+ assert.equal(core.tree(built),expectedArtifacts.distHash,'Pinned artifact dist hash');
+ report.applicationArtifacts={...expectedArtifacts,provenance:'Reused independently reviewed artifact12735767418; no rebuild or new provenance claim'};
  const pkgRoot=tools,pkg=JSON.parse(fs.readFileSync(path.join(pkgRoot,'package.json'),'utf8'));assert.equal(pkg.version,'7.0.3');pm2Bin=fs.realpathSync(path.join(pkgRoot,'bin','pm2'));
  root=fs.mkdtempSync(path.join(runnerTemp,'cdnn-pm2-rehearsal-'));home=path.join(root,'home');pm2Home=path.join(home,'.pm2');base=path.join(root,'app');for(const p of [home,pm2Home,base])fs.mkdirSync(p,{recursive:true,mode:0o700});fs.chmodSync(root,0o700);
  env={PATH:path.dirname(process.execPath)+':/usr/bin:/bin',HOME:home,PM2_HOME:pm2Home,PM2_SILENT:'true',NO_COLOR:'1'};guard();
  report.node=process.version;report.pm2=pkg.version;const lock=path.join(path.dirname(path.dirname(tools)),'package-lock.json');report.toolLockSha256=fs.existsSync(lock)?digest(fs.readFileSync(lock)):null;assert.ok(report.toolLockSha256,'PM2 transitive dependency lock evidence required');
  stage='fixture';
  fs.mkdirSync(path.join(base,'dist'));for(const entry of ['config/config.module.js','health/health.module.js'])copyCompiled(entry);
- const dependencies=copyDependencies(['@nestjs/common','@nestjs/core','@nestjs/config','@nestjs/platform-express','@nestjs/swagger','reflect-metadata','rxjs']);
+ const applicationPackage=JSON.parse(fs.readFileSync(path.join(application,'package.json'),'utf8'));const roots=['@nestjs/common','@nestjs/core','@nestjs/config','@nestjs/platform-express','reflect-metadata','rxjs'];if(applicationPackage.dependencies?.['@nestjs/swagger'])roots.push('@nestjs/swagger');const dependencies=copyDependencies(roots);
  fs.writeFileSync(path.join(base,'package.json'),JSON.stringify({name:'isolated-pm2-nest-rehearsal',private:true,dependencies}));fs.writeFileSync(path.join(base,'package-lock.json'),JSON.stringify({fixture:true,dependencies}));
  const port=await unusedPort();
  envBytes=Buffer.from(['NODE_ENV=production','PORT='+port,'PUBLIC_APP_URL=https://rehearsal.example.test','CORS_ALLOWED_ORIGINS=https://rehearsal.example.test','DATABASE_URL=postgresql://synthetic@127.0.0.1:1/rehearsal_unused','AUTH_PERSISTENCE=postgres','JWT_ACCESS_SECRET='+crypto.randomBytes(32).toString('hex'),'JWT_REFRESH_SECRET='+crypto.randomBytes(32).toString('hex')].join('\n')+'\n');fs.writeFileSync(path.join(base,'.env'),envBytes,{mode:0o600});const es=fs.statSync(path.join(base,'.env'));envIdentity={ino:es.ino,uid:es.uid,mode:es.mode&0o777};
@@ -143,16 +163,16 @@ async function main(){
  `);
  cfg={app:'backend',base,baselineSha:'1'.repeat(40)};initial=core.inventory(cfg);const evidence={schema:1,app:'backend',sourceSha:cfg.baselineSha,...Object.fromEntries(['distHash','modulesHash','packageHash','lockHash'].map(k=>[k,initial[k]])),provenance:{method:'trusted-build-manifest',reference:'isolated-generated-fixture-only',reviewedBy:'automated-rehearsal-fixture'}};const runtime={reviewed:true,scope:'synthetic-fixture-only-not-production-contract'};
  stage='initial-launch';pm2(['start',path.join(base,'dist','main.js'),'--name',appName,'--cwd',base,'--interpreter',process.execPath,'--max-memory-restart','1G','--max-restarts','2']);const first=await health(port);report.launchDeclarations=first.metadata;for(const key of ['cwd','script','interpreter'])assert.equal(first.metadata[key],true,key);assert.equal(first.metadata.mode,'fork_mode');assert.equal(Object.values(first.metadata.options).includes('<UNREVIEWED>'),false);for(const key of ['nodeArgs','args','nodeOptions'])assert.ok(Array.isArray(first.metadata[key]),key);report.checks.initialActualNestHealth=true;
- stage='save-resurrect';pm2(['save','--force']);const declared=declaration(saved());assert.deepEqual(declared,first.metadata);report.checks.currentSavedMetadataEqual=true;await killDaemon();const restored=await resurrect(port);assert.notEqual(restored.pid,first.pid);assert.deepEqual(restored.metadata,first.metadata);report.checks.originalColdResurrection=true;
- stage='symlink-bootstrap';const planned=core.plan(cfg,evidence,runtime);assert.equal(planned.ready,true,planned.blockers.join('; '));const applied=core.apply(cfg,evidence,planned.digest,{runtime,verify:()=>{}});assert.equal(fs.lstatSync(path.join(base,'dist')).isSymbolicLink(),true);assert.equal((await health(port)).pid,restored.pid);await killDaemon();const active=await resurrect(port,{release:applied.release});report.symlinkLaunchDeclarations=active.metadata;report.symlinkCurrentSavedMetadataEqual=JSON.stringify(active.metadata)===JSON.stringify(declaration(saved()));assert.equal(report.symlinkCurrentSavedMetadataEqual,true,'Symlink resurrection drifted from saved launch declaration');assert.deepEqual(active.metadata,first.metadata,'Symlink resurrection drifted from original declaration');report.checks.symlinkResurrectionPreservesCompleteComparedDeclaration=true;report.checks.symlinkResurrectionReleaseLocalDependencies=true;report.checks.applicationLoadsCwdConfigurationWithoutLaunchDeclarations=true;assert.equal(active.metadata.port,null);assert.equal(active.metadata.environment,null);assert.equal(fs.existsSync(path.join(applied.release,'.env')),false);restoreEnvInvariant();
+ stage='save-resurrect';pm2(['save','--force']);const declared=declaration(saved());report.savedLaunchDeclarations=declared;report.initialSavedDifferences=verifySavedTransformation(first.metadata,declared);report.checks.onlyDocumentedInstanceDeclarationOmittedBySave=true;await killDaemon();const restored=await resurrect(port);assert.notEqual(restored.pid,first.pid);verifyResurrectedDeclaration(restored.metadata,declared,first.metadata);report.resurrectedLaunchDeclarations=restored.metadata;report.restartContractStatus='BLOCKED_UNDECLARED_LAUNCH_FIELDS';report.restartContractBlockers=['PM2_INSTANCES_UNDECLARED','PM2_PORT_UNDECLARED','PM2_ENVIRONMENT_UNDECLARED','PRODUCTION_CONTRACT_UNREVIEWED'];report.checks.originalColdResurrection=true;
+ stage='symlink-bootstrap';const planned=core.plan(cfg,evidence,runtime);assert.equal(planned.ready,true,planned.blockers.join('; '));const applied=core.apply(cfg,evidence,planned.digest,{runtime,verify:()=>{}});assert.equal(fs.lstatSync(path.join(base,'dist')).isSymbolicLink(),true);assert.equal((await health(port)).pid,restored.pid);await killDaemon();const active=await resurrect(port,{release:applied.release});report.symlinkLaunchDeclarations=active.metadata;report.symlinkCurrentSavedMetadataEqual=JSON.stringify(active.metadata)===JSON.stringify(declaration(saved()));assert.equal(report.symlinkCurrentSavedMetadataEqual,true,'Symlink resurrection drifted from saved launch declaration');verifyResurrectedDeclaration(active.metadata,declared,first.metadata);report.checks.symlinkResurrectionPreservesCompleteComparedDeclaration=true;report.checks.symlinkResurrectionReleaseLocalDependencies=true;report.checks.applicationLoadsCwdConfigurationWithoutLaunchDeclarations=true;assert.equal(active.metadata.port,null);assert.equal(active.metadata.environment,null);assert.equal(fs.existsSync(path.join(applied.release,'.env')),false);restoreEnvInvariant();
  stage='missing-env';await killDaemon();fs.renameSync(path.join(base,'.env'),path.join(base,'.held-env'));await resurrect(port,{expectGood:false});await killDaemon();fs.renameSync(path.join(base,'.held-env'),path.join(base,'.env'));await resurrect(port,{release:applied.release});restoreEnvInvariant();report.checks.missingEnvironmentFileFailsStartupAndRestores=true;
  stage='missing-release-dependency';await killDaemon();const dep=path.join(applied.release,'node_modules','@nestjs','core'),held=path.join(applied.release,'node_modules','@nestjs','core-held');fs.renameSync(dep,held);let fallbackRejected=false;try{await resurrect(port,{release:applied.release});}catch(error){if(!(error instanceof AcceptanceError)||!['RELEASE_DEPENDENCY_FALLBACK','STARTUP_OR_HEALTH_FAILED','HEALTH_FAILED'].includes(error.code))throw error;fallbackRejected=true;report.missingDependencyOutcome=error.code;}assert.equal(fallbackRejected,true,'Missing release dependency must fail release-local acceptance');await killDaemon();fs.renameSync(held,dep);await resurrect(port,{release:applied.release});report.checks.missingReleaseDependencyRejectedByAcceptance=true;
  stage='failed-health-and-recovery';fs.writeFileSync(path.join(base,'inject-health-failure'),'synthetic-only');const bad=await response(port,'/api/v1/health');assert.equal(bad.status,503);assert.equal(validHealth(bad.status,bad.body),false);assert.equal(selected().pm2_env.status,'online');report.checks.onlineDoesNotOverrideFailedHealth=true;
- const recovery=core.recoveryPlan(cfg);assert.equal(recovery.state,'exchanged');core.recover(cfg,recovery.digest);fs.unlinkSync(path.join(base,'inject-health-failure'));await killDaemon();const finalProcess=await resurrect(port);assert.deepEqual(finalProcess.metadata,first.metadata,'Recovered process declaration differs from original');assert.deepEqual(finalProcess.metadata,declaration(saved()),'Recovered process declaration differs from saved');report.checks.recoveryPreservesCompleteComparedDeclaration=true;report.checks.previousKnownGoodArtifactsResurrectAfterRecovery=true;
+ const recovery=core.recoveryPlan(cfg);assert.equal(recovery.state,'exchanged');core.recover(cfg,recovery.digest);fs.unlinkSync(path.join(base,'inject-health-failure'));await killDaemon();const finalProcess=await resurrect(port);verifyResurrectedDeclaration(finalProcess.metadata,declared,first.metadata);assert.deepEqual(finalProcess.metadata,declaration(saved()),'Recovered process declaration differs from saved');report.recoveredLaunchDeclarations=finalProcess.metadata;report.checks.recoveryPreservesCompleteComparedDeclaration=true;report.checks.previousKnownGoodArtifactsResurrectAfterRecovery=true;
  const final=core.inventory(cfg);for(const key of ['distHash','modulesHash','packageHash','lockHash','env'])assert.deepEqual(final[key],initial[key],key);restoreEnvInvariant();assert.equal(core.recoveryPlan(cfg).state,'original');report.checks.exactOriginalHashesAndEnvironmentIdentityRestored=true;
  stage='strict-gate';const productionContract=require('./runtime-contract.json');assert.equal(productionContract.reviewed,false);report.checks.productionRestartContractRemainsUnreviewed=true;report.result='PASS';
 }
-module.exports={diagnosticTokens};
+module.exports={diagnosticTokens,verifySavedTransformation,verifyResurrectedDeclaration};
 if(require.main===module)(async()=>{
  try{await main();}catch(error){report.result='FAIL';report.failedStage=stage;report.failureClass=error instanceof AcceptanceError?error.code:error?.code==='ERR_ASSERTION'?'ACCEPTANCE_ASSERTION':'HARNESS_OR_COMMAND_FAILURE';process.exitCode=1;}
  finally{

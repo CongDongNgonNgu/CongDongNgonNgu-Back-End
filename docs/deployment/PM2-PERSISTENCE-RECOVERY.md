@@ -69,20 +69,40 @@ owned temporary HOME/PM2_HOME; no Production or default PM2_HOME is accepted.
 The generated test-tool dependency lock and sanitized summary are preserved as
 CI artifacts. No raw PM2 list/dump/environment/process logs are uploaded.
 
-The minimal Nest fixture uses the compiled existing configuration and health
-modules with synthetic .env and release-local dependencies. It exercises launch,
+The minimal Nest fixture reuses the reviewed Production9f compiled configuration
+and health modules from artifact12735767418, bound to archive SHA-256, complete
+distHash and package/lock hashes. The test installs that original dependency lock
+into private runner storage with lifecycle scripts disabled; these JavaScript
+dependencies are reconstructed, not claimed byte-identical to original
+node_modules/native installation outputs. No provenance build is repeated.
+Synthetic .env and release-local dependency copies are then used. It exercises launch,
 application-loaded configuration, process/listener/health identity, save, private
 daemon termination and resurrection, then startup through the proposed dist
 symlink. Failure injection and restoration must verify previous known-good
 artifacts, dependency resolution, configuration and health. Existing Linux
 atomic-exchange/SIGKILL/recovery tests remain enabled. The test records measured
-PM2 declarations rather than manufacturing absent fields.
+PM2 declarations rather than manufacturing absent fields. The initial CLI launch
+measured instances=1; save omits it. The test permits exactly that documented
+1-to-null serialization difference, requires all other fields unchanged, then
+compares every cold/symlink/recovered declaration to the measured saved baseline.
+The Production validator still rejects the undeclared launch fields.
 
 This validates the pinned PM2 loader/persistence behavior with the real Nest
 configuration/health slice; it does not start the full business/worker/database
 application or test the VPS systemd unit, Production private settings, host reboot
 or actual Production recovery. Full application regression/SQL checks remain
 part of ordinary required CI. The rehearsal has no authority to change gates.
+
+### Durable baseline input
+
+The reviewed artifact is retained until 2026-11-26. If it becomes unavailable or
+its digest differs, required CI fails closed; there is no automatic substitute or
+provenance-rebuild fallback. Before that deadline, retain the existing reviewed
+archive in approved durable storage and review a durable CI retrieval location
+without changing its content identity. Local verified copies already exist in
+the parent runtime-provenance-evidence directory. This task creates no storage
+account, external publication or Production copy. The sanitized PM2 report and
+test-tool lock also have 30-day CI retention; retain them with the source receipt.
 
 ## Remaining blockers and minimal operator actions
 
