@@ -138,7 +138,7 @@ export class AuthController {
   ) {
     const selectedMode = mode === 'register' ? 'register' : 'login';
     const url = await this.oauth.start(provider, selectedMode);
-    appendOAuthStateCookieFromAuthorizationUrl(response, url, this.isProduction());
+    appendOAuthStateCookieFromAuthorizationUrl(response, url, this.useSecureOAuthStateCookie());
     return response.redirect(url);
   }
 
@@ -158,7 +158,7 @@ export class AuthController {
   ) {
     this.sessions.assertCsrfForCookie(request);
     const url = await this.oauth.start(provider, 'link', request.user!.user.id, request.user!.claims.sid);
-    appendOAuthStateCookieFromAuthorizationUrl(response, url, this.isProduction());
+    appendOAuthStateCookieFromAuthorizationUrl(response, url, this.useSecureOAuthStateCookie());
     return success({ authorizationUrl: url }, 'Đang mở liên kết tài khoản');
   }
 
@@ -180,12 +180,14 @@ export class AuthController {
     } catch (error) {
       redirectUrl = this.oauth.callbackRedirect('error', callbackErrorCode(error));
     }
-    clearOAuthStateCookie(response, this.isProduction());
+    clearOAuthStateCookie(response, this.useSecureOAuthStateCookie());
     return response.redirect(redirectUrl);
   }
 
-  private isProduction(): boolean {
-    return this.config.get<string>('app.environment') === 'production';
+  private useSecureOAuthStateCookie(): boolean {
+    // PUBLIC_APP_URL is validated at startup; never infer trust from request/proxy headers.
+    return this.config.get<string>('app.environment') === 'production' ||
+      new URL(this.config.getOrThrow<string>('app.publicAppUrl')).protocol === 'https:';
   }
 
   @ApiOperation({ summary: 'Logout - Authentication', security: [{}, { bearer: [] }, { refresh: [] }], description: 'Revokes an available session and clears authentication cookies; anonymous logout remains supported' })
