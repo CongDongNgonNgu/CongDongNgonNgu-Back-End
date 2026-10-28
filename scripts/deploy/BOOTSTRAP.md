@@ -8,7 +8,7 @@ Backend source: `9f1d6b50dd5d33d312feba0fa23fa4d1e2d46682`.
 Frontend source: `8777545f1d42ffe85e37e2ce5f1d7c8ff9030fea`.
 These resolve the owner-reported short revisions through Git history. A clean worktree or `git rev-parse HEAD` does **not** establish the provenance of existing dist or dependencies.
 
-Backend runtime-contract.json retains `reviewed:false`. Owner-confirmed values are cwd `/var/www/congdongngonngu/backend`, script `dist/main.js`, interpreter `node`, fork mode, port 3201 and production environment. Still required: actual resolved interpreter/Node version (prepared release path requires Node 24), instances, node/interpreter arguments, application arguments, NODE_OPTIONS and captured PM2 runtime options. No empty argument list is inferred from the owner's summary.
+Backend runtime-contract.json retains `reviewed:false`. See [the current runtime contract and readiness decision](../../docs/deployment/RUNTIME-READINESS.md): observation review preserves missing PM2 fields and cannot approve restart safety.
 
 PM2 user/home/service/process remain `cdnn-deploy`, `/home/cdnn-deploy/.pm2`, `pm2-cdnn-deploy`, `cdnn-backend`. Owner reports PM2 7.0.3, enabled/active service, online process and zero restarts. This preparation does not independently inspect the VPS or turn those observations into artifact provenance.
 
@@ -131,3 +131,7 @@ Background references: [Node module realpath resolution](https://nodejs.org/api/
 ## Runtime and provenance investigation
 
 See [the read-only evidence and separately gated migration design](../../docs/deployment/RUNTIME-PROVENANCE.md). Reproducible-build content provenance is reviewed PASS. Runtime/Nginx/bootstrap gates remain BLOCKED; isolated comparison reports alone cannot approve bootstrap.
+
+## Runtime readiness follow-up ? 2026-10-28
+
+See [RUNTIME-READINESS.md](../../docs/deployment/RUNTIME-READINESS.md) for the separate observation/restart gates, operator Nginx evidence, remaining blockers and minimal read-only commands. Reuse the reviewed reproduction result. Production gates remain disabled; no apply or restart is authorized.

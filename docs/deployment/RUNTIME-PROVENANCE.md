@@ -176,3 +176,7 @@ archives in approved durable storage before that deadline. Existing local copies
 are under the parent workspace runtime-provenance-evidence directory. No archive
 has been uploaded or copied to Production. The fallback migration design above
 remains a contingency, not a required replacement for proven content.
+
+## Readiness follow-up ? 2026-10-28
+
+Current operator Nginx evidence and runtime/recovery decisions are recorded in [RUNTIME-READINESS.md](RUNTIME-READINESS.md). The provenance PASS results above remain unchanged. Historical pending Nginx/current-path statements above are superseded by that evidence; restart/activation gates remain blocked.

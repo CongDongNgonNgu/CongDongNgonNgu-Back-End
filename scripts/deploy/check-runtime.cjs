@@ -2,7 +2,7 @@
 const {spawnSync}=require('node:child_process');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),crypto=require('node:crypto');
 const {createRequire}=require('node:module');
-const {validateRuntime,runtimeMetadata}=require('./release-checks.cjs');
+const {assessRuntime,runtimeMetadata}=require('./release-checks.cjs');
 async function collect(){
  if(os.userInfo().username!=='cdnn-deploy'||process.env.PM2_HOME!=='/home/cdnn-deploy/.pm2')throw Error('Wrong PM2 identity');
  if(spawnSync('systemctl',['is-active','--quiet','pm2-cdnn-deploy']).status!==0)throw Error('PM2 service not active');
@@ -34,7 +34,8 @@ async function collect(){
  if(JSON.stringify(after)!==JSON.stringify(kernel))throw Error('Process changed across health inspection');
  const independentEvidence={pm2OnlineProcessCount:matches.length,kernel,application};
  const metadata=runtimeMetadata(rows,proof),contract=JSON.parse(fs.readFileSync(__dirname+'/runtime-contract.json','utf8'));
- return {reviewed:validateRuntime(rows,contract,proof)&&kernel.cwdMatches&&kernel.executableMatches&&kernel.listeningOn3201&&application.productionHealth,metadata,independentEvidence,fingerprint:crypto.createHash('sha256').update(JSON.stringify({metadata,contract,independentEvidence})).digest('hex')};
+ const assessment=assessRuntime(rows,contract,proof,independentEvidence);
+ return {...assessment,metadata,independentEvidence,fingerprint:crypto.createHash('sha256').update(JSON.stringify({metadata,contract,independentEvidence})).digest('hex')};
 }
 function capture(){
  const result=spawnSync(process.execPath,[__filename,'--capture'],{encoding:'utf8',maxBuffer:1024*1024,timeout:15000,env:{PATH:process.env.PATH,PM2_HOME:process.env.PM2_HOME}});
@@ -43,7 +44,7 @@ function capture(){
 }
 module.exports={capture};
 if(require.main===module)collect().then(result=>{
- if(process.argv.includes('--inspect'))console.log(JSON.stringify({reviewed:false,...result.metadata,independentEvidence:result.independentEvidence,metadataSource:'PM2 getMonitorData; null means absent or unsupported, not an effective application default'},null,2));
+ if(process.argv.includes('--inspect'))console.log(JSON.stringify({reviewed:false,...result.metadata,independentEvidence:result.independentEvidence,assessment:{observationScope:result.observationScope,endpointCorrelation:result.endpointCorrelation,observedDeployment:result.observedDeployment,restartSafety:result.restartSafety,blockers:result.blockers},metadataSource:'PM2 getMonitorData; null means absent or unsupported, not an effective application default'},null,2));
  else if(process.argv.includes('--capture'))console.log(JSON.stringify(result));
  else if(!result.reviewed)throw Error('Runtime review incomplete');
 }).catch(()=>{console.error('PM2 runtime gate failed; inspect sanitized metadata and review contract. No daemon startup fallback is permitted.');process.exitCode=1;});
