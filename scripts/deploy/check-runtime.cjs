@@ -21,6 +21,8 @@ async function collect(){
  const rows=await require('./pm2-socket.cjs').readRows(transport('pm2-axon'),transport('pm2-axon-rpc'),socketPath);
  const matches=rows.filter(x=>x.name==='cdnn-backend');
  if(matches.length!==1||!Number.isInteger(matches[0].pid)||matches[0].pid<1||matches[0].pm2_env?.status!=='online')throw Error('Expected one online application');
+ const restartCount=matches[0].pm2_env.restart_time;
+ if(!Number.isSafeInteger(restartCount)||restartCount<0)throw Error('PM2 restart identity unavailable');
  const resolvedInterpreter=fs.realpathSync('/proc/'+matches[0].pid+'/exe');
  if(!runtimeMetadata(rows,{resolvedInterpreter}).resolvedInterpreter)throw Error('Unsupported interpreter path; inspect locally');
  const version=spawnSync(resolvedInterpreter,['--version'],{encoding:'utf8',timeout:5000,env:{PATH:process.env.PATH}});
@@ -32,7 +34,9 @@ async function collect(){
  try{const response=await fetch('http://127.0.0.1:3201/api/v1/health',{redirect:'error',signal:AbortSignal.timeout(5000)});application={httpStatus:response.status,productionHealth:validHealth(response.status,await response.json())};}catch{}
  const after=require('./runtime-proof.cjs').inspectProcess(matches[0].pid,{expectedInterpreter:resolvedInterpreter});
  if(JSON.stringify(after)!==JSON.stringify(kernel))throw Error('Process changed across health inspection');
- const independentEvidence={pm2OnlineProcessCount:matches.length,kernel,application};
+ const afterRows=await require('./pm2-socket.cjs').readRows(transport('pm2-axon'),transport('pm2-axon-rpc'),socketPath);
+ if(!require('./runtime-process.cjs').samePm2Process(rows,afterRows)||JSON.stringify(runtimeMetadata(afterRows,proof))!==JSON.stringify(runtimeMetadata(rows,proof)))throw Error('PM2 identity changed across inspection');
+ const independentEvidence={pm2OnlineProcessCount:matches.length,pm2RestartCounter:restartCount,pm2Status:'online',kernel,application};
  const metadata=runtimeMetadata(rows,proof),contract=JSON.parse(fs.readFileSync(__dirname+'/runtime-contract.json','utf8'));
  const assessment=assessRuntime(rows,contract,proof,independentEvidence);
  return {...assessment,metadata,independentEvidence,fingerprint:crypto.createHash('sha256').update(JSON.stringify({metadata,contract,independentEvidence})).digest('hex')};

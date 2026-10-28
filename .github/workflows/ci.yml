@@ -51,6 +51,13 @@ jobs:
       - name: Deployment safety tests
         run: node --test scripts/deploy/*.node-spec.cjs
 
+      - name: Isolated Linux accepted-connection ownership tests
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n env -u NODE_OPTIONS -u NODE_PATH CDNN_CORRELATION_LINUX_REQUIRED=1 "$(command -v node)" --test scripts/deploy/endpoint-correlation*.node-spec.cjs
+
       - name: Lint
         run: npm run lint
 
