@@ -102,7 +102,7 @@ preparation directory.
 sudo nginx -t
 # In bash, retain nginx's status; detect the policy name even with multiline arguments.
 set -o pipefail
-sudo nginx -T 2>&1 | awk '{if ($0 ~ /(^|[;{}[:space:]])disable_symlinks([[:space:];]|$)/) found=1} END {if(found) print "SYMLINK_POLICY_PRESENT_LOCAL_REVIEW_REQUIRED"; else print "NO_DISABLE_SYMLINKS_TOKEN"}'
+sudo nginx -T 2>&1 | awk '{if (index($0,"disable_symlinks")) found=1} END {if(found) print "SYMLINK_POLICY_PRESENT_LOCAL_REVIEW_REQUIRED"; else print "NO_DISABLE_SYMLINKS_TOKEN"}'
 printf 'NGINX_DUMP_PIPELINE_STATUS=%s\n' "$?"
 # As cdnn-deploy; connect-only inspection, no PM2 CLI/daemon startup.
 PM2_HOME=/home/cdnn-deploy/.pm2 node /home/cdnn-deploy/bootstrap-preparation/backend/scripts/deploy/check-runtime.cjs --inspect
