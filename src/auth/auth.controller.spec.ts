@@ -27,6 +27,40 @@ describe('AuthController OAuth browser state binding', () => {
     );
   });
 
+  it.each([
+    ['test', 'https://cong-dong-ngon-ngu-sigma.vercel.app', true],
+    ['production', 'https://congdongngonngu.vn', true],
+    ['development', 'http://localhost:5173', false],
+  ] as const)('uses configured transport for %s OAuth issuance and clearing', async (environment, publicAppUrl, secure) => {
+    const oauth = {
+      start: jest.fn<OAuthService['start']>().mockResolvedValue('https://provider.example/authorize?state=browser-state'),
+      callback: jest.fn<OAuthService['callback']>(),
+      callbackRedirect: jest.fn<OAuthService['callbackRedirect']>().mockReturnValue(publicAppUrl + '/auth/callback?status=error'),
+    } as unknown as OAuthService;
+    const controller = new AuthController({} as AuthService,
+      { assertCsrfForCookie: jest.fn() } as unknown as SessionService, oauth,
+      new ConfigService({ app: { environment, publicAppUrl } }));
+    const start = responseDouble();
+    await controller.oauthStart('google', undefined, start);
+    const linked = responseDouble();
+    await controller.oauthLinkStart('google', { headers: {}, user: { user: { id: 'user' }, claims: { sid: 'session' } } } as never, linked);
+    const cleared = responseDouble();
+    // Untrusted forwarding headers cannot override configured cookie security.
+    await controller.oauthCallback('google', { state: 'browser-state', code: 'code' },
+      { headers: { 'x-forwarded-proto': secure ? 'http' : 'https' } } as unknown as Request, cleared);
+    expect(oauth.callback).not.toHaveBeenCalled();
+    for (const response of [start, linked, cleared]) {
+      const cookie = (response.append as jest.Mock).mock.calls[0][1] as string;
+      expect(cookie.includes('; Secure')).toBe(secure);
+      expect(cookie).toContain('HttpOnly');
+      expect(cookie).toContain('SameSite=Lax');
+      expect(cookie).toContain('Path=/api/v1/auth/oauth');
+      expect(cookie).not.toMatch(/Domain=/i);
+    }
+    expect((start.append as jest.Mock).mock.calls[0][1]).toContain('Max-Age=600');
+    expect((cleared.append as jest.Mock).mock.calls[0][1]).toContain('Max-Age=0');
+  });
+
   it('rejects a callback state mismatch before invoking the OAuth service', async () => {
     const oauth = {
       callback: jest.fn<OAuthService['callback']>(),
@@ -84,7 +118,7 @@ function controllerWith(oauth: OAuthService): AuthController {
     {} as AuthService,
     {} as SessionService,
     oauth,
-    new ConfigService({ app: { environment: 'test' } }),
+    new ConfigService({ app: { environment: 'test', publicAppUrl: 'http://localhost:5173' } }),
   );
 }
 

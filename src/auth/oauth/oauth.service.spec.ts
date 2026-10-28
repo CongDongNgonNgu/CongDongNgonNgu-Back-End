@@ -11,6 +11,24 @@ describe('OAuthService', () => {
     jest.restoreAllMocks();
   });
 
+  it('rejects OAuth state at its ten-minute expiry before contacting Google', async () => {
+    const { oauth } = createFixture();
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    const start = await oauth.start('google', 'login');
+    const state = new URL(start).searchParams.get('state')!;
+    const provider = jest.spyOn(globalThis, 'fetch');
+    jest.useFakeTimers({ now: now + 600_000 });
+    try {
+      await expect(oauth.callback('google', { state, code: 'expired-code' }, response()))
+        .rejects.toMatchObject({ code: 'AUTH_OAUTH_STATE_INVALID' });
+      expect(provider).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+      clock.mockRestore();
+    }
+  });
+
   it('rejects a callback after the initiating link session is revoked', async () => {
     const repository = new InMemoryIdentityRepository();
     const config = new ConfigService({
