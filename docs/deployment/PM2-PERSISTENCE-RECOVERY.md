@@ -148,3 +148,17 @@ Workspace draft PR #185 and both main revisions.
 References: [PM2 save/resurrect and startup](https://pm2.keymetrics.io/docs/usage/startup/),
 [PM2 launch fields](https://pm2.keymetrics.io/docs/usage/application-declaration/),
 [Nginx symlink default](https://nginx.org/en/docs/http/ngx_http_core_module.html#disable_symlinks).
+
+## Verified Linux result
+
+[PM2-RECOVERY-RESULT.json](PM2-RECOVERY-RESULT.json) binds the successful required
+CI run40633202704 and artifact12792577430 to the tested helper revision. All15
+rehearsal checks passed, including exact restoration and confirmed daemon/fixture
+cleanup. Missing configuration caused exit1 and10 retries while PM2 still reported
+online; health correctly remained unavailable. Missing release dependency resolved
+through an ancestor and was rejected by release-local acceptance. These are observed
+risks to retain in future activation acceptance. The exact known save transformation
+was instances1-to-null; all subsequent compared declarations matched saved metadata.
+This PASS is limited to the representative Linux configuration/health slice.
+Production endpoint correlation, systemd startup and operational rollback remain
+unverified; strict runtime contract and bootstrap readiness remain blocked.
