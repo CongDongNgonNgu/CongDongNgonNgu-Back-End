@@ -7,7 +7,7 @@ const core=require('./bootstrap-core.cjs'),config=require('./bootstrap-config.js
 function fixture(){
  const base=fs.mkdtempSync(path.join(os.tmpdir(),'cdnn-runtime-isolated-'));fs.chmodSync(base,0o755);
  fs.mkdirSync(path.join(base,'dist','assets'),{recursive:true});
- fs.writeFileSync(path.join(base,'dist','index.html'),'<script src="/assets/old.js"></script>');
+ fs.writeFileSync(path.join(base,'dist','index.html'),'<html><script src="/assets/old.js"></script></html>');
  fs.writeFileSync(path.join(base,'dist','assets','old.js'),'https://api.congdongngonngu.vn/api/v1');
  fs.writeFileSync(path.join(base,'.env'),'NODE_ENV=production\nPORT=0\n',{mode:0o600});
  fs.mkdirSync(path.join(base,'node_modules','probe'),{recursive:true});
@@ -55,4 +55,8 @@ test('isolated Linux worker reads future symlink layout and original assets afte
   core.recover(f.cfg,core.recoveryPlan(f.cfg).digest);assert.equal(worker().status,0,'Original worker read failed');
   assert.equal(core.tree(path.join(f.base,'dist')),f.snapshot.distHash);assert.equal(fs.existsSync(path.join(f.base,'dist','cdnn-release.json')),false);
  }finally{fs.rmSync(f.base,{recursive:true,force:true});}
+});
+
+test('runtime fixture satisfies read-only artifact and provenance plan gates before Linux activation',()=>{
+ const f=fixture();try{const p=core.plan(f.cfg,f.evidence,f.runtime);assert.equal(p.ready,true,p.blockers.join('; '));assert.ok(fs.lstatSync(path.join(f.base,'dist')).isDirectory());assert.equal(fs.existsSync(path.join(f.base,'.releases')),false);}finally{fs.rmSync(f.base,{recursive:true,force:true});}
 });

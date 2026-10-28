@@ -100,9 +100,9 @@ preparation directory.
 ~~~bash
 # Syntax and full include graph; no reload or config change.
 sudo nginx -t
-# In bash, retain nginx's real status and show only policy tokens (including inline).
+# In bash, retain nginx's status; detect the policy name even with multiline arguments.
 set -o pipefail
-sudo nginx -T 2>&1 | awk '{line=$0; sub(/#.*/, "", line); while (match(line, /disable_symlinks[[:space:]]+(off|on|if_not_owner)([[:space:]]+from=[^;[:space:]]+)?[[:space:]]*;/)) {print substr(line,RSTART,RLENGTH); line=substr(line,RSTART+RLENGTH)}}'
+sudo nginx -T 2>&1 | awk '{if ($0 ~ /(^|[;{}[:space:]])disable_symlinks([[:space:];]|$)/) found=1} END {if(found) print "SYMLINK_POLICY_PRESENT_LOCAL_REVIEW_REQUIRED"; else print "NO_DISABLE_SYMLINKS_TOKEN"}'
 printf 'NGINX_DUMP_PIPELINE_STATUS=%s\n' "$?"
 # As cdnn-deploy; connect-only inspection, no PM2 CLI/daemon startup.
 PM2_HOME=/home/cdnn-deploy/.pm2 node /home/cdnn-deploy/bootstrap-preparation/backend/scripts/deploy/check-runtime.cjs --inspect
@@ -117,8 +117,8 @@ try {
 NODE
 ~~~
 
-If no symlink directive is emitted with both syntax validation and dump pipeline
-status zero, the documented default applies globally. If directives appear,
+If NO_DISABLE_SYMLINKS_TOKEN is emitted with both syntax validation and dump pipeline
+status zero, the documented default applies globally. If a policy token appears (even in a comment or string, conservatively),
 review their http/server/location inheritance locally and return only this
 project's effective policy. No full-config publication is required. Repeating
 namei/getfacl/current-path tests is unnecessary unless permissions changed.
