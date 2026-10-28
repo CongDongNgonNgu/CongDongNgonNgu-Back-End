@@ -8,7 +8,8 @@
   "reviewedFiles": [
     "lib/binaries/CLI.js",
     "lib/API/Startup.js",
-    "lib/ProcessContainerFork.js"
+    "lib/ProcessContainerFork.js",
+    "lib/God.js"
   ],
   "findings": {
     "cliMinUptimeOption": "NOT_SUPPORTED; use measured default, not invented CLI flag",
@@ -18,7 +19,8 @@
       "prev_restart_delay"
     ],
     "resurrectFallback": "Uses backup dump if reading/parsing primary fails",
-    "forkLoader": "CommonJS application is loaded through Node Module._load using pm_exec_path"
+    "forkLoader": "CommonJS application is loaded through Node Module._load using pm_exec_path",
+    "autorestartWindow": "Unstable restart counting is bounded by age(created_at) < min_uptime * max_restarts. A resurrected old created_at can be outside this window; unavailable startup may retry without a terminal state."
   },
   "scope": "Public pinned package source review; no Production metadata fields changed; strict validator unchanged"
 }

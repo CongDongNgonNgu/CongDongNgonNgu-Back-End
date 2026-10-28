@@ -54,6 +54,15 @@ function declaration(p){
  }
  return {cwd:p.pm_cwd===base,script:p.pm_exec_path===path.join(base,'dist','main.js'),interpreter:p.exec_interpreter===process.execPath,mode:p.exec_mode,instances:Number.isInteger(p.instances)?p.instances:null,port:p.PORT===undefined&&p.env?.PORT===undefined?null:'PRESENT',environment:p.NODE_ENV===undefined&&p.env?.NODE_ENV===undefined?null:'PRESENT',nodeArgs:safeArgs(p.node_args??p.interpreter_args),args:safeArgs(p.args,true),nodeOptions:safeArgs(p.NODE_OPTIONS??p.env?.NODE_OPTIONS),options};
 }
+function startupRejectionEvidence(metadata){
+ const state=['online','launching','stopping','stopped','errored','waiting restart'].includes(metadata.status)?metadata.status:'UNSUPPORTED';
+ const exitCode=Number.isInteger(metadata.exit_code)&&metadata.exit_code>=0&&metadata.exit_code<=255?metadata.exit_code:null;
+ const restartCount=Number.isSafeInteger(metadata.restart_time)&&metadata.restart_time>=0?metadata.restart_time:null;
+ const unstableRestarts=Number.isSafeInteger(metadata.unstable_restarts)&&metadata.unstable_restarts>=0?metadata.unstable_restarts:null;
+ const observed=state!=='UNSUPPORTED'&&exitCode!==null&&exitCode!==0&&(restartCount>=1||['stopped','errored'].includes(state));
+ return {state,exitCode,restartCount,unstableRestarts,startupRejectionObserved:observed};
+}
+
 function verifySavedTransformation(original,savedDeclaration){
  assert.deepEqual(Object.keys(savedDeclaration).sort(),Object.keys(original).sort(),'Compared declaration schema must remain identical');
  assert.equal(original.instances,1,'Pinned CLI fixture must declare the measured singleton');
@@ -97,7 +106,7 @@ function copyDependencies(names){
  return Object.fromEntries(names.map(name=>[name,JSON.parse(fs.readFileSync(path.join(targetModules,name,'package.json'),'utf8')).version]));
 }
 async function unusedPort(){const s=net.createServer();await new Promise((resolve,reject)=>s.once('error',reject).listen(0,'127.0.0.1',resolve));const port=s.address().port;await new Promise(resolve=>s.close(resolve));return port;}
-async function response(port,route){try{const r=await fetch('http://127.0.0.1:'+port+route,{signal:AbortSignal.timeout(1000)});return {status:r.status,body:await r.json()};}catch{return {status:null,body:null};}}
+async function response(port,route){try{const r=await fetch('http://127.0.0.1:'+port+route,{signal:AbortSignal.timeout(1000)});let body=null;try{body=await r.json();}catch{}return {status:r.status,body};}catch{return {status:null,body:null};}}
 async function health(port,{release,expectGood=true}={}){
  let last;
  for(let n=0;n<50;n++){
@@ -112,7 +121,7 @@ async function health(port,{release,expectGood=true}={}){
    if(release){if(!d.dependency.startsWith(path.join(release,'node_modules')+path.sep))throw new AcceptanceError('RELEASE_DEPENDENCY_FALLBACK');if(!d.main.startsWith(path.join(release,'dist')+path.sep))throw new AcceptanceError('RELEASE_ENTRYPOINT_NOT_REALPATH');}
    return {pid:p.pid,diagnostics:d,metadata:declaration(p.pm2_env)};
   }
-  if(!expectGood&&n>=12){assert.equal(h.status,null,'Expected startup failure, not a responding service');const failed=selected();if(['errored','stopped'].includes(failed.pm2_env.status))return null;}
+  if(!expectGood){assert.equal(h.status,null,'Expected startup failure, not a responding service');assert.equal(fs.existsSync(path.join(base,'.env')),false,'Missing-configuration injection must remain active');const failed=selected();assert.equal(failed.pm2_env.exec_mode,'fork_mode');const rejected=startupRejectionEvidence(failed.pm2_env);report.missingEnvironmentRuntime=rejected;if(n>=12&&rejected.startupRejectionObserved)return rejected;}
   await wait(200);
  }
  throw new AcceptanceError(last.status===503?'HEALTH_FAILED':'STARTUP_OR_HEALTH_FAILED');
@@ -165,14 +174,14 @@ async function main(){
  stage='initial-launch';pm2(['start',path.join(base,'dist','main.js'),'--name',appName,'--cwd',base,'--interpreter',process.execPath,'--max-memory-restart','1G','--max-restarts','2']);const first=await health(port);report.launchDeclarations=first.metadata;for(const key of ['cwd','script','interpreter'])assert.equal(first.metadata[key],true,key);assert.equal(first.metadata.mode,'fork_mode');assert.equal(Object.values(first.metadata.options).includes('<UNREVIEWED>'),false);for(const key of ['nodeArgs','args','nodeOptions'])assert.ok(Array.isArray(first.metadata[key]),key);report.checks.initialActualNestHealth=true;
  stage='save-resurrect';pm2(['save','--force']);const declared=declaration(saved());report.savedLaunchDeclarations=declared;report.initialSavedDifferences=verifySavedTransformation(first.metadata,declared);report.checks.onlyDocumentedInstanceDeclarationOmittedBySave=true;await killDaemon();const restored=await resurrect(port);assert.notEqual(restored.pid,first.pid);verifyResurrectedDeclaration(restored.metadata,declared,first.metadata);report.resurrectedLaunchDeclarations=restored.metadata;report.restartContractStatus='BLOCKED_UNDECLARED_LAUNCH_FIELDS';report.restartContractBlockers=['PM2_INSTANCES_UNDECLARED','PM2_PORT_UNDECLARED','PM2_ENVIRONMENT_UNDECLARED','PRODUCTION_CONTRACT_UNREVIEWED'];report.checks.originalColdResurrection=true;
  stage='symlink-bootstrap';const planned=core.plan(cfg,evidence,runtime);assert.equal(planned.ready,true,planned.blockers.join('; '));const applied=core.apply(cfg,evidence,planned.digest,{runtime,verify:()=>{}});assert.equal(fs.lstatSync(path.join(base,'dist')).isSymbolicLink(),true);assert.equal((await health(port)).pid,restored.pid);await killDaemon();const active=await resurrect(port,{release:applied.release});report.symlinkLaunchDeclarations=active.metadata;report.symlinkCurrentSavedMetadataEqual=JSON.stringify(active.metadata)===JSON.stringify(declaration(saved()));assert.equal(report.symlinkCurrentSavedMetadataEqual,true,'Symlink resurrection drifted from saved launch declaration');verifyResurrectedDeclaration(active.metadata,declared,first.metadata);report.checks.symlinkResurrectionPreservesCompleteComparedDeclaration=true;report.checks.symlinkResurrectionReleaseLocalDependencies=true;report.checks.applicationLoadsCwdConfigurationWithoutLaunchDeclarations=true;assert.equal(active.metadata.port,null);assert.equal(active.metadata.environment,null);assert.equal(fs.existsSync(path.join(applied.release,'.env')),false);restoreEnvInvariant();
- stage='missing-env';await killDaemon();fs.renameSync(path.join(base,'.env'),path.join(base,'.held-env'));await resurrect(port,{expectGood:false});await killDaemon();fs.renameSync(path.join(base,'.held-env'),path.join(base,'.env'));await resurrect(port,{release:applied.release});restoreEnvInvariant();report.checks.missingEnvironmentFileFailsStartupAndRestores=true;
+ stage='missing-env';await killDaemon();fs.renameSync(path.join(base,'.env'),path.join(base,'.held-env'));report.missingEnvironmentStartupRejection=await resurrect(port,{expectGood:false});await killDaemon();fs.renameSync(path.join(base,'.held-env'),path.join(base,'.env'));await resurrect(port,{release:applied.release});restoreEnvInvariant();report.checks.missingEnvironmentFileFailsStartupAndRestores=true;
  stage='missing-release-dependency';await killDaemon();const dep=path.join(applied.release,'node_modules','@nestjs','core'),held=path.join(applied.release,'node_modules','@nestjs','core-held');fs.renameSync(dep,held);let fallbackRejected=false;try{await resurrect(port,{release:applied.release});}catch(error){if(!(error instanceof AcceptanceError)||!['RELEASE_DEPENDENCY_FALLBACK','STARTUP_OR_HEALTH_FAILED','HEALTH_FAILED'].includes(error.code))throw error;fallbackRejected=true;report.missingDependencyOutcome=error.code;}assert.equal(fallbackRejected,true,'Missing release dependency must fail release-local acceptance');await killDaemon();fs.renameSync(held,dep);await resurrect(port,{release:applied.release});report.checks.missingReleaseDependencyRejectedByAcceptance=true;
  stage='failed-health-and-recovery';fs.writeFileSync(path.join(base,'inject-health-failure'),'synthetic-only');const bad=await response(port,'/api/v1/health');assert.equal(bad.status,503);assert.equal(validHealth(bad.status,bad.body),false);assert.equal(selected().pm2_env.status,'online');report.checks.onlineDoesNotOverrideFailedHealth=true;
  const recovery=core.recoveryPlan(cfg);assert.equal(recovery.state,'exchanged');core.recover(cfg,recovery.digest);fs.unlinkSync(path.join(base,'inject-health-failure'));await killDaemon();const finalProcess=await resurrect(port);verifyResurrectedDeclaration(finalProcess.metadata,declared,first.metadata);assert.deepEqual(finalProcess.metadata,declaration(saved()),'Recovered process declaration differs from saved');report.recoveredLaunchDeclarations=finalProcess.metadata;report.checks.recoveryPreservesCompleteComparedDeclaration=true;report.checks.previousKnownGoodArtifactsResurrectAfterRecovery=true;
  const final=core.inventory(cfg);for(const key of ['distHash','modulesHash','packageHash','lockHash','env'])assert.deepEqual(final[key],initial[key],key);restoreEnvInvariant();assert.equal(core.recoveryPlan(cfg).state,'original');report.checks.exactOriginalHashesAndEnvironmentIdentityRestored=true;
  stage='strict-gate';const productionContract=require('./runtime-contract.json');assert.equal(productionContract.reviewed,false);report.checks.productionRestartContractRemainsUnreviewed=true;report.result='PASS';
 }
-module.exports={diagnosticTokens,verifySavedTransformation,verifyResurrectedDeclaration};
+module.exports={response,diagnosticTokens,startupRejectionEvidence,verifySavedTransformation,verifyResurrectedDeclaration};
 if(require.main===module)(async()=>{
  try{await main();}catch(error){report.result='FAIL';report.failedStage=stage;report.failureClass=error instanceof AcceptanceError?error.code:error?.code==='ERR_ASSERTION'?'ACCEPTANCE_ASSERTION':'HARNESS_OR_COMMAND_FAILURE';process.exitCode=1;}
  finally{

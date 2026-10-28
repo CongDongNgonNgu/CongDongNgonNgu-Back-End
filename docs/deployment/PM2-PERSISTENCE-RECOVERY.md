@@ -60,6 +60,15 @@ and release-local dependencies rather than assuming symlink resolution. The
 CI run rejected that unsupported test flag before application launch; the test
 removes it and records the actual default instead. No Production flag is changed.
 
+God.js also limits unstable-restart counting to a window based on created_at.
+A resurrected saved timestamp can be older than that window, so autorestart may
+keep retrying a failed startup without reaching errored. A max-restarts setting
+is not a health guarantee. The missing-configuration test therefore requires
+repeated unavailable health plus measured nonzero child-exit/retry evidence,
+then deliberately stops only the isolated daemon, restores the same synthetic
+configuration file and requires healthy resurrection. It does not change any
+launch option to force a terminal state.
+
 ## Representative Linux PM2 rehearsal
 
 The Backend required quality job runs an explicit bounded rehearsal after build,
