@@ -1,0 +1,11 @@
+# Main Production CD
+
+Activation uses the existing transport and reusable workflow. Only a push to main after the required quality job passes can deploy; the exact checked-out SHA must still be current remote main. Existing production Environment SSH secrets are inherited and pinned known_hosts are required. SSH preflight was verified via GitHub Actions on 2026-10-29.
+
+The VPS uses real dist directories, so activation reuses the accepted OAuth runbook's same-filesystem renameat2 exchange instead of converting the live layout to symlinks. Builds/install run only in unique private .releases/SHA-RUN-ATTEMPT directories. No Production .env edit, migration execution, Nginx reload, shared PM2 daemon action, pm2 save or release pruning occurs.
+
+Only cdnn-backend is stopped/restarted. Read-only PM2 socket snapshots bind launch/options/inherited-environment fingerprints, original PID/start/restarts, interpreter, named process, unrelated processes and unchanged private .env metadata/content digest. Null PM2 declarations stay null; this is the bounded identity policy from the accepted OAuth runbook, not approval of the deferred bootstrap contract. Ownership evidence is a PID-owned listener plus separate local/public health, not accepted-stream correlation. Migrations use only the existing SELECT-only gate and any mismatch blocks before stop. New dist/node_modules resolves dependencies from the retained release; existing root dependencies and .env remain untouched.
+
+Failures before activation leave the current app intact. Ordinary stop/exchange/start/health failures trigger guarded recovery; unknown inode/runtime drift refuses blind rollback and writes rollback_failed. Source, dependencies, originals, rollback trees and activation-intent.json are retained. They MUST NOT be pruned while referenced. SIGKILL/host crash cannot run shell traps: inspect retained intent/inodes and runtime before an operator recovery; never rerun an uncertain exchange blindly.
+
+Validation includes Bash/ShellCheck, real Linux directory exchanges and injected build/swap/health failures, stop/restart failures and runtime drift, asset collision/retention and relocated dependency resolution. Application quality gates remain required.
