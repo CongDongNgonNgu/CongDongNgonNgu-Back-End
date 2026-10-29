@@ -55,3 +55,9 @@ test('health gates refuse foreign listener or wrong executable and preserve heal
  assert.throws(()=>validateTransition(a,b,'restarted',{originalAlive:false,listener:'owned'}));b.healthy=true;
  assert.throws(()=>validateTransition(a,b,'restarted',{originalAlive:false,listener:'foreign'}));
 });
+
+test('PM2 7.0.3 stop then restart keeps restart_time unchanged but changes PID/start',()=>{
+ const a=snapshot(),b=structuredClone(a);b.target.pid=124;b.target.startTicks='101';
+ assert.doesNotThrow(()=>validateTransition(a,b,'restarted',{originalAlive:false,listener:'owned'}));
+ b.target.restarts=-1;assert.throws(()=>validateTransition(a,b,'restarted',{originalAlive:false,listener:'owned'}));
+});

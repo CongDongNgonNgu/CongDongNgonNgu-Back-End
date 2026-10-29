@@ -32,7 +32,8 @@ function validateTransition(before,now,mode,facts){
  const a=before.target,b=now.target,online=b.status==='online'&&b.pid>0;
  if(mode==='capture'||mode==='unchanged'||mode==='restarted')check(online&&now.healthy&&facts.listener==='owned');
  if(mode==='unchanged')check(equal(a,b));
- if(mode==='restarted')check(b.pid!==a.pid&&b.startTicks!==a.startTicks&&b.restarts>a.restarts&&!facts.originalAlive);
+ // PM2 7.0.3 increments restart_time for online restart, but not stop then restart.
+ if(mode==='restarted')check(b.pid!==a.pid&&b.startTicks!==a.startTicks&&b.restarts>=a.restarts&&!facts.originalAlive);
  if(mode==='stopped'||(mode==='recoverable'&&!online))check(b.pid===0&&['stopped','errored'].includes(b.status)&&!facts.originalAlive&&facts.listener==='absent');
  if(mode==='recoverable'&&online)check(['owned','absent'].includes(facts.listener)&&(b.pid===a.pid||!facts.originalAlive));
  return true;
