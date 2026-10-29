@@ -20,6 +20,8 @@ function checkDependencies(entry,release){
  for(const name of Object.keys(pkg.dependencies||{}))if(!fs.realpathSync(req.resolve(name)).startsWith(root))throw Error('Dependency escaped retained release');
 }
 function indexDigest(dir){return require('node:crypto').createHash('sha256').update(fs.readFileSync(path.join(dir,'index.html'))).digest('hex');}
+function reserve(base){const s=fs.statfsSync(base);if(s.bavail*s.bsize<2147483648)throw Error('Insufficient pre-build disk reserve');}
+function syncPaths(files){for(const file of files){const fd=fs.openSync(file,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}}
 function spaceBudget(base,previous,next){
  const size=dir=>{let total=0;for(const e of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,e.name);const s=fs.lstatSync(p);total+=e.isDirectory()?size(p):Math.ceil(s.size/512)*512+512;}return total;};
  const stat=fs.statfsSync(base);
@@ -32,5 +34,7 @@ if(require.main===module){try{
  else if(mode==='dependencies')checkDependencies(...args);
  else if(mode==='index-digest')console.log(indexDigest(...args));
  else if(mode==='space')spaceBudget(...args);
+ else if(mode==='reserve')reserve(...args);
+ else if(mode==='sync')syncPaths(args);
  else throw Error('Unknown release file operation');
 }catch{console.error('Release artifact safety check failed');process.exitCode=1;}}

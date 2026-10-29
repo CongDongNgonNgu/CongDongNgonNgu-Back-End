@@ -20,6 +20,7 @@ rollback="$base/.cdnn-rollback-$sha-$run"
 test ! -e "$candidate" && test ! -L "$candidate"
 test ! -e "$rollback" && test ! -L "$rollback"
 export PM2_HOME=/home/cdnn-deploy/.pm2
+node scripts/deploy/release-assets.cjs reserve "$base"
 npm ci --include=dev
 npm run build
 npm audit --omit=dev --audit-level=moderate
@@ -74,6 +75,7 @@ recover() {
 # Durable intent precedes stop/exchange; retain all source, dependencies and old dist.
 printf '{"sha":"%s","old_inode":"%s","new_inode":"%s","candidate":"%s"}\n' "$sha" "$old_inode" "$new_inode" "$candidate" > "$release/activation-intent.json"
 node scripts/deploy/runtime-snapshot.cjs unchanged "$release/runtime.before.json"
+node scripts/deploy/release-assets.cjs sync "$release/activation-intent.json" "$release" "$base"
 trap recover EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM

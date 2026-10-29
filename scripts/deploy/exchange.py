@@ -15,3 +15,9 @@ renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char
 renameat2.restype = ctypes.c_int
 if renameat2(-100, os.fsencode(a), -100, os.fsencode(b), 2) != 0:
     raise SystemExit('Atomic exchange failed, errno=' + str(ctypes.get_errno()))
+
+parent_fd = os.open(os.path.dirname(a), os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(parent_fd)
+finally:
+    os.close(parent_fd)
