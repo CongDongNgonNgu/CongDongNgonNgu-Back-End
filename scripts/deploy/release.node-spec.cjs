@@ -2,7 +2,7 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {spawnSync}=require('node:child_process');
-const backend=__dirname.includes('backend');
+const backend=fs.existsSync(path.join(__dirname,'runtime-snapshot.cjs'));
 const cases=backend?['none','build','health','swap','stop','restart','drift']:['none','build','health','swap'];
 for(const failure of cases)test('real-directory release and recovery: '+failure,{skip:process.platform!=='linux'},()=>{
  const base=fs.mkdtempSync(path.join(os.tmpdir(),'cdnn-dir-release-'));
