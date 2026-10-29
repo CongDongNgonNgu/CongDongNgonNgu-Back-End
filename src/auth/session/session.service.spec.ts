@@ -66,6 +66,32 @@ describe('SessionService', () => {
     ).rejects.toMatchObject({ code: 'AUTH_CSRF_INVALID', httpStatus: 403 });
   });
 
+  it('keeps production refresh HttpOnly, Secure and API-host-only', async () => {
+    const config = createConfig();
+    config.set('app.environment', 'production');
+    const repository = new InMemoryIdentityRepository();
+    const sessions = new SessionService(repository, new AccessTokenService(config), config);
+    const target = response();
+    await sessions.issue(await createUser(repository), target, NOW);
+    const refresh = target.cookies.find(value => value.startsWith('cdn_refresh='))!;
+    expect(refresh).toContain('HttpOnly');
+    expect(refresh).toContain('Secure');
+    expect(refresh).toContain('SameSite=Lax');
+    expect(refresh).toContain('Path=/api/v1/auth');
+    for (const cookie of target.cookies) expect(cookie).not.toMatch(/Domain=/i);
+    expect(target.cookies.find(value => value.startsWith('cdn_csrf='))).toContain('Secure');
+  });
+
+  it('rejects expired refresh sessions even with matching CSRF', async () => {
+    const repository = new InMemoryIdentityRepository();
+    const sessions = createSessionService(repository);
+    const target = response();
+    await sessions.issue(await createUser(repository), target, NOW);
+    await expect(sessions.refresh(cookieRequest(cookieValue(target.cookies, 'cdn_refresh'),
+      cookieValue(target.cookies, 'cdn_csrf')), response(), new Date(NOW.getTime() + 2592000_000)))
+      .rejects.toMatchObject({ code: 'AUTH_SESSION_EXPIRED' });
+  });
+
   it('rejects an expired access token even when its signature is valid', async () => {
     const config = createConfig();
     const accessTokens = new AccessTokenService(config);

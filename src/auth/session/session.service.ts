@@ -154,6 +154,12 @@ export class SessionService {
   }
 
   csrfToken(request: Request): string | null {
+    // Token delivery must fail closed even if CORS is bypassed by a non-browser client.
+    const origin = request.headers.origin;
+    const origins = this.config.get<AppRuntimeConfig>('app')?.corsOrigins;
+    if (!origin || !origins?.includes(origin)) {
+      throw new SessionFailure('AUTH_CSRF_INVALID', 403, 'Request origin is not allowed');
+    }
     return readCookie(request, this.authConfig().csrfCookieName);
   }
 
@@ -247,19 +253,23 @@ export class SessionService {
 function readCookie(request: Request, name: string): string | null {
   const raw = request.headers.cookie;
   if (!raw) return null;
+  let result: string | null = null;
+  let found = false;
   for (const segment of raw.split(';')) {
     const separator = segment.indexOf('=');
     if (separator < 0) continue;
     const key = segment.slice(0, separator).trim();
     if (key !== name) continue;
+    if (found) throw new SessionFailure('AUTH_CSRF_INVALID', 403, 'Ambiguous session cookies');
+    found = true;
     const value = segment.slice(separator + 1).trim();
     try {
-      return decodeURIComponent(value);
+      result = decodeURIComponent(value);
     } catch {
       return null;
     }
   }
-  return null;
+  return result;
 }
 
 function serializeCookie(
