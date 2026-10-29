@@ -87,4 +87,5 @@ node scripts/deploy/release-assets.cjs dependencies "$base/dist/main.js" "$relea
 pm2 restart cdnn-backend > /dev/null
 verify
 record verified
+printf 'DEPLOYED_SHA=%s RESULT=verified\n' "$sha"
 trap - EXIT INT TERM
