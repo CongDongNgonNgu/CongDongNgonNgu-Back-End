@@ -1,5 +1,5 @@
 ﻿import { spawn } from 'node:child_process';
-import { readFileSync, statSync, readdirSync, createReadStream, unlinkSync } from 'node:fs';
+import { readFileSync, statSync, lstatSync, readdirSync, createReadStream, unlinkSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -10,6 +10,8 @@ import { stripImageMetadata } from '../processing/strip-image-metadata';
 import {sampleLinuxHighWater,parseCompletedNativePeak,measuredNativeInvocation} from './native-memory';
 import {NativeDiagnosticFailure,diagnoseNativeFailure,type NativeDiagnostic} from './native-diagnostic';
 import {verifyBundledNativeTime} from './native-time';
+import {verifyMinimalNativeDistribution} from './native-distribution';
+import {assertMinimalNativeHost,assertMinimalNativeManifest,assertMinimalNativeBinary,assertMinimalNativeVersion,MINIMAL_NATIVE} from './native-identity';
 const directory = process.argv[2], processors = process.argv[3];
 const declaration = { filename: 'source.mp4', mime: 'video/mp4' };
 let nativePid: number | undefined;
@@ -70,19 +72,23 @@ async function command(executable: string, args: string[]): Promise<string> {
 }
 async function main(): Promise<void> {
  if (!directory || resolve(directory)!==directory || !processors || resolve(processors)!==processors) throw Error('PROCESSING_UNAVAILABLE');
+ if(process.platform!=='win32')assertMinimalNativeHost(process.platform,process.arch,(process.report.getReport() as {header:{glibcVersionRuntime?:unknown}}).header.glibcVersionRuntime);
  if(process.platform==='linux')timeExecutable=(await verifyBundledNativeTime(processors)).executable;
  const windows=process.platform==='win32', manifest=JSON.parse(await readFile(join(processors,'manifest.json'),'utf8'));
- const approvedArchive=windows?'e7bca5e004c2d13bcb374c3a4bd30c4588b08607a4b1a01369341a4f9678dff3':'5ae5939260c72671383f0a0d8785695bfe06c94c27d4daac2e63eb8576417927';
- if(manifest.sha256!==approvedArchive || manifest.version!=='n9.0.2-29-g6dfaba896f')throw Error('PROCESSING_UNAVAILABLE');
+ if(windows){if(manifest.sha256!=='e7bca5e004c2d13bcb374c3a4bd30c4588b08607a4b1a01369341a4f9678dff3' || manifest.version!=='n9.0.2-29-g6dfaba896f')throw Error('PROCESSING_UNAVAILABLE');}
+ else {assertMinimalNativeManifest(manifest,process.platform,process.arch);await verifyMinimalNativeDistribution(processors);}
  const executable=(name:string)=>join(processors,'bin',name+(windows?'.exe':''));
- for(const name of ['ffmpeg','ffprobe']) {
+ for(const name of ['ffmpeg','ffprobe'] as const) {
   stage=name==='ffmpeg'?'VERIFY_FFMPEG':'VERIFY_FFPROBE';
-  const relative='bin/'+name+(windows?'.exe':''), file=executable(name), info=statSync(file);
-  if(!info.isFile()||info.size>160*1024*1024)throw Error('PROCESSING_UNAVAILABLE');
+  const relative='bin/'+name+(windows?'.exe':''), file=executable(name), info=windows?statSync(file):lstatSync(file);
+  if(!info.isFile()||info.size>160*1024*1024||(!windows&&info.size!==MINIMAL_NATIVE[name].bytes))throw Error('PROCESSING_UNAVAILABLE');
   const hash=createHash('sha256');for await(const chunk of createReadStream(file))hash.update(chunk);
-  if(hash.digest('hex')!==manifest.binaryHashes?.[relative])throw Error('PROCESSING_UNAVAILABLE');
+  const digest=hash.digest('hex');
+  if(windows){if(digest!==manifest.binaryHashes?.[relative])throw Error('PROCESSING_UNAVAILABLE');}
+  else assertMinimalNativeBinary(name,info.size,digest);
   const version=await command(file,['-version']);
-  if(!version.startsWith(name+' version n9.0.2-29-g6dfaba896f-20261020 ')||!version.includes('--disable-libx264')||version.includes('--enable-gpl')||version.includes('--enable-nonfree'))throw Error('PROCESSING_UNAVAILABLE');
+  if(windows){if(!version.startsWith(name+' version n9.0.2-29-g6dfaba896f-20261020 ')||!version.includes('--disable-libx264')||version.includes('--enable-gpl')||version.includes('--enable-nonfree'))throw Error('PROCESSING_UNAVAILABLE');}
+  else assertMinimalNativeVersion(name,version);
  }
  const input=join(directory,'input.mp4'), normalized=join(directory,'normalized.mp4'), thumbnail=join(directory,'thumbnail.jpg');
  const bytes=await readFile(input), structure=validateMp4Structure(bytes,declaration);
