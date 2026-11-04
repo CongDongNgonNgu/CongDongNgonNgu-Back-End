@@ -141,3 +141,52 @@ it("denies workload when a visible ancestor has less headroom", async () => {
     executeSmoke([job()], observations, new AbortController().signal),
   ).rejects.toThrow("PHASE30_PROBE_HEADROOM");
 });
+
+it("retains partial observations on failure without leaking the underlying error", async () => {
+  const first = job(),
+    second = job("video"),
+    observations = io(),
+    record = jest.fn();
+  (first.run as jest.Mock).mockRejectedValue(Error("PRIVATE_PROCESS_OUTPUT"));
+  await expect(
+    executeSmoke(
+      [first, second],
+      { ...observations, record },
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow();
+  expect(record).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: "partial-observations",
+      failedStage: "jpeg",
+      completedStages: [],
+      cgroupPeakBytes: baseline.current,
+      lastObservedLeafOomDelta: 0,
+    }),
+  );
+  expect(JSON.stringify(record.mock.calls)).not.toContain(
+    "PRIVATE_PROCESS_OUTPUT",
+  );
+  expect(second.run).not.toHaveBeenCalled();
+});
+it("retains a changed OOM counter instead of reporting its previous zero observation", async () => {
+  const observations = io(),
+    record = jest.fn();
+  observations.sample
+    .mockResolvedValueOnce(baseline)
+    .mockResolvedValue({ ...baseline, oom: 1 });
+  await expect(
+    executeSmoke(
+      [job()],
+      { ...observations, record },
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("PHASE30_PROBE_RESOURCE_UNVERIFIED");
+  expect(record).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: "partial-observations",
+      failedStage: null,
+      lastObservedLeafOomDelta: 1,
+    }),
+  );
+});
