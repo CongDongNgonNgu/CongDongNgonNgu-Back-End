@@ -1,3 +1,4 @@
+import { advanceNativeProgress, type NativeProgress } from './native-progress';
 ﻿import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, chmod, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,8 @@ import { validateMp4Structure } from '../video/mp4';
 import { validateImageStructure } from '../validation/image';
 import {sampleLinuxHighWaterAsync,waitForLinuxGroupExit} from './native-memory';
 import {parseNativeDiagnostic,formatNativeDiagnostic,diagnoseNativeFailure,NativeDiagnosticFailure,type NativeDiagnostic} from './native-diagnostic';
-export class VideoProcessingError extends Error { readonly producerQuiesced:boolean;constructor(readonly code:'PROCESSING_INVALID'|'PROCESSING_UNAVAILABLE'|'PROCESSING_CANCELLED'|'PROCESSING_TIMEOUT'|'PROCESSING_MEMORY_LIMIT'|'PROCESSING_UNQUIESCED',diagnostic?:NativeDiagnostic){const safe=parseNativeDiagnostic(diagnostic);super(code+(safe?' ['+formatNativeDiagnostic(safe)+']':''));this.name='VideoProcessingError';this.producerQuiesced=code!=='PROCESSING_UNQUIESCED';} }
+export interface NativeFailureObservation {progress:NativeProgress|null;lastProgressAgeMs:number|null;peakRssBytes:number|null;nativeRssObserved:boolean;}
+export class VideoProcessingError extends Error { readonly producerQuiesced:boolean;readonly diagnostic:NativeDiagnostic|null;constructor(readonly code:'PROCESSING_INVALID'|'PROCESSING_UNAVAILABLE'|'PROCESSING_CANCELLED'|'PROCESSING_TIMEOUT'|'PROCESSING_MEMORY_LIMIT'|'PROCESSING_UNQUIESCED',diagnostic?:NativeDiagnostic|null,readonly observation?:NativeFailureObservation){const safe=parseNativeDiagnostic(diagnostic);super(code+(safe?' ['+formatNativeDiagnostic(safe)+']':''));this.name='VideoProcessingError';this.diagnostic=safe;this.producerQuiesced=code!=='PROCESSING_UNQUIESCED';} }
 export interface ProcessedVideo {normalized:Buffer;thumbnail:Buffer;width:number;height:number;durationSeconds:number;thumbnailWidth:number;thumbnailHeight:number;peakRssBytes:number;nativeRssObserved:boolean}
 interface Options {processorsDirectory:string;temporaryRoot?:string;workerFile?:string;deadlineMs?:number}
 /** Disabled infrastructure port. Watchdogs and file/pipe restrictions do not constitute OS memory/network isolation. */
@@ -46,6 +48,8 @@ export class NativeVideoProcessor {
    if(process.platform==='win32'&&process.env.SystemRoot)environment.SystemRoot=process.env.SystemRoot;
    const child:ChildProcess=spawn(process.execPath,['--max-old-space-size=64','--max-semi-space-size=4',this.worker,directory,this.processors],{shell:false,windowsHide:true,cwd:directory,env:environment,detached:process.platform==='linux',stdio:['ignore','ignore','ignore','ipc']});
    let failure:VideoProcessingError|undefined,peak=0,nativeRssObserved=false,finished=false,sampling=false,nativePid:number|undefined,killIssued=false;
+   let progress:NativeProgress|undefined,progressAt:number|undefined;
+   const observation=():NativeFailureObservation=>({progress:progress??null,lastProgressAgeMs:progressAt===undefined?null:Math.max(0,performance.now()-progressAt),peakRssBytes:peak||null,nativeRssObserved});
    let killTask=Promise.resolve();
    const kill=()=>{
     if(killIssued)return;killIssued=true;
@@ -74,6 +78,7 @@ export class NativeVideoProcessor {
    },25);
    child.on('message',(message:any)=>{
     if(!message||typeof message!=='object'||typeof message.rss!=='number'){fail('PROCESSING_INVALID');return;}observe(message.rss);
+    if(message.progress!==undefined){const next=advanceNativeProgress(progress,message.progress);if(!next){fail('PROCESSING_INVALID',{stage:'SUPERVISOR',point:'IPC',reason:'FORMAT'});return;}progress=next;progressAt=performance.now();}
     if(message.nativePid!==undefined){if(message.nativePid===null)nativePid=undefined;else{if(!Number.isSafeInteger(message.nativePid)||message.nativePid<1){fail('PROCESSING_INVALID');return;}nativePid=message.nativePid;}}
     if(message.nativePeakRssBytes!==undefined){if(process.platform!=='linux'||!Number.isSafeInteger(message.nativePeakRssBytes)||message.nativePeakRssBytes<1){fail('PROCESSING_INVALID');return;}nativeRssObserved=true;observe(message.nativePeakRssBytes);}
     if(message.failure)fail('PROCESSING_INVALID',parseNativeDiagnostic(message.diagnostic)??{stage:'SUPERVISOR',point:'IPC',reason:'FORMAT'});
@@ -85,13 +90,13 @@ export class NativeVideoProcessor {
     if(failure||code!==0)kill();await killTask;
     if(process.platform==='linux'&&child.pid){
      if(!failure&&code===0)try{process.kill(-child.pid,'SIGKILL');}catch{/* ESRCH is checked independently below. */}
-     if(!await waitForLinuxGroupExit(child.pid)){reject(new VideoProcessingError('PROCESSING_UNQUIESCED'));return;}
+     if(!await waitForLinuxGroupExit(child.pid)){reject(new VideoProcessingError('PROCESSING_UNQUIESCED',undefined,observation()));return;}
     }
     if(process.platform==='win32'&&nativePid){
      try{process.kill(nativePid,'SIGKILL');}catch{/* Absence, not kill success, is the proof. */}
-     if(!await waitForLinuxGroupExit(nativePid,pid=>{process.kill(-pid,0);})){reject(new VideoProcessingError('PROCESSING_UNQUIESCED'));return;}
+     if(!await waitForLinuxGroupExit(nativePid,pid=>{process.kill(-pid,0);})){reject(new VideoProcessingError('PROCESSING_UNQUIESCED',undefined,observation()));return;}
     }
-    if(failure)reject(failure);else if(code!==0||!peak||(process.platform==='linux'&&!nativeRssObserved))reject(new VideoProcessingError('PROCESSING_INVALID',{stage:'SUPERVISOR',point:'WORKER_EXIT',reason:code!==0?'NONZERO':!peak?'NO_WORKER_RSS':'NO_NATIVE_RSS'}));else accept({peakRssBytes:peak,nativeRssObserved});});
+    if(failure)reject(new VideoProcessingError(failure.code,failure.diagnostic,observation()));else if(code!==0||!peak||(process.platform==='linux'&&!nativeRssObserved))reject(new VideoProcessingError('PROCESSING_INVALID',{stage:'SUPERVISOR',point:'WORKER_EXIT',reason:code!==0?'NONZERO':!peak?'NO_WORKER_RSS':'NO_NATIVE_RSS'},observation()));else accept({peakRssBytes:peak,nativeRssObserved});});
   });
  }
 }

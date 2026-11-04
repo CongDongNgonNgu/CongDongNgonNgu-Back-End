@@ -1,8 +1,17 @@
+import { lstat } from "node:fs/promises";
+import {
+  collectFailureObservations,
+  verifyExactScratchAbsent,
+  safeNativeFailureObservation,
+} from "./failure-observations";
 import type { probeIdentity } from "./guard";
 
 import { resolve } from "node:path";
 import { ImageProcessor } from "../processing/image-processor";
-import { NativeVideoProcessor } from "../video-processing/video-processor";
+import {
+  NativeVideoProcessor,
+  VideoProcessingError,
+} from "../video-processing/video-processor";
 import { ScratchDirectory } from "./scratch";
 import { selectRuntimeInputs } from "./inputs";
 import { resourceReader } from "./resources";
@@ -34,6 +43,9 @@ export async function runRuntimeSmoke(
   const abort = new AbortController();
   const scratch = new ScratchDirectory();
   let fixtureName: string | undefined;
+  let readResources: Awaited<ReturnType<typeof resourceReader>> | undefined;
+  let failed = false,
+    scratchRemoved = false;
   let root: string | undefined,
     active: ImageProcessor | NativeVideoProcessor | undefined;
   const emit = (value: object) =>
@@ -61,6 +73,7 @@ export async function runRuntimeSmoke(
   process.once("SIGTERM", terminate);
   try {
     const sample = await abortable(resourceReader(), abort.signal);
+    readResources = sample;
     root = await scratch.open(abort.signal);
     const jobs: SmokeJob[] = selectRuntimeInputs(identity.suite).map(
       (fixture) => ({
@@ -120,6 +133,9 @@ export async function runRuntimeSmoke(
       abort.signal,
     );
     await scratch.close(abort.signal);
+    scratchRemoved = true;
+    if (!root || !(await verifyExactScratchAbsent(() => lstat(root!))))
+      throw Error("PHASE30_PROBE_SHUTDOWN_UNVERIFIED");
     emit({
       status:
         identity.suite === "boundary"
@@ -131,36 +147,64 @@ export async function runRuntimeSmoke(
       deploymentHeadroom: "UNVERIFIED_HIDDEN_ANCESTORS",
     });
   } catch (error) {
+    failed = true;
     abort.abort();
-    try {
-      await boundedShutdown(active?.shutdown() ?? Promise.resolve());
-    } catch {
-      emit({
-        status: "FAIL",
-        code: "PHASE30_PROBE_SHUTDOWN_UNVERIFIED",
-        scratchCleanup: "UNVERIFIED",
-        fixture: fixtureName ?? "UNASSIGNED",
-      });
-      return;
-    }
-    const code =
+    const originalCode =
       error && typeof error === "object" && "code" in error
         ? String(error.code)
         : error instanceof Error
           ? error.message
           : "";
+    let quiesced =
+      !(error instanceof VideoProcessingError && !error.producerQuiesced) &&
+      originalCode !== "PHASE30_PROBE_SHUTDOWN_UNVERIFIED";
+    let shutdownVerified = true;
+    try {
+      await boundedShutdown(active?.shutdown() ?? Promise.resolve());
+    } catch {
+      shutdownVerified = false;
+      quiesced = false;
+    }
+    const safeCode = SAFE_CODES.has(originalCode)
+      ? originalCode
+      : "PHASE30_PROBE_FAILED";
     emit({
       status: "FAIL",
-      code: SAFE_CODES.has(code) ? code : "PHASE30_PROBE_FAILED",
+      code: shutdownVerified ? safeCode : "PHASE30_PROBE_SHUTDOWN_UNVERIFIED",
+      originalFailureCode: safeCode,
       fixture: fixtureName ?? "UNASSIGNED",
       scratchCleanup: "UNVERIFIED",
+      processorObservation:
+        error instanceof VideoProcessingError
+          ? safeNativeFailureObservation(error.observation)
+          : null,
       completeEnablement: "NOT_RUN",
       deploymentHeadroom: "UNVERIFIED_HIDDEN_ANCESTORS",
+    });
+    const observed = await collectFailureObservations(
+      {
+        resources: readResources,
+        rss: () => process.memoryUsage().rss,
+        cleanup: async () => {
+          if (!root) return false;
+          const removed = scratchRemoved || (await scratch.cleanup());
+          return (
+            removed && (await verifyExactScratchAbsent(() => lstat(root!)))
+          );
+        },
+      },
+      quiesced,
+    );
+    emit({
+      event: "post-shutdown-observations",
+      producerQuiesced: quiesced,
+      ...observed,
+      completeEnablement: "NOT_RUN",
     });
   } finally {
     clearTimeout(deadline);
     process.removeListener("SIGTERM", terminate);
     // Finite, empty-only cleanup; late creation retains its own cleanup handler.
-    await scratch.cleanup();
+    if (!failed && !scratchRemoved) await scratch.cleanup();
   }
 }

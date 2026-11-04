@@ -72,7 +72,7 @@ native('explicit pinned native synthetic pipeline (not Render acceptance)',()=>{
   try{
    await chmod(file,mode|0o200);await writeFile(file,changed);
    await expect(p.process(source,{filename:'x.mp4',mime:'video/mp4'})).rejects.toMatchObject({
-    code:'PROCESSING_INVALID',message:'PROCESSING_INVALID [BOOT/MAIN/EXCEPTION]',producerQuiesced:true,
+    code:'PROCESSING_INVALID',message:'PROCESSING_INVALID [VERIFY_DISTRIBUTION/MAIN/EXCEPTION]',producerQuiesced:true,
    });
    expect(await readdir(root)).toEqual([]);
   }finally{
