@@ -15,7 +15,7 @@ export function probeIdentity(
   platform: string,
   arch: string,
   execArgv: readonly string[],
-): { sha: string; port: number } | null {
+): { sha: string; port: number; suite: "tiny" | "boundary" } | null {
   const sha = env.PHASE30_TEST_RUNTIME_PROBE_SHA;
   if (sha === undefined) return null;
   const reject = (): never => {
@@ -55,5 +55,7 @@ export function probeIdentity(
     )
   )
     return reject();
-  return { sha, port: config.port };
+  const suite = env.PHASE30_TEST_RUNTIME_PROBE_SUITE ?? "tiny";
+  if (suite !== "tiny" && suite !== "boundary") return reject();
+  return { sha, port: config.port, suite };
 }

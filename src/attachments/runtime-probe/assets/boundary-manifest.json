@@ -1,0 +1,124 @@
+{
+  "scope": "NEAR_LIMIT_SYNTHETIC_ONLY",
+  "provenance": "OFFLINE_SYNTHETIC_NO_USER_MEDIA",
+  "imageGenerator": {
+    "node": "v24.18.0",
+    "sharpVersions": {
+      "aom": "3.15.1",
+      "archive": "3.8.9",
+      "cairo": "1.18.6",
+      "cgif": "0.5.4",
+      "exif": "0.6.26",
+      "expat": "2.8.5",
+      "ffi": "3.8.0",
+      "fontconfig": "2.18.3",
+      "freetype": "2.14.3",
+      "fribidi": "1.0.17",
+      "glib": "2.90.0",
+      "harfbuzz": "14.5.0",
+      "heif": "1.23.5",
+      "highway": "1.4.0",
+      "imagequant": "2.4.1",
+      "lcms": "2.19.1",
+      "mozjpeg": "0826579",
+      "pango": "1.58.2",
+      "pixman": "0.46.4",
+      "png": "1.6.58",
+      "proxy-libintl": "0.5",
+      "rsvg": "2.63.2",
+      "tiff": "4.7.2",
+      "uhdr": "2.0.2",
+      "vips": "8.18.7",
+      "webp": "1.6.0",
+      "xml2": "2.15.4",
+      "zlib-ng": "2.3.3",
+      "sharp": "0.35.5"
+    },
+    "seed": 30002,
+    "algorithm": "xorshift32; 9000000 RGB bytes low8 per step; PNG uses first3000000 low7 grayscale bytes expanded by sharp default sRGB",
+    "jpeg": {
+      "quality": 82,
+      "chromaSubsampling": "4:4:4",
+      "progressive": false
+    },
+    "png": {
+      "compressionLevel": 9,
+      "adaptiveFiltering": false,
+      "palette": false
+    },
+    "webp": {
+      "quality": 100,
+      "effort": 6
+    }
+  },
+  "videoProvenance": {
+    "source": "phase30-feasibility/video-expanded/720p15s-complex.mp4",
+    "recipe": "Workspace scripts/phase30-media-feasibility/video-benchmark.cjs complex case",
+    "generationPlatform": "win32",
+    "historicalReportDate": "2026-10-21T06:58:29.985Z",
+    "generatorDistribution": "ffmpeg-n9.0.2-29-g6dfaba896f-win64-lgpl-9.0",
+    "nativeAcceptance": "PENDING_CURRENT_LINUX_AND_RENDER"
+  },
+  "limitations": [
+    "Boundary fixtures are not proof of the universally hardest legal input.",
+    "Structural proof is not full native decoding or runtime acceptance.",
+    "No fixture generation occurs at application start."
+  ],
+  "fixtures": [
+    {
+      "file": "boundary.jpeg",
+      "mime": "image/jpeg",
+      "bytes": 3990972,
+      "sha256": "a19debbdeaa8233d49d3e3f773fd68055316c34862f616b5bf4f666591726341",
+      "expected": {
+        "format": "jpeg",
+        "width": 2000,
+        "height": 1500,
+        "metadataBytes": 0
+      }
+    },
+    {
+      "file": "boundary.png",
+      "mime": "image/png",
+      "bytes": 3737468,
+      "sha256": "31b7d63b3f735e1323b3398ca0fbfe25f3cc494c665897c477db6e3b793d13fb",
+      "expected": {
+        "format": "png",
+        "width": 2000,
+        "height": 1500,
+        "metadataBytes": 9
+      }
+    },
+    {
+      "file": "boundary.webp",
+      "mime": "image/webp",
+      "bytes": 3328396,
+      "sha256": "412f033091125932aaa9c3f2bfb2955c732ec237616885da5dcb07c265dc7e8a",
+      "expected": {
+        "format": "webp",
+        "width": 2000,
+        "height": 1500,
+        "metadataBytes": 0
+      }
+    },
+    {
+      "file": "boundary.mp4",
+      "mime": "video/mp4",
+      "bytes": 2918996,
+      "sha256": "598f6d9aa585d9e2922bc28ef919960f6bd57ad14244051ba132e6ff97acfd98",
+      "expected": {
+        "structuralOnly": true,
+        "requiresNativeValidation": true,
+        "width": 1280,
+        "height": 720,
+        "durationSeconds": 15,
+        "frameRate": 24,
+        "videoSamples": 360,
+        "audioSamples": 705,
+        "seiUnits": 22,
+        "audioChannels": 1,
+        "audioSampleRate": 48000
+      }
+    }
+  ]
+}

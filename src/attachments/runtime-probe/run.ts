@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
+import type { probeIdentity } from "./guard";
 
 import { resolve } from "node:path";
 import { ImageProcessor } from "../processing/image-processor";
 import { NativeVideoProcessor } from "../video-processing/video-processor";
 import { ScratchDirectory } from "./scratch";
-import { SMOKE_FIXTURES } from "./fixtures";
+import { selectRuntimeInputs } from "./inputs";
 import { resourceReader } from "./resources";
 import { observeHealth } from "./health";
 import {
@@ -15,6 +15,7 @@ import {
 } from "./smoke";
 const SCOPE = "BASIC_PROCESSOR_RUNTIME_SMOKE_ONLY";
 const SAFE_CODES = new Set([
+  "PHASE30_PROBE_FIXTURE_UNVERIFIED",
   "PROCESSING_INVALID",
   "PROCESSING_TIMEOUT",
   "PROCESSING_MEMORY_LIMIT",
@@ -27,18 +28,23 @@ const SAFE_CODES = new Set([
   "PHASE30_PROBE_HEALTH",
   "PHASE30_PROBE_SHUTDOWN_UNVERIFIED",
 ]);
-export async function runRuntimeSmoke(identity: {
-  sha: string;
-  port: number;
-}): Promise<void> {
+export async function runRuntimeSmoke(
+  identity: NonNullable<ReturnType<typeof probeIdentity>>,
+): Promise<void> {
   const abort = new AbortController();
   const scratch = new ScratchDirectory();
+  let fixtureName: string | undefined;
   let root: string | undefined,
     active: ImageProcessor | NativeVideoProcessor | undefined;
   const emit = (value: object) =>
     console.log(
       "PHASE30_RUNTIME_SMOKE=" +
-        JSON.stringify({ scope: SCOPE, sha: identity.sha, ...value }),
+        JSON.stringify({
+          scope:
+            identity.suite === "boundary" ? "NEAR_LIMIT_SYNTHETIC_ONLY" : SCOPE,
+          sha: identity.sha,
+          ...value,
+        }),
     );
   const deadline = setTimeout(() => abort.abort(), 150000);
   let exitTimer: NodeJS.Timeout | undefined;
@@ -56,24 +62,39 @@ export async function runRuntimeSmoke(identity: {
   try {
     const sample = await abortable(resourceReader(), abort.signal);
     root = await scratch.open(abort.signal);
-    const jobs: SmokeJob[] = SMOKE_FIXTURES.map((fixture) => ({
-      name: fixture.name,
-      run: async (signal) => {
-        const bytes = Buffer.from(fixture.base64, "base64");
-        if (createHash("sha256").update(bytes).digest("hex") !== fixture.sha256)
-          throw Error("PHASE30_PROBE_RESOURCE_UNVERIFIED");
-        if (fixture.name === "video") {
-          const processor = new NativeVideoProcessor({
-            processorsDirectory: resolve(__dirname, "../processors"),
-            temporaryRoot: root!,
-          });
+    const jobs: SmokeJob[] = selectRuntimeInputs(identity.suite).map(
+      (fixture) => ({
+        name: fixture.name,
+        run: async (signal) => {
+          fixtureName = fixture.name;
+          emit({ event: "fixture-start", name: fixture.name });
+          const bytes = await fixture.read(signal);
+          if (fixture.name === "video") {
+            const processor = new NativeVideoProcessor({
+              processorsDirectory: resolve(__dirname, "../processors"),
+              temporaryRoot: root!,
+            });
+            active = processor;
+            const result = await processor.process(bytes, fixture, signal);
+            if (
+              !result.nativeRssObserved ||
+              result.width !== fixture.width ||
+              result.height !== fixture.height ||
+              result.durationSeconds !== fixture.durationSeconds
+            )
+              throw Error("PHASE30_PROBE_RESOURCE_UNVERIFIED");
+            return {
+              workerRssBytes: result.peakRssBytes,
+              normalizedBytes: result.normalized.length,
+              thumbnailBytes: result.thumbnail.length,
+            };
+          }
+          const processor = new ImageProcessor({ temporaryRoot: root! });
           active = processor;
           const result = await processor.process(bytes, fixture, signal);
           if (
-            !result.nativeRssObserved ||
-            result.width !== 128 ||
-            result.height !== 72 ||
-            result.durationSeconds !== 0.5
+            result.width !== fixture.width ||
+            result.height !== fixture.height
           )
             throw Error("PHASE30_PROBE_RESOURCE_UNVERIFIED");
           return {
@@ -81,23 +102,13 @@ export async function runRuntimeSmoke(identity: {
             normalizedBytes: result.normalized.length,
             thumbnailBytes: result.thumbnail.length,
           };
-        }
-        const processor = new ImageProcessor({ temporaryRoot: root! });
-        active = processor;
-        const result = await processor.process(bytes, fixture, signal);
-        if (result.width !== 32 || result.height !== 24)
-          throw Error("PHASE30_PROBE_RESOURCE_UNVERIFIED");
-        return {
-          workerRssBytes: result.peakRssBytes,
-          normalizedBytes: result.normalized.length,
-          thumbnailBytes: result.thumbnail.length,
-        };
-      },
-      stop: async () => {
-        await active?.shutdown();
-        active = undefined;
-      },
-    }));
+        },
+        stop: async () => {
+          await active?.shutdown();
+          active = undefined;
+        },
+      }),
+    );
     const result = await executeSmoke(
       jobs,
       {
@@ -110,7 +121,10 @@ export async function runRuntimeSmoke(identity: {
     );
     await scratch.close(abort.signal);
     emit({
-      status: "PASS_TINY_FIXTURES_ONLY",
+      status:
+        identity.suite === "boundary"
+          ? "PASS_BOUNDARY_FIXTURES_ONLY"
+          : "PASS_TINY_FIXTURES_ONLY",
       ...result,
       scratchResidual: 0,
       completeEnablement: "NOT_RUN",
@@ -125,6 +139,7 @@ export async function runRuntimeSmoke(identity: {
         status: "FAIL",
         code: "PHASE30_PROBE_SHUTDOWN_UNVERIFIED",
         scratchCleanup: "UNVERIFIED",
+        fixture: fixtureName ?? "UNASSIGNED",
       });
       return;
     }
@@ -137,6 +152,7 @@ export async function runRuntimeSmoke(identity: {
     emit({
       status: "FAIL",
       code: SAFE_CODES.has(code) ? code : "PHASE30_PROBE_FAILED",
+      fixture: fixtureName ?? "UNASSIGNED",
       scratchCleanup: "UNVERIFIED",
       completeEnablement: "NOT_RUN",
       deploymentHeadroom: "UNVERIFIED_HIDDEN_ANCESTORS",

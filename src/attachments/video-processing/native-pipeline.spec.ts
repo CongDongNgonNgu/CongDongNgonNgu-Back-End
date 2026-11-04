@@ -83,6 +83,21 @@ native('explicit pinned native synthetic pipeline (not Render acceptance)',()=>{
  },20000);
  afterAll(async()=>{for(const directory of [root,compiled])if(directory){const p=resolve(directory);if(!(p.startsWith(resolve(tmpdir())+sep)||p.startsWith(process.cwd()+sep+'.video-worker-test-')))throw Error('unsafe cleanup');await rm(p,{recursive:true,force:true});}});
  const create=(deadlineMs?:number)=>new NativeVideoProcessor({processorsDirectory:processors,temporaryRoot:root,workerFile:join(compiled,'video-processing','video-worker.js'),deadlineMs});
+ it('fully processes the hash-bound fifteen-second 720p boundary fixture with AAC under unchanged limits',async()=>{
+  const bytes=await readFile(join(__dirname,'../runtime-probe/assets/boundary.mp4'));
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe('598f6d9aa585d9e2922bc28ef919960f6bd57ad14244051ba132e6ff97acfd98');
+  const p=create();
+  try {
+   const result=await p.process(bytes,{filename:'boundary.mp4',mime:'video/mp4'});
+   expect(result.width).toBe(1280);expect(result.height).toBe(720);expect(result.durationSeconds).toBe(15);
+   expect(result.nativeRssObserved).toBe(process.platform==='linux');expect(result.peakRssBytes).toBeGreaterThan(0);expect(result.peakRssBytes).toBeLessThanOrEqual(192*1024*1024);
+   expect(result.normalized.length).toBeLessThanOrEqual(3*1024*1024);
+   expect(validateMp4Structure(result.normalized,{filename:'normalized.mp4',mime:'video/mp4'})).toMatchObject({width:1280,height:720,durationSeconds:15,frameRate:24,seiUnits:0,audioChannels:1,audioSampleRate:48000});
+   expect(result.normalized.includes(Buffer.from('PHASE30_SYNTHETIC'))).toBe(false);
+   expect(result.thumbnail.length).toBeLessThanOrEqual(262144);
+  } finally {await p.shutdown();}
+  expect(await readdir(root)).toEqual([]);
+ },20000);
  const decodedSei=async(bytes:Buffer)=>{
   const file=join(compiled,'sei-probe-'+randomUUID()+'.mp4');await writeFile(file,bytes,{flag:'wx'});
   try{
