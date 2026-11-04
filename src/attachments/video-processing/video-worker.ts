@@ -1,3 +1,4 @@
+import {NativeProgressClock,type NativeProgressStage} from './native-progress';
 ﻿import { spawn } from 'node:child_process';
 import { readFileSync, statSync, lstatSync, readdirSync, createReadStream, unlinkSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -17,9 +18,10 @@ const declaration = { filename: 'source.mp4', mime: 'video/mp4' };
 let nativePid: number | undefined;
 let timeExecutable:string|undefined;
 let launcherPid:number|undefined,completedNativePeak=0,launcherPeak=0,commandSequence=0;
+const progressClock=new NativeProgressClock();
 let stage:NativeDiagnostic['stage']='BOOT',terminating=false;
 const observe=<T>(point:NativeDiagnostic['point'],work:()=>T):T=>{try{return work();}catch(error){throw new NativeDiagnosticFailure(diagnoseNativeFailure(error,stage,point));}};
-const snapshot = (): void => {
+const snapshot = (includeProgress=false): void => {
  let rss = process.memoryUsage().rss;
  if (process.platform === 'linux') {
   const memory=(pid:number,exited=false)=>sampleLinuxHighWater(pid,path=>readFileSync(path,'utf8'),exited);
@@ -38,9 +40,11 @@ const snapshot = (): void => {
  const files = observe('SCRATCH_LIST',()=>readdirSync(directory)); let disk = 0;
  for (const name of files) { const s = observe('SCRATCH_STAT',()=>statSync(join(directory,name))); if (!s.isFile()) throw new NativeDiagnosticFailure({stage,point:'SCRATCH_STAT',reason:'FORMAT'}); disk += s.size; }
  if (disk > 64*1024*1024) throw new NativeDiagnosticFailure({stage,point:'SCRATCH_LIMIT',reason:'LIMIT'});
- process.send?.({rss,nativePid:nativePid??null,...(completedNativePeak?{nativePeakRssBytes:completedNativePeak}:{})});
+ const progress=includeProgress?progressClock.snapshot():null;
+ process.send?.({rss,nativePid:nativePid??null,...(completedNativePeak?{nativePeakRssBytes:completedNativePeak}:{}),...(progress?{progress}:{})});
  if (rss > 192*1024*1024) throw new NativeDiagnosticFailure({stage,point:'MEMORY_LIMIT',reason:'LIMIT'});
 };
+const transition=(next:NativeProgressStage)=>{progressClock.enter(next);stage=next;snapshot(true);};
 const heartbeat = setInterval(()=>{try {snapshot();}catch(error){reportFailure(error,'HEARTBEAT');}},25);
 function reportFailure(error:unknown,point:NativeDiagnostic['point']):void{
  if(terminating)return;terminating=true;clearInterval(heartbeat);
@@ -73,13 +77,14 @@ async function command(executable: string, args: string[]): Promise<string> {
 async function main(): Promise<void> {
  if (!directory || resolve(directory)!==directory || !processors || resolve(processors)!==processors) throw Error('PROCESSING_UNAVAILABLE');
  if(process.platform!=='win32')assertMinimalNativeHost(process.platform,process.arch,(process.report.getReport() as {header:{glibcVersionRuntime?:unknown}}).header.glibcVersionRuntime);
- if(process.platform==='linux')timeExecutable=(await verifyBundledNativeTime(processors)).executable;
+ if(process.platform==='linux'){transition('VERIFY_TIME');timeExecutable=(await verifyBundledNativeTime(processors)).executable;}
+ transition('VERIFY_DISTRIBUTION');
  const windows=process.platform==='win32', manifest=JSON.parse(await readFile(join(processors,'manifest.json'),'utf8'));
  if(windows){if(manifest.sha256!=='e7bca5e004c2d13bcb374c3a4bd30c4588b08607a4b1a01369341a4f9678dff3' || manifest.version!=='n9.0.2-29-g6dfaba896f')throw Error('PROCESSING_UNAVAILABLE');}
  else {assertMinimalNativeManifest(manifest,process.platform,process.arch);await verifyMinimalNativeDistribution(processors);}
  const executable=(name:string)=>join(processors,'bin',name+(windows?'.exe':''));
  for(const name of ['ffmpeg','ffprobe'] as const) {
-  stage=name==='ffmpeg'?'VERIFY_FFMPEG':'VERIFY_FFPROBE';
+  transition(name==='ffmpeg'?'VERIFY_FFMPEG':'VERIFY_FFPROBE');
   const relative='bin/'+name+(windows?'.exe':''), file=executable(name), info=windows?statSync(file):lstatSync(file);
   if(!info.isFile()||info.size>160*1024*1024||(!windows&&info.size!==MINIMAL_NATIVE[name].bytes))throw Error('PROCESSING_UNAVAILABLE');
   const hash=createHash('sha256');for await(const chunk of createReadStream(file))hash.update(chunk);
@@ -91,26 +96,27 @@ async function main(): Promise<void> {
   else assertMinimalNativeVersion(name,version);
  }
  const input=join(directory,'input.mp4'), normalized=join(directory,'normalized.mp4'), thumbnail=join(directory,'thumbnail.jpg');
+ transition('INPUT_VALIDATE');
  const bytes=await readFile(input), structure=validateMp4Structure(bytes,declaration);
  const base=['-hide_banner','-nostdin','-y','-v','error','-threads','1','-filter_threads','1','-filter_complex_threads','1','-max_alloc','33554432','-xerror','-err_detect','explode'];
  const probe=async(file:string,output=false)=>inspectProbe(JSON.parse(await command(executable('ffprobe'),['-v','error','-protocol_whitelist','file,pipe','-threads','1','-max_alloc','33554432','-show_streams','-show_format','-show_chapters','-of','json',file])),output);
- stage='SOURCE_PROBE';const source=await probe(input);
+ transition('SOURCE_PROBE');const source=await probe(input);
  if(source.width!==structure.width||source.height!==structure.height||source.frameRate!==structure.frameRate)throw Error('PROCESSING_INVALID');
  const decode=async(file:string)=>command(executable('ffmpeg'),[...base,'-protocol_whitelist','file,pipe','-i',file,'-map','0:v:0','-map','0:a:0?','-sn','-dn','-threads','1','-f','null','-']);
- stage='SOURCE_DECODE';await decode(input);
- stage='NORMALIZE';
+ transition('SOURCE_DECODE');await decode(input);
+ transition('NORMALIZE');
  await command(executable('ffmpeg'),[...base,'-protocol_whitelist','file,pipe','-i',input,'-map','0:v:0','-map','0:a:0?','-map_metadata','-1','-map_metadata:s','-1','-map_chapters','-1','-metadata:s:v:0','language=und','-metadata:s:v:0','handler_name=VideoHandler',...(structure.audioSamples?['-metadata:s:a:0','language=und','-metadata:s:a:0','handler_name=SoundHandler']:[]),'-c','copy','-bsf:v','filter_units=remove_types=6','-movflags','+faststart',normalized]);
- stage='OUTPUT_VALIDATE';const normal=await readFile(normalized), parsed=validateMp4Structure(normal,declaration);
+ transition('OUTPUT_VALIDATE');const normal=await readFile(normalized), parsed=validateMp4Structure(normal,declaration);
  if(parsed.seiUnits!==0||parsed.width!==source.width||parsed.height!==source.height||parsed.videoSamples!==structure.videoSamples||parsed.audioSamples!==structure.audioSamples)throw Error('PROCESSING_INVALID');
- stage='OUTPUT_PROBE';await probe(normalized,true);stage='OUTPUT_DECODE';await decode(normalized);
- stage='THUMBNAIL';
+ transition('OUTPUT_PROBE');await probe(normalized,true);transition('OUTPUT_DECODE');await decode(normalized);
+ transition('THUMBNAIL');
  await command(executable('ffmpeg'),[...base,'-protocol_whitelist','file,pipe','-i',normalized,'-map','0:v:0','-frames:v','1','-an','-map_metadata','-1','-vf',"scale=w='min(320,iw)':h='min(320,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",'-threads','1','-c:v','mjpeg','-q:v','4','-update','1',thumbnail]);
- stage='THUMBNAIL_VALIDATE';const generated=await readFile(thumbnail); if(generated.length>262144)throw Error('PROCESSING_INVALID');
+ transition('THUMBNAIL_VALIDATE');const generated=await readFile(thumbnail); if(generated.length>262144)throw Error('PROCESSING_INVALID');
  const thumb=stripImageMetadata(generated,'jpeg').bytes; await writeFile(thumbnail,thumb,{mode:0o600});
  const image=validateImageStructure(thumb,{filename:'thumbnail.jpg',mime:'image/jpeg'});
  if(image.metadataBytes||Math.max(image.width,image.height)>320)throw Error('PROCESSING_INVALID');
- stage='THUMBNAIL_DECODE';await command(executable('ffmpeg'),[...base,'-protocol_whitelist','file,pipe','-i',thumbnail,'-threads','1','-f','null','-']);
- stage='RESULT';
+ transition('THUMBNAIL_DECODE');await command(executable('ffmpeg'),[...base,'-protocol_whitelist','file,pipe','-i',thumbnail,'-threads','1','-f','null','-']);
+ transition('RESULT');
  await writeFile(join(directory,'result.json'),JSON.stringify({width:parsed.width,height:parsed.height,durationSeconds:parsed.durationSeconds,thumbnailWidth:image.width,thumbnailHeight:image.height}),{flag:'wx',mode:0o600});
  snapshot();
 }

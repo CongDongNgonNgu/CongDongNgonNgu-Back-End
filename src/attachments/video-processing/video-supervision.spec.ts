@@ -10,6 +10,21 @@ describe('Linux native command completion and descendant supervision',()=>{
  beforeEach(()=>{jest.useFakeTimers();Object.defineProperty(process,'platform',{value:'linux'});child=Object.assign(new EventEmitter(),{pid:123,kill:jest.fn()});(spawn as jest.Mock).mockReturnValue(child);kill=jest.spyOn(process,'kill').mockImplementation((_pid,signal)=>{if(signal===0)throw Object.assign(Error(),{code:'ESRCH'});return true;});});
  afterEach(()=>{Object.defineProperty(process,'platform',platform);jest.restoreAllMocks();jest.useRealTimers();});
  const execute=()=>{const p=new NativeVideoProcessor({processorsDirectory:'/approved/processors',workerFile:'/approved/video-worker.js'});return (p as unknown as {execute(d:string,t:number):Promise<{nativeRssObserved:boolean;peakRssBytes:number}>}).execute('/owned',15000);};
+ it('retains only validated last-stage timing and observed RSS on supervisor timeout',async()=>{
+  (files.readFile as jest.Mock).mockResolvedValue('State:\tS (sleeping)\nVmHWM:\t16384 kB\n');
+  const result=execute(), progress={stage:'SOURCE_DECODE',elapsedMs:250,completed:[{stage:'BOOT',elapsedMs:50}]};
+  const rejected=expect(result).rejects.toMatchObject({code:'PROCESSING_TIMEOUT',observation:{progress,peakRssBytes:32*1024*1024,nativeRssObserved:false}});
+  child.emit('message',{rss:32*1024*1024,progress});await jest.advanceTimersByTimeAsync(15000);child.emit('close',1);await rejected;
+ });
+ it('fails closed on private or rewritten progress without echoing it',async()=>{
+  const result=execute();child.emit('message',{rss:16*1024*1024,progress:{stage:'PRIVATE_PATH',elapsedMs:1,completed:[]}});expect(kill).toHaveBeenCalledWith(-123,'SIGKILL');child.emit('close',1);
+  await expect(result).rejects.toMatchObject({code:'PROCESSING_INVALID'});
+ });
+ it('retains stage attribution after an unexpected worker exit without a failure message',async()=>{
+  const result=execute(),progress={stage:'SOURCE_PROBE',elapsedMs:20,completed:[{stage:'BOOT',elapsedMs:1}]};
+  child.emit('message',{rss:16*1024*1024,progress});child.emit('close',1);
+  await expect(result).rejects.toMatchObject({code:'PROCESSING_INVALID',observation:{progress,peakRssBytes:16*1024*1024}});
+ });
  it('accepts lifetime native peak even if the command finished before the first poll',async()=>{const result=execute();child.emit('message',{rss:16*1024*1024,nativePeakRssBytes:8*1024*1024,nativePid:null});child.emit('close',0);await expect(result).resolves.toMatchObject({nativeRssObserved:true,peakRssBytes:16*1024*1024});});
  it('never manufactures native observation from worker RSS alone',async()=>{const result=execute();child.emit('message',{rss:16*1024*1024,nativePid:null});child.emit('close',0);await expect(result).rejects.toMatchObject({code:'PROCESSING_INVALID'});});
  it('tolerates an exiting native zombie while requiring separate lifetime completion evidence',async()=>{(files.readFile as jest.Mock).mockImplementation(async(path:any)=>String(path).includes('/123/')?'State:\tS (sleeping)\nVmHWM:\t16384 kB\n':'State:\tZ (zombie)\n' as any);const result=execute();child.emit('message',{rss:16*1024*1024,nativePid:456});await jest.advanceTimersByTimeAsync(25);child.emit('message',{rss:24*1024*1024,nativePid:null,nativePeakRssBytes:8*1024*1024});child.emit('close',0);await expect(result).resolves.toMatchObject({nativeRssObserved:true});});
