@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 // Read-only, one-stream ownership observation. This never authorizes a restart.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -83,7 +83,19 @@ function exclusiveHolder(inode, pid, procRoot = '/proc', deadline = Infinity) {
    if (tasks.length > 65536) refuse('PROCESS_VISIBILITY_LIMIT');
    for (const task of tasks) {
     if (performance.now() > deadline) refuse('TIMEOUT');
-    const inodes = task === null ? socketInodes(Number(entry), procRoot, deadline) : socketInodes(Number(task), taskDir, deadline);
+    let inodes;
+    try { inodes = task === null ? socketInodes(Number(entry), procRoot, deadline) : socketInodes(Number(task), taskDir, deadline); }
+    catch (error) {
+     if (task !== null && error.code === 'ENOENT') {
+      let disappeared = false;
+      try { fs.statSync(path.join(taskDir, task)); }
+      catch (observation) { if (observation.code === 'ENOENT') disappeared = true; else throw observation; }
+      // A listed task may exit while its containing process remains alive.
+      // Only exact ENOENT proves absence; denied/unknown observations fail closed.
+      if (disappeared) continue;
+     }
+     throw error;
+    }
     if (inodes.has(inode)) { if (Number(entry) !== pid) refuse('ACCEPTED_SOCKET_SHARED'); found = true; }
    }
   } catch (e) {
