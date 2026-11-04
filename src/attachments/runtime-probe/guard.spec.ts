@@ -17,6 +17,39 @@ const config = {
   attachments: { enabled: false, image: false, video: false, text: false },
 };
 describe("explicit TEST runtime smoke admission", () => {
+  it("admits only the explicit closed boundary selector without changing identity checks", () => {
+    expect(
+      probeIdentity(
+        { ...env, PHASE30_TEST_RUNTIME_PROBE_SUITE: "boundary" },
+        config,
+        "linux",
+        "x64",
+        [],
+      ),
+    ).toMatchObject({ suite: "boundary" });
+    expect(() =>
+      probeIdentity(
+        { ...env, PHASE30_TEST_RUNTIME_PROBE_SUITE: "private-path" },
+        config,
+        "linux",
+        "x64",
+        [],
+      ),
+    ).toThrow("PHASE30_PROBE_GUARD");
+    expect(() =>
+      probeIdentity(
+        {
+          ...env,
+          PHASE30_TEST_RUNTIME_PROBE_SUITE: "boundary",
+          ATTACHMENTS_IMAGE_ENABLED: "true",
+        },
+        config,
+        "linux",
+        "x64",
+        [],
+      ),
+    ).toThrow("PHASE30_PROBE_GUARD");
+  });
   it("does nothing by default, including on production", () => {
     expect(
       probeIdentity(
@@ -32,6 +65,7 @@ describe("explicit TEST runtime smoke admission", () => {
     expect(probeIdentity(env, config, "linux", "x64", [])).toEqual({
       sha,
       port: 10000,
+      suite: "tiny",
     });
   });
   it.each([
