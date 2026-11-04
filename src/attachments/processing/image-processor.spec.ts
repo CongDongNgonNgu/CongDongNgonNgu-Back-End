@@ -29,6 +29,22 @@ describe('bounded isolated image processor', () => {
       await rm(absolute, { recursive: true, force: true });
     }
   });
+  it('normalizes hash-bound three-megapixel boundary images with unchanged worker limits', async () => {
+    for (const [filename, mime] of [['boundary.jpeg','image/jpeg'],['boundary.png','image/png'],['boundary.webp','image/webp']]) {
+      const bytes = await readFile(join(__dirname, '../runtime-probe/assets', filename));
+      const p = processor();
+      try {
+        const result = await p.process(bytes, {filename, mime});
+        expect(result.width).toBe(2000); expect(result.height).toBe(1500);
+        expect(result.peakRssBytes).toBeGreaterThan(0);
+        expect(result.peakRssBytes).toBeLessThanOrEqual(192*1024*1024);
+        expect(result.normalized.length).toBeLessThanOrEqual(4*1024*1024);
+        expect(validateImageStructure(result.normalized, {filename:'normalized.webp',mime:'image/webp'})).toMatchObject({width:2000,height:1500,metadataBytes:0});
+        expect(result.thumbnail.length).toBeLessThanOrEqual(262144);
+      } finally { await p.shutdown(); }
+      expect(await readdir(root)).toEqual([]);
+    }
+  }, 100000);
   function processor(options: { deadlineMs?: number } = {}) { return new ImageProcessor({ temporaryRoot: root, workerFile: join(compiled, 'processing/image-worker.js'), ...options }); }
   async function syntheticWorker(message: string, delayMs = 0): Promise<string> {
     const pixel = await sharp({ create: { width: 1, height: 1, channels: 3, background: 'red' } }).webp().toBuffer();
