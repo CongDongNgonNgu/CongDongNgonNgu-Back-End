@@ -38,6 +38,38 @@ describe('hash-bound synthetic native source',()=>{
 describe('Linux native fixture manifest preservation',()=>{
  it('accepts matching staged binaries while retaining the real license entry, and rejects changed binaries',()=>{const manifest={binaryHashes:{'bin/ffmpeg':'approved-ffmpeg','bin/ffprobe':'approved-ffprobe','LICENSE.txt':'approved-license'}},before=JSON.stringify(manifest);assertStagedBinaryHashes(manifest,{'bin/ffmpeg':'approved-ffmpeg','bin/ffprobe':'approved-ffprobe'});expect(JSON.stringify(manifest)).toBe(before);expect(()=>assertStagedBinaryHashes(manifest,{'bin/ffprobe':'wrong'})).toThrow();expect(()=>assertStagedBinaryHashes(manifest,{'bin/missing':'wrong'})).toThrow();});
 });
+const AAC_DISPATCH_GOLDEN = {
+ lc_positive: { bytes:1790, sha256:'90c1e51c956e7c943a0e184523627ad17d139648482ec6b758f47da114de6d43' },
+ explicit_absent_positive: { bytes:1793, sha256:'56e967f22b342af8a78bca93605fe01dd7a96332d95ee76a3b36b2ef9f642a50' },
+ first_sbr: { bytes:1792, sha256:'288096e69ffdac78f35e5c14b34cb5ca35cf98216fa1f006205e3221c3fa77ef' },
+ first_crc: { bytes:1793, sha256:'8836b281f13fb4a06a3442e949e151d3f68b8aa2e4d1278b9295e76fdc6942ac' },
+ truncated_fil: { bytes:1792, sha256:'275cdf9817d361d35e160b51b5cc73bd48daa614a301765c5cf6f9ef246b61ad' },
+ before_channel: { bytes:1792, sha256:'bad329384512673968055a0042304ec34fb6ec78a9161a6ae3e3fd82a31f1e69' },
+ late_sbr: { bytes:1792, sha256:'f337078f516440cc9e41ec429b79617e85527df6a4e01828606202423f363105' },
+ explicit_absent_late: { bytes:1795, sha256:'22949ff6de2ca020b25bcbcbb9d8dcd0f47fcc58e0c0b7ce8d02198e0ae101c1' },
+} as const;
+type AacDispatchCase = keyof typeof AAC_DISPATCH_GOLDEN;
+function aacDispatchFixture(name:AacDispatchCase):Buffer {
+ const corpus=require('./fixtures/aac-dispatch-fixtures.json');
+ expect(corpus.scope).toBe('OWNED_SYNTHETIC_AAC_MINIMAL_DISPATCH_NOT_DEEP_SBR_PS_ASAN_OR_RUNTIME_ACCEPTANCE');
+ expect(corpus.provenance.workspaceSourceCommit).toBe('a2bbf1e66548058b7de6ae46ab28c31a62e174fd');
+ expect(corpus.provenance.sourceSha256).toBe('2ef27e95df445401f512f2e6f07674ae155f8f14b866001100889fbf0839019f');
+ expect(corpus.provenance.builderSha256).toBe('8bbcde836a5fa927eba87672551ec29233a4716b93a265a7f4021ab847cb7311');
+ expect(Object.keys(corpus.cases).sort()).toEqual(Object.keys(AAC_DISPATCH_GOLDEN).sort());
+ const fixture=corpus.cases[name],expected=AAC_DISPATCH_GOLDEN[name];
+ expect(fixture.bytes).toBe(expected.bytes);expect(fixture.sha256).toBe(expected.sha256);
+ const bytes=Buffer.from(fixture.base64,'base64');expect(bytes.toString('base64')).toBe(fixture.base64);
+ expect(bytes.length).toBe(expected.bytes);expect(createHash('sha256').update(bytes).digest('hex')).toBe(expected.sha256);
+ return bytes;
+}
+describe('hash-bound AAC dispatch corpus (structural-only)',()=>{
+ it.each(Object.keys(AAC_DISPATCH_GOLDEN) as AacDispatchCase[])('retains exact golden %s framing without granting native acceptance',name=>{
+  const bytes=aacDispatchFixture(name),snapshot=Buffer.from(bytes);
+  expect(validateMp4Structure(bytes,{filename:'aac-dispatch.mp4',mime:'video/mp4'})).toMatchObject({structuralOnly:true,requiresNativeValidation:true,width:128,height:72,frameRate:4,durationSeconds:0.5,videoSamples:2,audioSamples:25,audioChannels:2,audioSampleRate:48000,seiUnits:0});
+  expect(bytes).toEqual(snapshot);
+ });
+});
+
 native('explicit pinned native synthetic pipeline (not Render acceptance)',()=>{
  let compiled:string,root:string,processors:string,source:Buffer;
  beforeAll(async()=>{
@@ -149,16 +181,18 @@ native('explicit pinned native synthetic pipeline (not Render acceptance)',()=>{
  },10000);
 
 
- it('rejects corrupt compressed slices that pass structural preflight, using fatal full native decoding',async()=>{
+ it('rejects structurally valid corrupt slices on native error before retaining outputs',async()=>{
   const bytes=Buffer.from(source),start=bytes.indexOf(Buffer.from('mdat'))+4;
   let position=start;
   while(position+4<bytes.length){const length=bytes.readUInt32BE(position);position+=4;if(!length||position+length>bytes.length)break;const type=bytes[position]&31;if(type===1||type===5)bytes.fill(0x55,position+Math.min(8,length),position+length);position+=length;}
   expect(()=>validateMp4Structure(bytes,{filename:'x.mp4',mime:'video/mp4'})).not.toThrow();
   const p=create();
   try{
-   await expect(p.process(bytes,{filename:'x.mp4',mime:'video/mp4'})).rejects.toMatchObject({
+   const failure=await p.process(bytes,{filename:'x.mp4',mime:'video/mp4'}).then(()=>{throw Error('corrupt fixture was accepted');},error=>({code:error.code,message:error.message,diagnostic:error.diagnostic,producerQuiesced:error.producerQuiesced}));
+   expect(failure).toMatchObject({
     code:'PROCESSING_INVALID',
-    message:'PROCESSING_INVALID [SOURCE_DECODE/COMMAND_EXIT/NONZERO]',
+    message:'PROCESSING_INVALID [SOURCE_PROBE/COMMAND_STDERR/FORMAT]',
+    diagnostic:{stage:'SOURCE_PROBE',point:'COMMAND_STDERR',reason:'FORMAT'},
     producerQuiesced:true,
    });
    expect(await readdir(root)).toEqual([]);
@@ -170,6 +204,28 @@ native('explicit pinned native synthetic pipeline (not Render acceptance)',()=>{
   const {syntheticMp4}=await import('../video/synthetic-fixtures'),bytes=Buffer.from(syntheticMp4.withAudio.base64,'base64');
   const p=create(),result=await p.process(bytes,{filename:'x.mp4',mime:'video/mp4'});
   expect(validateMp4Structure(result.normalized,{filename:'x.mp4',mime:'video/mp4'})).toMatchObject({audioSamples:25,audioChannels:2,audioSampleRate:48000,seiUnits:0});expect(await readdir(root)).toEqual([]);await p.shutdown();
+ },20000);
+
+ it.each(['lc_positive','explicit_absent_positive'] as const)('fully processes quiet AAC dispatch control %s through the pinned worker',async name=>{
+  const bytes=aacDispatchFixture(name),snapshot=Buffer.from(bytes),p=create();
+  try{
+   const result=await p.process(bytes,{filename:'aac-control.mp4',mime:'video/mp4'});
+   expect(validateMp4Structure(result.normalized,{filename:'normalized.mp4',mime:'video/mp4'})).toMatchObject({audioSamples:25,audioChannels:2,audioSampleRate:48000,seiUnits:0});
+   expect(result.normalized.length).toBeLessThanOrEqual(3*1024*1024);expect(result.thumbnail.length).toBeLessThanOrEqual(262144);
+  }finally{await p.shutdown();expect(bytes).toEqual(snapshot);expect(await readdir(root)).toEqual([]);}
+ },20000);
+ it.each([
+  ['first_sbr','SOURCE_PROBE/MAIN/EXCEPTION'],
+  ['first_crc','SOURCE_PROBE/MAIN/EXCEPTION'],
+  ['truncated_fil','SOURCE_PROBE/COMMAND_STDERR/FORMAT'],
+  ['before_channel','SOURCE_PROBE/COMMAND_STDERR/FORMAT'],
+  ['late_sbr','SOURCE_DECODE/COMMAND_STDERR/FORMAT'],
+  ['explicit_absent_late','SOURCE_DECODE/COMMAND_STDERR/FORMAT'],
+ ] as const)('rejects AAC dispatch negative %s at its exact fail-closed gate',async(name,diagnostic)=>{
+  const bytes=aacDispatchFixture(name),snapshot=Buffer.from(bytes),p=create();
+  try{
+   await expect(p.process(bytes,{filename:'aac-negative.mp4',mime:'video/mp4'})).rejects.toMatchObject({code:'PROCESSING_INVALID',message:'PROCESSING_INVALID ['+diagnostic+']',producerQuiesced:true});
+  }finally{await p.shutdown();expect(bytes).toEqual(snapshot);expect(await readdir(root)).toEqual([]);}
  },20000);
 
 });

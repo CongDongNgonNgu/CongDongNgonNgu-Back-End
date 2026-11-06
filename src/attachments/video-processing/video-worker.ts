@@ -71,7 +71,7 @@ async function command(executable: string, args: string[]): Promise<string> {
    if(process.platform==='linux'&&code===0&&!invalid)observe('COMMAND_METRIC',()=>{const info=statSync(metric);if(!info.isFile()||info.size<1||info.size>128)throw Error('PROCESSING_UNAVAILABLE');completedNativePeak=Math.max(completedNativePeak,parseCompletedNativePeak(readFileSync(metric)));});
    snapshot();
   }catch(error){invalid=diagnoseNativeFailure(error,stage,'MAIN');}finally{if(process.platform==='linux')try{unlinkSync(metric);}catch(error:any){if(error.code!=='ENOENT')invalid=diagnoseNativeFailure(error,stage,'COMMAND_UNLINK');}}
-  if(code!==0||invalid)reject(new NativeDiagnosticFailure(invalid??{stage,point:'COMMAND_EXIT',reason:'NONZERO'}));else accept(stdout.toString('utf8'));});
+  if(code!==0||invalid||stderrBytes!==0)reject(new NativeDiagnosticFailure(invalid??(code!==0?{stage,point:'COMMAND_EXIT',reason:'NONZERO'}:{stage,point:'COMMAND_STDERR',reason:'FORMAT'})));else accept(stdout.toString('utf8'));});
  });
 }
 async function main(): Promise<void> {
