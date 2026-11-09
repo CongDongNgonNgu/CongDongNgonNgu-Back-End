@@ -7,7 +7,7 @@ import {
 } from "./native-identity";
 
 const configuration =
-  "--disable-all --disable-autodetect --disable-iconv --disable-network --disable-doc --disable-debug --disable-shared --enable-static --disable-gpl --disable-nonfree --disable-version3 --disable-x86asm --enable-ffmpeg --enable-ffprobe --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-pthreads --enable-decoder='h264,aac,mjpeg' --enable-parser='h264,aac,mjpeg' --enable-demuxer='mov,image2,image_jpeg_pipe' --enable-muxer='mp4,image2,null' --enable-protocol='file,pipe' --enable-bsf='filter_units,h264_metadata' --enable-encoder='mjpeg,wrapped_avframe,pcm_s16le' --enable-filter='scale,format,aformat,aresample'";
+  "--disable-all --disable-autodetect --disable-iconv --disable-network --disable-doc --disable-debug --disable-shared --enable-static --disable-gpl --disable-nonfree --disable-version3 --enable-x86asm --x86asmexe=/build/nasm-source/nasm --enable-ffmpeg --enable-ffprobe --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-pthreads --enable-decoder='h264,aac,mjpeg' --enable-parser='h264,aac,mjpeg' --enable-demuxer='mov,image2,image_jpeg_pipe' --enable-muxer='mp4,image2,null' --enable-protocol='file,pipe' --enable-bsf='filter_units,h264_metadata' --enable-encoder='mjpeg,wrapped_avframe,pcm_s16le' --enable-filter='scale,format,aformat,aresample'";
 const manifest = () => ({
   format: 1,
   platform: "linux",
@@ -16,11 +16,11 @@ const manifest = () => ({
   sourceCommit: "6dfaba896fddaea098abec8ac84ff67375a7c6f1",
   binaryHashes: {
     "bin/ffmpeg":
-      "2af1963c499a3005ad4d6037794b9e4bc383c7a1c0f545267297195d68f9ccee",
+      "031ffb3a5ccd03437daf983c121b9f01d3974ed8e295057faa912925f84db5f3",
     "bin/ffprobe":
-      "64c3340d0325afa37fff5015bfacf162095103dc2cbd319d799d70cc9633d24e",
+      "36e837d351e47d525dd6438f0141c2c7dc4bc7d49e27e3836acff137a601b9b3",
   },
-  binaryBytes: { "bin/ffmpeg": 6470992, "bin/ffprobe": 6249632 },
+  binaryBytes: { "bin/ffmpeg": 7081296, "bin/ffprobe": 6868128 },
 });
 const banner = (name: "ffmpeg" | "ffprobe") =>
   `${name} version 9.0.2 Copyright (c) ${name === "ffmpeg" ? "2000" : "2007"}-2026 the FFmpeg developers\nbuilt with gcc 14.3.0 (GCC)\nconfiguration: ${configuration}\nlibavutil 60.0.0\n`;
@@ -68,6 +68,19 @@ describe("code-pinned minimal Linux FFmpeg identity", () => {
     expect(Object.isFrozen(MINIMAL_NATIVE)).toBe(true);
     expect(Object.isFrozen(MINIMAL_NATIVE.ffmpeg)).toBe(true);
   });
+  it("rejects the previous classic pair after exact SIMD identity selection", () => {
+    for (const [name, bytes, digest] of [
+      ["ffmpeg", 6470992, "2af1963c499a3005ad4d6037794b9e4bc383c7a1c0f545267297195d68f9ccee"],
+      ["ffprobe", 6249632, "64c3340d0325afa37fff5015bfacf162095103dc2cbd319d799d70cc9633d24e"],
+    ] as const) expect(() => assertMinimalNativeBinary(name, bytes, digest)).toThrow("PROCESSING_UNAVAILABLE");
+  });
+  it("rejects classic assembly configuration and alternate assembler paths", () => {
+    const valid = banner("ffmpeg");
+    for (const changed of [
+      valid.replace("--enable-x86asm --x86asmexe=/build/nasm-source/nasm", "--disable-x86asm"),
+      valid.replace("--x86asmexe=/build/nasm-source/nasm", "--x86asmexe=/tmp/nasm"),
+    ]) expect(() => assertMinimalNativeVersion("ffmpeg", changed)).toThrow("PROCESSING_UNAVAILABLE");
+  });
   it("rejects a self-consistent attacker manifest and measured replacement binary", () => {
     const forged = manifest();
     forged.binaryHashes["bin/ffmpeg"] = "a".repeat(64);
@@ -77,7 +90,7 @@ describe("code-pinned minimal Linux FFmpeg identity", () => {
     expect(() =>
       assertMinimalNativeBinary(
         "ffmpeg",
-        6470992,
+        7081296,
         forged.binaryHashes["bin/ffmpeg"],
       ),
     ).toThrow("PROCESSING_UNAVAILABLE");
