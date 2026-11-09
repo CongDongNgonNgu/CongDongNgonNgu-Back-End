@@ -1,15 +1,15 @@
 {
   "format": 1,
-  "sourceCi": 41377326090,
-  "sourceRevision": "6a75d25ca7e7a7580836cfe444863d2f98b91cc1",
-  "bytes": 42802980,
-  "sha256": "55a940a8015848021aa5340171eba6cf6dcec1b86852bbe533f80eae47b195d1",
+  "sourceCi": 42555671199,
+  "sourceRevision": "92cb97c9aa41254cc67532f0fa4f191c6a5db726",
+  "bytes": 45088234,
+  "sha256": "0ef73781d602d1a91f6d774604d401e7602174f17f06c0610d6af8b6a848eebb",
   "members": [
     {
       "path": "BUILDING.md",
-      "bytes": 2316,
+      "bytes": 1110,
       "mode": 256,
-      "sha256": "a7c2921d7d953c8bfc2bb1ae846d63205387394c408b4b9f99eb00d586ee4733"
+      "sha256": "092be1680f71f191b4351f86dd22391c2a06c5325893fd717896a69c572c9751"
     },
     {
       "path": "SOURCE-MATERIALS.md",
@@ -19,33 +19,15 @@
     },
     {
       "path": "bin/ffmpeg",
-      "bytes": 6470992,
+      "bytes": 7081296,
       "mode": 320,
-      "sha256": "2af1963c499a3005ad4d6037794b9e4bc383c7a1c0f545267297195d68f9ccee"
+      "sha256": "031ffb3a5ccd03437daf983c121b9f01d3974ed8e295057faa912925f84db5f3"
     },
     {
       "path": "bin/ffprobe",
-      "bytes": 6249632,
+      "bytes": 6868128,
       "mode": 320,
-      "sha256": "64c3340d0325afa37fff5015bfacf162095103dc2cbd319d799d70cc9633d24e"
-    },
-    {
-      "path": "build/build.sh",
-      "bytes": 3305,
-      "mode": 256,
-      "sha256": "ffbcec79112bc6f19a6e565feac98fa862cd6a19a6a7579d858585e4ecc00f08"
-    },
-    {
-      "path": "build/bundle.py",
-      "bytes": 13502,
-      "mode": 256,
-      "sha256": "4375e9cfab5a4228a575c1b80802f2d4f0716fef3f2bbab81204a63392c4ecc5"
-    },
-    {
-      "path": "build/check-source.py",
-      "bytes": 2763,
-      "mode": 256,
-      "sha256": "ac599e837a725cee402ddbe7117b57b64d8e97e4fba162f0959337591d25016a"
+      "sha256": "36e837d351e47d525dd6438f0141c2c7dc4bc7d49e27e3836acff137a601b9b3"
     },
     {
       "path": "build/gcc-notice-source.json",
@@ -54,10 +36,10 @@
       "sha256": "0865ac9cb2279a8d6579cccaa302d389e89608e389105d8125f5049883e847f1"
     },
     {
-      "path": "build/link-provenance.sh",
-      "bytes": 3386,
+      "path": "build/native-build-inputs.json",
+      "bytes": 167788,
       "mode": 256,
-      "sha256": "1ee4d1a2d8d290022ff691e7e92e2662c26cb0e31c25fa2f88e12885c58653cc"
+      "sha256": "97d71d605cb3af2b41565a1784143332fa3576a3517c459968a38d280c432a32"
     },
     {
       "path": "build/runtime-source-manifest.json",
@@ -66,181 +48,49 @@
       "sha256": "f9ecb6c0c97375ab4e424d052f2211ef3c4dba2cb7e9d983e3ee8fd4fa4ac454"
     },
     {
-      "path": "build/workflow.yml",
-      "bytes": 11876,
+      "path": "evidence/observations.json",
+      "bytes": 3439560,
       "mode": 256,
-      "sha256": "92c8b863677b05825cd85a931fc883f0baeaddf510cf42777bc89715b9a6bfd5"
-    },
-    {
-      "path": "evidence/binutils.txt",
-      "bytes": 281,
-      "mode": 256,
-      "sha256": "c8a5239ca0e8268c178da2617843c3e92788711b1e1abafa232616bd487e729c"
-    },
-    {
-      "path": "evidence/builder-libc.txt",
-      "bytes": 11,
-      "mode": 256,
-      "sha256": "d413ead7ce9065771e2e436981fabd86519efcf109a71c81ffa37dd397fa825b"
-    },
-    {
-      "path": "evidence/builder-os.txt",
-      "bytes": 267,
-      "mode": 256,
-      "sha256": "59a77b5f2666d9c85c489bd1911a6eebbd91ef22fe48b90a3b75f1b21f3844d4"
-    },
-    {
-      "path": "evidence/compiler.txt",
-      "bytes": 219,
-      "mode": 256,
-      "sha256": "23ffd2bf366750bda8699e8936206a483d3c4af464e09ea8990e212c44ae51c3"
-    },
-    {
-      "path": "evidence/config.h",
-      "bytes": 24609,
-      "mode": 256,
-      "sha256": "99970b0b636ab0ad787c8b5e3b2c86e303d0cffe8513ce80eaa80585e486397e"
-    },
-    {
-      "path": "evidence/config.mak",
-      "bytes": 88982,
-      "mode": 256,
-      "sha256": "db47b38f95aae2526c65ab77587b95efdf997f54a831cd9a510c19239a6218c0"
-    },
-    {
-      "path": "evidence/config_components.h",
-      "bytes": 75690,
-      "mode": 256,
-      "sha256": "2d148bc791cb57f17db86d5bcd8011956a10abd91cdfec3b8fbdca3f3f1ebfe5"
-    },
-    {
-      "path": "evidence/configure-args.txt",
-      "bytes": 643,
-      "mode": 256,
-      "sha256": "4e75f6af8f14055bc6e291e0712315c5a1db67e91a9220f7bafef297d206b07b"
-    },
-    {
-      "path": "evidence/ffmpeg.dynamic.txt",
-      "bytes": 1444,
-      "mode": 256,
-      "sha256": "66c9e6effc4a7df26bfd3bb9d82a7039f5700db80ff275e2284c65f6b479ea51"
-    },
-    {
-      "path": "evidence/ffmpeg.link-map.txt",
-      "bytes": 632653,
-      "mode": 256,
-      "sha256": "0f42b2e32b188b314655336565395de150b98ff53bc5b0af52e4bd96705919cd"
-    },
-    {
-      "path": "evidence/ffmpeg.link-trace.txt",
-      "bytes": 4143,
-      "mode": 256,
-      "sha256": "60b57f2be917f3a872da1189321146fd829528c9980fe0aa8b5546834dcefc6d"
-    },
-    {
-      "path": "evidence/ffmpeg.versions.txt",
-      "bytes": 4245,
-      "mode": 256,
-      "sha256": "8c9bce221ecb1a77bb8091c3749da5ee5e5800baf964f4309a8c812f56abd103"
-    },
-    {
-      "path": "evidence/ffprobe.dynamic.txt",
-      "bytes": 1444,
-      "mode": 256,
-      "sha256": "2e44a6b912c6555302c1ef7f370bbf570459456347ccf0712e7ecfcbaabea03a"
-    },
-    {
-      "path": "evidence/ffprobe.link-map.txt",
-      "bytes": 601052,
-      "mode": 256,
-      "sha256": "71a0f8cea7256cad7882318673245deb735b7f71588ffff9154bc9f98a5791df"
-    },
-    {
-      "path": "evidence/ffprobe.link-trace.txt",
-      "bytes": 3428,
-      "mode": 256,
-      "sha256": "2d865ff5d9a2199cdd11db2629141cb19a773098bc8624ec25602e7d5e4302ad"
-    },
-    {
-      "path": "evidence/ffprobe.versions.txt",
-      "bytes": 3990,
-      "mode": 256,
-      "sha256": "a516f623183ddd9d6e189bf901bd3dbf9f34e0a80635402521958a5068883bf8"
-    },
-    {
-      "path": "evidence/gcc-runtime-locations.txt",
-      "bytes": 165,
-      "mode": 256,
-      "sha256": "feea5a0cce1890e9429d29909f6a4ee8d81ca9b9a4a76831fb0f9dcb56d24008"
-    },
-    {
-      "path": "evidence/relink-binaries.sha256",
-      "bytes": 314,
-      "mode": 256,
-      "sha256": "69d6868b15a5a29d71952a8fb76ae949e70b012f95c6d0fdd4f27f0b8dba262e"
-    },
-    {
-      "path": "evidence/runtime-input-paths.txt",
-      "bytes": 732,
-      "mode": 256,
-      "sha256": "68b1c649d7a7b2302f5ef51bee46b58a6bb0e6c26b0fce28336e438da14fee45"
-    },
-    {
-      "path": "evidence/runtime-inputs.tsv",
-      "bytes": 2592,
-      "mode": 256,
-      "sha256": "72dfa434e550f9b0898de89d12fc402e76e17230e4286551a05a10160260b41c"
-    },
-    {
-      "path": "evidence/system-libc-copyright.txt",
-      "bytes": 25467,
-      "mode": 256,
-      "sha256": "40c7e1f2118531f038ca22999bd976901254e1bc5cd1b0f0211bdd064c599987"
-    },
-    {
-      "path": "evidence/system-package-versions.txt",
-      "bytes": 104,
-      "mode": 256,
-      "sha256": "157f6dfac159ec5e9493f398b194679abb5d816fc88a8ecc4613519d8ebb688c"
+      "sha256": "45a6054c1604d20c2c1350c6cd93d04c7860dbc349d64c311ba85bb2e2bd48de"
     },
     {
       "path": "manifest.json",
-      "bytes": 7243,
+      "bytes": 3433,
       "mode": 256,
-      "sha256": "5dbafdeebb0b57b8cc3e659338573d2e1eaf0e3df43f16726d2e47260bf00453"
+      "sha256": "51815496f1994d30b6d712bc79e3aba94ab2c10b80829821fadfce0524cb6cf3"
     },
     {
-      "path": "notices/COPYING.GPLv2",
+      "path": "notices/ffmpeg/COPYING.GPLv2",
       "bytes": 18092,
       "mode": 256,
       "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
     },
     {
-      "path": "notices/COPYING.GPLv3",
+      "path": "notices/ffmpeg/COPYING.GPLv3",
       "bytes": 35147,
       "mode": 256,
       "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
     },
     {
-      "path": "notices/COPYING.LGPLv2.1",
+      "path": "notices/ffmpeg/COPYING.LGPLv2.1",
       "bytes": 26517,
       "mode": 256,
       "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30"
     },
     {
-      "path": "notices/COPYING.LGPLv3",
+      "path": "notices/ffmpeg/COPYING.LGPLv3",
       "bytes": 7651,
       "mode": 256,
       "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768"
     },
     {
-      "path": "notices/CREDITS",
+      "path": "notices/ffmpeg/CREDITS",
       "bytes": 277,
       "mode": 256,
       "sha256": "28ecc96d495fa5ad48c76739a8f8d2c8980548d7a171585a6eb3f27a9ac8e4a2"
     },
     {
-      "path": "notices/LICENSE.md",
+      "path": "notices/ffmpeg/LICENSE.md",
       "bytes": 4346,
       "mode": 256,
       "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af"
@@ -262,6 +112,18 @@
       "bytes": 26530,
       "mode": 256,
       "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
+    },
+    {
+      "path": "notices/nasm/AUTHORS",
+      "bytes": 3060,
+      "mode": 256,
+      "sha256": "8a7bd0cc6c517a220265548bf2ecf62fe89bf682b6a9938afb7521008679149e"
+    },
+    {
+      "path": "notices/nasm/LICENSE",
+      "bytes": 1521,
+      "mode": 256,
+      "sha256": "1563996c52e220e15ef2418e67d39488255aa8c28c89e617074d3afe3ee329e0"
     },
     {
       "path": "source/ffmpeg.tar.gz",
@@ -304,6 +166,12 @@
       "bytes": 19363988,
       "mode": 256,
       "sha256": "a543c02070d46ccaf866957efd13f10c924daa74c86a90a0254db09a92a708ee"
+    },
+    {
+      "path": "source/nasm.tar.gz",
+      "bytes": 1688160,
+      "mode": 256,
+      "sha256": "5bc940dd8a4245686976a8f7e96ba9340a0915f2d5b88356874890e207bdb581"
     }
   ]
 }

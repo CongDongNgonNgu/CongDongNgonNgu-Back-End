@@ -95,7 +95,7 @@ native('explicit pinned native synthetic pipeline (not Render acceptance)',()=>{
   source=loadSyntheticNativeSource();
  },20000);
  (process.platform==='linux'?it:it.skip)('rejects a changed staged source notice before native execution and cleans owned scratch',async()=>{
-  const pin=MINIMAL_NATIVE_DISTRIBUTION.find(entry=>entry.file==='notices/LICENSE.md');
+  const pin=MINIMAL_NATIVE_DISTRIBUTION.find(entry=>entry.file==='notices/ffmpeg/LICENSE.md');
   if(!pin)throw Error('expected pinned source notice');
   const file=join(processors,pin.file),original=await readFile(file),mode=(await stat(file)).mode;
   expect(createHash('sha256').update(original).digest('hex')).toBe(pin.sha256);

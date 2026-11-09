@@ -3,7 +3,7 @@
 const fs=require('node:fs/promises'),path=require('node:path');
 const {stagePinnedArchive}=require('./stage-phase30-archive.cjs');
 const DISTRIBUTION=require('./phase30-minimal-distribution.json');
-const PIN=Object.freeze({tag:'phase30-processors-minimal-20261102',version:'9.0.2',file:'phase30-minimal-linux-x64.tar.gz',bytes:DISTRIBUTION.bytes,sha256:DISTRIBUTION.sha256,source:'https://github.com/CongDongNgonNgu/CongDongNgonNgu-Workspace/releases/download/phase30-processors-minimal-20261102/phase30-minimal-linux-x64.tar.gz'});
+const PIN=Object.freeze({tag:'phase30-processors-simd-20261109',version:'9.0.2',file:'phase30-minimal-simd-linux-x64.tar.gz',bytes:DISTRIBUTION.bytes,sha256:DISTRIBUTION.sha256,source:'https://github.com/CongDongNgonNgu/CongDongNgonNgu-Workspace/releases/download/phase30-processors-simd-20261109/phase30-minimal-simd-linux-x64.tar.gz'});
 function runtimeManifest(){
  const binaryHashes={},binaryBytes={};
  for(const name of ['ffmpeg','ffprobe']){

@@ -1,20 +1,20 @@
 type NativeTool = "ffmpeg" | "ffprobe";
 
-// Independently measured minimal build from Phase30 CI41010699901. These pins
+// Actual same-source SIMD pair from Phase30 CI42555671199. These pins
 // are trusted code, never populated from the adjacent untrusted manifest.
 export const MINIMAL_NATIVE = Object.freeze({
   ffmpeg: Object.freeze({
-    bytes: 6470992,
-    sha256: "2af1963c499a3005ad4d6037794b9e4bc383c7a1c0f545267297195d68f9ccee",
+    bytes: 7081296,
+    sha256: "031ffb3a5ccd03437daf983c121b9f01d3974ed8e295057faa912925f84db5f3",
   }),
   ffprobe: Object.freeze({
-    bytes: 6249632,
-    sha256: "64c3340d0325afa37fff5015bfacf162095103dc2cbd319d799d70cc9633d24e",
+    bytes: 6868128,
+    sha256: "36e837d351e47d525dd6438f0141c2c7dc4bc7d49e27e3836acff137a601b9b3",
   }),
 });
 
 const configuration =
-  "--disable-all --disable-autodetect --disable-iconv --disable-network --disable-doc --disable-debug --disable-shared --enable-static --disable-gpl --disable-nonfree --disable-version3 --disable-x86asm --enable-ffmpeg --enable-ffprobe --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-pthreads --enable-decoder='h264,aac,mjpeg' --enable-parser='h264,aac,mjpeg' --enable-demuxer='mov,image2,image_jpeg_pipe' --enable-muxer='mp4,image2,null' --enable-protocol='file,pipe' --enable-bsf='filter_units,h264_metadata' --enable-encoder='mjpeg,wrapped_avframe,pcm_s16le' --enable-filter='scale,format,aformat,aresample'";
+  "--disable-all --disable-autodetect --disable-iconv --disable-network --disable-doc --disable-debug --disable-shared --enable-static --disable-gpl --disable-nonfree --disable-version3 --enable-x86asm --x86asmexe=/build/nasm-source/nasm --enable-ffmpeg --enable-ffprobe --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-pthreads --enable-decoder='h264,aac,mjpeg' --enable-parser='h264,aac,mjpeg' --enable-demuxer='mov,image2,image_jpeg_pipe' --enable-muxer='mp4,image2,null' --enable-protocol='file,pipe' --enable-bsf='filter_units,h264_metadata' --enable-encoder='mjpeg,wrapped_avframe,pcm_s16le' --enable-filter='scale,format,aformat,aresample'";
 const unavailable = (): never => {
   throw Error("PROCESSING_UNAVAILABLE");
 };
