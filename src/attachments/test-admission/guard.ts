@@ -56,8 +56,23 @@ function canonicalDate(value: unknown): number {
 }
 const uuid = (value: unknown): value is string => typeof value === 'string' &&
   /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
-/** Null is the cold default; activation does not authorize I/O or any request. */
-export function validateActivationEnvelope(options?: ActivationInputs): ValidatedActivationEnvelope | null {
+/** Identity-checked parsed literal only; no full-manifest schema or capability. */
+export interface PinnedLiteral {
+  readonly nowMs: number;
+  readonly sourceSha: string;
+  readonly deploymentId: string;
+  readonly manifestSha256: string;
+  readonly value: unknown;
+}
+function freezeParsed(value: unknown): unknown {
+  if (value !== null && typeof value === 'object') {
+    for (const child of Object.values(value)) freezeParsed(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+/** Hash and parse the same complete literal copy; never derive an external pin. */
+export function validatePinnedLiteral(options?: ActivationInputs): PinnedLiteral | null {
   try {
     const activation = options?.activation;
     if (activation === undefined) return null; // Do not inspect any other option.
@@ -77,7 +92,19 @@ export function validateActivationEnvelope(options?: ActivationInputs): Validate
         !Buffer.isBuffer(manifest) || manifest.length < 1 || manifest.length > 65536) return reject();
     const literal = Buffer.from(manifest);
     if (createHash('sha256').update(literal).digest('hex') !== hash) return reject();
-    const root = record(strictJson(literal),['schema','runId','activationId','notBefore','expiresAt','budgets']);
+    const checkedReceipt = record(receipt,['service','branch','sha','deploymentId','observedAt']);
+    const observed = canonicalDate(checkedReceipt.observedAt);
+    if (checkedReceipt.service !== SERVICE || checkedReceipt.branch !== 'dev' || checkedReceipt.sha !== sha ||
+        checkedReceipt.deploymentId !== deployment || observed > nowMs! || nowMs! - observed > 300000) return reject();
+    const value = freezeParsed(strictJson(literal));
+    return Object.freeze({sourceSha:sha,deploymentId:deployment,manifestSha256:hash,nowMs:nowMs!,value});
+  } catch { return reject(); }
+}
+/** Validate an already parsed envelope directly, without serialization or hashing. */
+export function validateEnvelopeValue(value: unknown, nowMs: number): ActivationEnvelope {
+  try {
+    if (!Number.isSafeInteger(nowMs) || !Number.isFinite(nowMs)) return reject();
+    const root = record(value,['schema','runId','activationId','notBefore','expiresAt','budgets']);
     if (root.schema !== 1 || !uuid(root.runId) || !uuid(root.activationId)) return reject();
     const parsedBudgets = record(root.budgets,Object.keys(MAXIMA));
     for (const key of Object.keys(MAXIMA) as (keyof typeof MAXIMA)[]) {
@@ -87,12 +114,16 @@ export function validateActivationEnvelope(options?: ActivationInputs): Validate
     const budgets = Object.freeze({...parsedBudgets}) as ActivationBudgets;
     const start = canonicalDate(root.notBefore), end = canonicalDate(root.expiresAt);
     if (end <= start || end - start > budgets.durationMs || nowMs! < start || nowMs! >= end) return reject();
-    const checkedReceipt = record(receipt,['service','branch','sha','deploymentId','observedAt']);
-    const observed = canonicalDate(checkedReceipt.observedAt);
-    if (checkedReceipt.service !== SERVICE || checkedReceipt.branch !== 'dev' || checkedReceipt.sha !== sha ||
-        checkedReceipt.deploymentId !== deployment || observed > nowMs! || nowMs! - observed > 300000) return reject();
     const envelope: ActivationEnvelope = Object.freeze({schema:1,runId:root.runId,activationId:root.activationId,
       notBefore:root.notBefore as string,expiresAt:root.expiresAt as string,budgets});
-    return Object.freeze({sourceSha:sha,deploymentId:deployment,manifestSha256:hash,envelope});
+    return envelope;
   } catch { return reject(); }
+}
+/** Compatibility API: its literal remains the envelope, not a full run manifest. */
+export function validateActivationEnvelope(options?: ActivationInputs): ValidatedActivationEnvelope | null {
+  const pinned = validatePinnedLiteral(options);
+  if (pinned === null) return null;
+  const envelope = validateEnvelopeValue(pinned.value, pinned.nowMs);
+  return Object.freeze({sourceSha:pinned.sourceSha,deploymentId:pinned.deploymentId,
+    manifestSha256:pinned.manifestSha256,envelope});
 }
