@@ -26,7 +26,7 @@ async function packageArchive(archive,destination){
 async function downloadArchive(destination){
  const url=PIN.source;const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),180000);
  try{let current=url,response;for(let i=0;i<6;i++){const u=new URL(current);if(u.protocol!=='https:'||!['github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'].includes(u.hostname)||u.username||u.password)throw Error('PROCESSOR_DOWNLOAD_ORIGIN');response=await fetch(u,{redirect:'manual',signal:abort.signal});if([301,302,303,307,308].includes(response.status)){await response.body?.cancel();current=new URL(response.headers.get('location'),u).href;continue;}break;}
- if(!response||response.status!==200||!response.body)throw Error('PROCESSOR_DOWNLOAD');let count=0;const file=await fs.open(destination,'wx',0o600);try{for await(const chunk of response.body){count+=chunk.length;if(count>PIN.bytes)throw Error('PROCESSOR_DOWNLOAD_SIZE');await file.write(chunk);}if(count!==PIN.bytes)throw Error('PROCESSOR_DOWNLOAD_SIZE');}finally{await file.close();}
+ if(response&&response.status!==200){const error=Error('PROCESSOR_DOWNLOAD');error.code='PHASE30_PROCESSOR_DOWNLOAD_HTTP';if(Number.isInteger(response.status)&&response.status>=100&&response.status<=599)error.status=response.status;throw error;}if(!response||!response.body)throw Error('PROCESSOR_DOWNLOAD');let count=0;const file=await fs.open(destination,'wx',0o600);try{for await(const chunk of response.body){count+=chunk.length;if(count>PIN.bytes)throw Error('PROCESSOR_DOWNLOAD_SIZE');await file.write(chunk);}if(count!==PIN.bytes)throw Error('PROCESSOR_DOWNLOAD_SIZE');}finally{await file.close();}
  }finally{clearTimeout(timer);}
 }
 
