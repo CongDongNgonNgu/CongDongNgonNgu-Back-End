@@ -248,7 +248,14 @@ async function downloadTime(destination) {
       redirect: "error",
       signal: abort.signal,
     });
-    if (response.status !== 200 || !response.body) throw Error("TIME_DOWNLOAD");
+    if (response.status !== 200) {
+      const error = Error("TIME_DOWNLOAD");
+      error.code = "PHASE30_TIME_DOWNLOAD_HTTP";
+      if (Number.isInteger(response.status) && response.status >= 100 && response.status <= 599)
+        error.status = response.status;
+      throw error;
+    }
+    if (!response.body) throw Error("TIME_DOWNLOAD");
     const file = await fs.open(destination, "wx", 0o600);
     let count = 0;
     try {
