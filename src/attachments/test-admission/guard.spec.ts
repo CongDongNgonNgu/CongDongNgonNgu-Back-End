@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {validateActivationEnvelope} from './guard';
+import {validateActivationEnvelope,validatePinnedLiteral,validateEnvelopeValue} from './guard';
 import {strictJson} from './strict-json';
 const SHA='a'.repeat(40),DEP='dep-synthetic-test-activation';
 const budgets={durationMs:600000,attachments:4,videos:1,declaredBytes:16777216,authenticatedRequests:120,anonymousRequests:20,ingressBytes:33554432,authenticatedEgressBytes:67108864,anonymousEgressBytes:16777216,processingAttempts:4,processingConcurrency:1};
@@ -20,4 +20,40 @@ describe('inert TEST activation envelope only',()=>{
  it('enforces canonical dates, nonrenewing bounds, UUIDv4 and every budget',()=>{for(const key of Object.keys(budgets) as (keyof typeof budgets)[]){for(const value of [0,-1,1.5,Number.MAX_SAFE_INTEGER]){const e=envelope();e.budgets[key]=value;reject(fixture(e));}}for(const patch of [{schema:2},{runId:'11111111-1111-1111-8111-111111111111'},{activationId:'bad'},{notBefore:'2026-11-10T00:00:00Z'},{expiresAt:'2026-11-10T00:10:00.001Z'},{expiresAt:'2026-11-10T00:00:00.000Z'},{extra:true},{sourceSha:SHA},{manifestSha256:'a'.repeat(64)}])reject(fixture({...envelope(),...patch}));reject({...fixture(),nowMs:Date.parse('2026-11-10T00:10:00.000Z')});reject({...fixture(),nowMs:Date.parse('2026-11-09T23:59:59.999Z')});});
  it('rejects literal hash drift, BOM, malformed UTF8, oversize and duplicate escaped keys',()=>{for(const raw of [Buffer.from('{"schema":1,"schema":1}'),Buffer.from('{"schema":1,"sch\\u0065ma":1}'),Buffer.concat([Buffer.from([239,187,191]),fixture().manifest]),Buffer.from([255]),Buffer.alloc(65537,32),Buffer.from('['.repeat(40)+'0'+']'.repeat(40))]){const f=fixture();f.manifest=raw;f.activation.expectedManifestSha256=createHash('sha256').update(raw).digest('hex');reject(f);}const f=fixture();f.manifest[0]^=1;reject(f);});
  it('rejects unknown nested keys and prototype-shaped records without pollution',()=>{const e=envelope();reject(fixture({...e,budgets:{...e.budgets,extra:1}}));const raw=Buffer.from(JSON.stringify(e).replace('{','{"__proto__":{"polluted":true},'));const f=fixture();f.manifest=raw;f.activation.expectedManifestSha256=createHash('sha256').update(raw).digest('hex');reject(f);expect(({} as {polluted?:boolean}).polluted).toBeUndefined();});
+});
+
+describe('composable full-literal identity prerequisite only',()=>{
+ it('retains external FULL hash and validates nested envelope without child serialization',()=>{
+  const full={envelope:envelope(),resources:{placeholder:'not a validated full manifest'}};
+  const f=fixture(full),fullHash=f.activation.expectedManifestSha256;
+  const pinned=validatePinnedLiteral(f)!;
+  expect(pinned.manifestSha256).toBe(fullHash);expect(pinned.value).toEqual(full);
+  expect(pinned.manifestSha256).not.toBe(createHash('sha256').update(Buffer.from(JSON.stringify(full.envelope))).digest('hex'));
+  const validated=validateEnvelopeValue((pinned.value as typeof full).envelope,f.nowMs);
+  expect(validated).toEqual(envelope());expect(Object.isFrozen(validated.budgets)).toBe(true);
+  f.manifest.fill(0);expect((pinned.value as typeof full).envelope.runId).toBe(full.envelope.runId);
+  expect(Object.isFrozen(pinned)).toBe(true);expect(Object.isFrozen(pinned.value)).toBe(true);expect(Object.isFrozen((pinned.value as typeof full).resources)).toBe(true);
+ });
+ it('never substitutes nested bytes for the external full hash',()=>{
+  const full={envelope:envelope(),resources:[]};const f=fixture(full);
+  f.activation.expectedManifestSha256=createHash('sha256').update(Buffer.from(JSON.stringify(full.envelope))).digest('hex');
+  expect(()=>validatePinnedLiteral(f)).toThrow('TEST_ADMISSION_REJECTED');
+ });
+ it('preserves cold default and receipt-time rejection before exposing parsed data',()=>{
+  const cold=new Proxy({activation:undefined},{get(target,key){if(key==='activation')return target.activation;throw Error('private getter');}});
+  expect(validatePinnedLiteral(cold as never)).toBeNull();
+  const f=fixture({envelope:envelope()});f.receipt.observedAt='2026-11-10T00:02:00.001Z';expect(()=>validatePinnedLiteral(f)).toThrow('TEST_ADMISSION_REJECTED');
+ });
+ it('rejects duplicates across complete literal and malformed nested envelope opaquely',()=>{
+  const f=fixture();f.manifest=Buffer.from('{"envelope":{},"envelope":{}}');f.activation.expectedManifestSha256=createHash('sha256').update(f.manifest).digest('hex');
+  expect(()=>validatePinnedLiteral(f)).toThrow('TEST_ADMISSION_REJECTED');
+  expect(()=>validateEnvelopeValue({...envelope(),extra:true},f.nowMs)).toThrow('TEST_ADMISSION_REJECTED');
+  expect(()=>validateEnvelopeValue(envelope(),NaN)).toThrow('TEST_ADMISSION_REJECTED');
+ });
+});
+
+it('compatibility wrapper validates against the same once-read server time',()=>{
+ const f=fixture();let reads=0;const time=f.nowMs;
+ Object.defineProperty(f,'nowMs',{get(){reads++;if(reads>1)throw Error('private second time');return time;}});
+ expect(validateActivationEnvelope(f)).not.toBeNull();expect(reads).toBe(1);
 });
