@@ -394,3 +394,166 @@ it("rejects foreign ACTOR initiation even under expected denial because it can c
   Object.assign(o, { principal: { kind: "INVALID_CREDENTIAL_NEGATIVE" } });
   expect(validateOperationDeclarations([o], inventory(), env)).toHaveLength(1);
 });
+
+describe("PUBLIC_AUTHENTICATED declaration only, not runtime public eligibility", () => {
+  const publicRead = () => ({
+    ...op(),
+    principal: { kind: "PUBLIC_AUTHENTICATED" },
+  });
+  it("represents an unlisted normally authenticated reader without actor/session credentials", () => {
+    for (const assertion of ["NORMAL_AUTHORIZATION", "EXPECTED_DENIAL"]) {
+      const r = validateOperationDeclarations(
+        [{ ...publicRead(), assertion }],
+        inventory(),
+        env,
+      );
+      expect(r[0].principal).toEqual({ kind: "PUBLIC_AUTHENTICATED" });
+      expect(r[0].charges.authenticatedRequests).toBe(1);
+    }
+  });
+  it("rejects extra identity fields and every non-READ kind", () => {
+    for (const principal of [
+      { kind: "PUBLIC_AUTHENTICATED", actorId: id(99) },
+      { kind: "PUBLIC_AUTHENTICATED", sessionId: id(99) },
+      { kind: "PUBLIC_AUTHENTICATED", token: "private" },
+    ])
+      reject([{ ...publicRead(), principal }]);
+    for (const kind of ["METADATA", "DELETE", "FINALIZE"]) {
+      const { method, variant, range, ...o } = publicRead();
+      reject([
+        { ...o, kind, charges: { ...o.charges, authenticatedEgressBytes: 0 } },
+      ]);
+    }
+  });
+  it("denies private/unbound/group/DM declarations regardless expected outcome", () => {
+    for (const mutation of ["private", "draft", "group", "dm"])
+      for (const assertion of ["NORMAL_AUTHORIZATION", "EXPECTED_DENIAL"]) {
+        const inv = JSON.parse(JSON.stringify(inventory()));
+        const a = inv.attachments[0];
+        if (mutation === "private") a.initiation.intent.visibility = "PRIVATE";
+        if (mutation === "draft") a.parent = null;
+        if (mutation === "group") {
+          a.initiation.intent = { kind: "STUDY_GROUP", groupId: id(60) };
+          a.parent = { kind: "STUDY_GROUP", groupId: id(60), textId: id(61) };
+        }
+        if (mutation === "dm") {
+          a.initiation.intent = {
+            kind: "DIRECT_MESSAGE",
+            conversationId: id(60),
+          };
+          a.parent = {
+            kind: "DIRECT_MESSAGE",
+            conversationId: id(60),
+            messageId: id(61),
+          };
+        }
+        expect(() =>
+          validateOperationDeclarations(
+            [{ ...publicRead(), assertion }],
+            inv,
+            env,
+          ),
+        ).toThrow("TEST_ADMISSION_OPERATIONS");
+      }
+  });
+  it("rejects overlap with any ACTOR observable read in either order despite costs/outcomes", () => {
+    for (const reverse of [false, true])
+      for (const actor of [
+        { kind: "ACTOR", actorId: id(3), sessionId: id(4) },
+        { kind: "ACTOR", actorId: id(30), sessionId: id(31) },
+      ]) {
+        const p = publicRead(),
+          a = {
+            ...op(),
+            key: "actor-other",
+            attemptKeys: ["actor-attempt"],
+            principal: actor,
+            assertion: "EXPECTED_DENIAL",
+            charges: { ...op().charges, authenticatedEgressBytes: 200 },
+          };
+        reject(reverse ? [a, p] : [p, a]);
+      }
+  });
+  it("allows disjoint anonymous and invalid-credential read declarations", () => {
+    const p = publicRead(),
+      anon = {
+        ...op(),
+        key: "anon",
+        attemptKeys: ["anon-attempt"],
+        principal: { kind: "ANON" },
+        charges: {
+          ...op().charges,
+          authenticatedRequests: 0,
+          authenticatedEgressBytes: 0,
+          anonymousRequests: 1,
+          anonymousEgressBytes: 100,
+        },
+      },
+      bad = {
+        ...op(),
+        key: "invalid",
+        attemptKeys: ["invalid-attempt"],
+        principal: { kind: "INVALID_CREDENTIAL_NEGATIVE" },
+        assertion: "EXPECTED_DENIAL",
+      };
+    expect(
+      validateOperationDeclarations([p, anon, bad], inventory(), env),
+    ).toHaveLength(3);
+  });
+  it("uses authenticated budgets and ordinary positive Range/TEXT-preview restrictions", () => {
+    const p = publicRead();
+    reject([p], {
+      ...env,
+      budgets: { ...env.budgets, authenticatedEgressBytes: 99 },
+    });
+    reject([
+      {
+        ...p,
+        charges: {
+          ...p.charges,
+          authenticatedRequests: 0,
+          anonymousRequests: 1,
+        },
+      },
+    ]);
+    reject([{ ...p, range: "invalid" }]);
+    const inv = JSON.parse(JSON.stringify(inventory()));
+    inv.attachments[0].initiation.format = "TEXT";
+    expect(() =>
+      validateOperationDeclarations([{ ...p, variant: "thumbnail" }], inv, env),
+    ).toThrow("TEST_ADMISSION_OPERATIONS");
+  });
+});
+
+it("public authenticated policy cannot declare initiate, patch or upload even with otherwise valid bodies", () => {
+  const { method, variant, range, ...base } = op(),
+    principal = { kind: "PUBLIC_AUTHENTICATED" },
+    charges = { ...base.charges, authenticatedEgressBytes: 0 };
+  reject([
+    { ...base, principal, charges, kind: "INITIATE", body: { ...body } },
+  ]);
+  reject([
+    {
+      ...base,
+      principal,
+      charges,
+      kind: "PATCH_METADATA",
+      body: { expectedMetadataVersion: 0, caption: "", alt: "" },
+    },
+  ]);
+  reject([
+    {
+      ...base,
+      principal,
+      charges: { ...charges, ingressBytes: 100 },
+      kind: "UPLOAD",
+      contentType: "image/jpeg",
+      contentLength: 100,
+      inputSha256: "a".repeat(64),
+      transmittedBytes: 100,
+      case: "COMPLETE",
+    },
+  ]);
+  const read = { ...op(), principal };
+  reject([read, { ...read, key: "duplicate", attemptKeys: ["another"] }]);
+});
