@@ -183,21 +183,30 @@ describe("shared fresh-session attachment read service", () => {
     ).rejects.toMatchObject({ code: "ATTACHMENT_UNAVAILABLE" });
     expect(provider.openRead).not.toHaveBeenCalled();
   });
-  it("does not return provider keys through metadata and leaves failed public lookups durably rate charged", async () => {
+  it("rejects anonymous metadata before any connection or quota query even with a valid IP identity", async () => {
+    const connect = jest.spyOn(db.pool, "connect"), query = jest.spyOn(db.pool, "query");
+    try {
+      const service = new AttachmentReadService(db.pool, storage());
+      await expect(service.metadata(async () => null, randomUUID(), "a".repeat(64))).rejects.toMatchObject({code:"AUTH_UNAUTHORIZED"});
+      expect(connect).not.toHaveBeenCalled();
+      expect(query).not.toHaveBeenCalled();
+    } finally { connect.mockRestore(); query.mockRestore(); }
+  });
+  it("does not return provider keys through metadata and leaves failed authenticated lookups durably rate charged", async () => {
     const f = await fixture(),
       service = new AttachmentReadService(db.pool, storage());
-    const metadata = await service.metadata(anonymous, f.id, ip);
+    const metadata = await service.metadata(async () => owner, f.id, ip);
     expect(JSON.stringify(metadata)).not.toMatch(
       /sha256|etag|attemptId|object_key|r2|bucket/,
     );
     await expect(
-      service.metadata(anonymous, randomUUID(), ip),
+      service.metadata(async () => owner, randomUUID(), ip),
     ).rejects.toMatchObject({ code: "ATTACHMENT_UNAVAILABLE" });
     expect(
       (
         await db.pool.query(
-          "SELECT used FROM attachment_quota_counters WHERE kind='IP' AND subject=$1 AND action='read'",
-          [ip],
+          "SELECT used FROM attachment_quota_counters WHERE kind='ACTOR' AND subject=$1 AND action='read'",
+          [owner],
         )
       ).rows[0].used,
     ).toBe("2");
