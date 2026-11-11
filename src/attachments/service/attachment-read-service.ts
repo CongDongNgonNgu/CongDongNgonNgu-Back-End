@@ -5,6 +5,7 @@ import { transaction } from "../../study-groups/study-group.store";
 import { AttachmentQuotaLedger } from "../attachment-quota-ledger";
 import {
   admitAttachmentRead,
+  type AttachmentReadConstraint,
   selectAttachmentMetadata,
 } from "../access/attachment-access";
 import {
@@ -27,6 +28,8 @@ import {
  * null means genuinely anonymous. No fallback/catch converts failure to null. */
 export type RefreshAttachmentIdentity = () => Promise<string | null>;
 interface ReadOptions {
+  /** Internal only; no controller request field maps to this constraint. */
+  constraint?: AttachmentReadConstraint;
   variant?: "normalized" | "thumbnail";
   range?: string;
   trustedIpHash?: string;
@@ -146,13 +149,16 @@ export class AttachmentReadService {
     method: "GET" | "HEAD",
     options: ReadOptions = {},
   ): Promise<AttachmentReadResponse> {
-    const actor = await this.actor(refresh);
+    const constraint = options.constraint === undefined ? "CURRENT_PARENT" : options.constraint;
+    if (constraint !== "CURRENT_PARENT" && constraint !== "AUTHENTICATED_PUBLIC_COMMUNITY")
+      throw opaqueAttachmentAuthorizationError();
+    const actor = await this.actor(refresh, constraint === "AUTHENTICATED_PUBLIC_COMMUNITY");
     await this.readRate(actor, options.trustedIpHash);
     if (method !== "GET" && method !== "HEAD")
       throw opaqueAttachmentAuthorizationError();
     const variant = options.variant ?? "normalized";
     const admitted = await transaction(this.pool, (c) =>
-      admitAttachmentRead(c, actor, id, variant),
+      admitAttachmentRead(c, actor, id, variant, constraint),
     );
     const range = attachmentRange(options.range, admitted.object.sizeBytes),
       responseBytes = range
