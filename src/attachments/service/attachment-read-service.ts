@@ -82,7 +82,7 @@ export class AttachmentReadService {
     id: string,
     trustedIpHash?: string,
   ): Promise<AttachmentDraftStatus> {
-    const actor = await this.actor(refresh);
+    const actor = await this.actor(refresh, true);
     await this.readRate(actor, trustedIpHash);
     return transaction(this.pool, (c) =>
       selectAttachmentMetadata(c, actor, id),

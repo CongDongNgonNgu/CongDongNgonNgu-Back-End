@@ -37,15 +37,15 @@ describe("attachment service fresh identity boundary", () => {
       expect(pool.connect).not.toHaveBeenCalled();
     },
   );
-  it("rejects a missing trusted anonymous quota identity before SQL lookup", async () => {
+  it("requires metadata authentication before SQL even with a valid trusted IP quota identity", async () => {
     const pool = { connect: jest.fn() },
       service = new AttachmentReadService(
         pool as unknown as Pool,
         {} as AttachmentStorage,
       );
     await expect(
-      service.metadata(async () => null, "not-looked-up"),
-    ).rejects.toThrow();
+      service.metadata(async () => null, "not-looked-up", "a".repeat(64)),
+    ).rejects.toMatchObject({ code: "AUTH_UNAUTHORIZED" });
     expect(pool.connect).not.toHaveBeenCalled();
   });
 
