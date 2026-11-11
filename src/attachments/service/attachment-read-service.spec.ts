@@ -78,3 +78,16 @@ describe("attachment service fresh identity boundary", () => {
     }
   });
 });
+
+describe('internal current-public read constraint admission',()=>{
+ it('requires authentication before SQL even with valid anonymous IP identity',async()=>{
+  const pool={connect:jest.fn()},storage={head:jest.fn(),openRead:jest.fn()};const service=new AttachmentReadService(pool as unknown as Pool,storage as unknown as AttachmentStorage);
+  await expect(service.read(async()=>null,'not-looked-up','HEAD',{trustedIpHash:'a'.repeat(64),constraint:'AUTHENTICATED_PUBLIC_COMMUNITY'} as never)).rejects.toMatchObject({code:'AUTH_UNAUTHORIZED'});
+  expect(pool.connect).not.toHaveBeenCalled();expect(storage.head).not.toHaveBeenCalled();expect(storage.openRead).not.toHaveBeenCalled();
+ });
+ it.each([null,'UNKNOWN',false])('rejects invalid internal constraint %s before quota or identity I/O',async constraint=>{
+  const pool={connect:jest.fn()},refresh=jest.fn(async()=>null),service=new AttachmentReadService(pool as unknown as Pool,{} as AttachmentStorage);
+  await expect(service.read(refresh,'not-looked-up','GET',{trustedIpHash:'a'.repeat(64),constraint} as never)).rejects.toMatchObject({code:'ATTACHMENT_UNAVAILABLE'});
+  expect(pool.connect).not.toHaveBeenCalled();expect(refresh).not.toHaveBeenCalled();
+ });
+});

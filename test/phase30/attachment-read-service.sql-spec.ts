@@ -48,7 +48,7 @@ describe("shared fresh-session attachment read service", () => {
       )
     ).rows[0].id;
   });
-  async function fixture() {
+  async function fixture(bound = true) {
     const id = randomUUID(),
       object = randomUUID();
     const post = (
@@ -84,11 +84,41 @@ describe("shared fresh-session attachment read service", () => {
       "UPDATE attachments SET state='READY',normalized_object_id=$2,version=version+1 WHERE id=$1",
       [id, object],
     );
-    await db.pool.query(
+    if (bound) await db.pool.query(
       "INSERT INTO attachment_bindings(attachment_id,uploader_id,scope,scope_id,community_post_id,position) VALUES($1,$2,'COMMUNITY',$3,$4,0)",
       [id, owner, language, post],
     );
     return { id, object, post };
+  }
+  async function privateDomainFixture(scope:"STUDY_GROUP"|"DIRECT_MESSAGE") {
+    let scopeId:string, parentId:string, generation:string;
+    if(scope==="STUDY_GROUP"){
+      const facts=await transaction(db.pool,async client=>{
+        const scopeId=(await client.query("INSERT INTO study_groups(owner_user_id,name) VALUES($1,'Synthetic read constraint') RETURNING id",[owner])).rows[0].id;
+        const generation=(await client.query("INSERT INTO study_group_memberships(group_id,user_id,role,status) VALUES($1,$2,'OWNER','ACTIVE') RETURNING generation",[scopeId,owner])).rows[0].generation;
+        const parentId=(await client.query("INSERT INTO study_group_texts(group_id,author_user_id,body) VALUES($1,$2,'Synthetic read constraint') RETURNING id",[scopeId,owner])).rows[0].id;
+        return {scopeId,generation,parentId};
+      });
+      ({scopeId,generation,parentId}=facts);
+    }else{
+      const [a,b]=[owner,other].sort();
+      for(const actor of [a,b]){
+        await db.pool.query("INSERT INTO language_exchange_preferences(user_id,exchange_opt_in,discoverable,contact_permission) VALUES($1,true,true,'RELATIONSHIP_GATED')",[actor]);
+        const ul=(await db.pool.query("INSERT INTO user_languages(user_id,language_id,is_known,is_learning,declared_proficiency) VALUES($1,$2,true,true,'B1') RETURNING id",[actor,language])).rows[0].id;
+        await db.pool.query("INSERT INTO language_exchange_languages(user_id,user_language_id,direction) VALUES($1,$2,'OFFER'),($1,$2,'WANT')",[actor,ul]);
+      }
+      generation=(await db.pool.query("INSERT INTO language_exchange_connections(participant_a_id,participant_b_id,requester_id,status) VALUES($1,$2,$1,'CONNECTED') RETURNING id",[a,b])).rows[0].id;
+      scopeId=(await db.pool.query("INSERT INTO direct_conversations(participant_a_id,participant_b_id) VALUES($1,$2) RETURNING id",[a,b])).rows[0].id;
+      parentId=(await db.pool.query("INSERT INTO direct_messages(conversation_id,sender_user_id,client_message_id,text,sequence,participant_a_id,participant_b_id) VALUES($1,$2,$3,'Synthetic read constraint',1,$4,$5) RETURNING id",[scopeId,owner,randomUUID(),a,b])).rows[0].id;
+    }
+    const id=randomUUID(),object=randomUUID();
+    await db.pool.query("INSERT INTO attachments(id,uploader_id,scope,scope_id,group_id,conversation_id,scope_generation,client_upload_id,init_fingerprint,format,declared_mime,expected_bytes,display_filename,reserved_bytes,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'IMAGE','image/png',20,'synthetic.png',4456468,clock_timestamp()+interval '1 hour')",[id,owner,scope,scopeId,scope==='STUDY_GROUP'?scopeId:null,scope==='DIRECT_MESSAGE'?scopeId:null,generation,randomUUID(),'a'.repeat(64)]);
+    await db.pool.query("UPDATE attachments SET state='UPLOADING',lease_owner=$2,lease_expires_at=clock_timestamp()+interval '1 minute',version=version+1 WHERE id=$1",[id,randomUUID()]);
+    await db.pool.query("UPDATE attachments SET state='PENDING',lease_owner=NULL,lease_expires_at=NULL,version=version+1 WHERE id=$1",[id]);
+    await db.pool.query("INSERT INTO attachment_objects(id,attachment_id,attempt_id,variant,sha256,byte_count,content_type,etag,status,put_claim,put_claimed_at,put_settled_at) VALUES($1,$2,$3,'normalized',$4,20,'application/octet-stream',$5,'WRITTEN',$6,clock_timestamp(),clock_timestamp())",[object,id,randomUUID(),'b'.repeat(64),'"synthetic-etag"',randomUUID()]);
+    await db.pool.query("UPDATE attachments SET state='READY',normalized_object_id=$2,version=version+1 WHERE id=$1",[id,object]);
+    await db.pool.query("INSERT INTO attachment_bindings(attachment_id,uploader_id,scope,scope_id,group_text_id,direct_message_id,position) VALUES($1,$2,$3,$4,$5,$6,0)",[id,owner,scope,scopeId,scope==='STUDY_GROUP'?parentId:null,scope==='DIRECT_MESSAGE'?parentId:null]);
+    return{id};
   }
   const anonymous = async () => null;
   let ip: string;
@@ -110,6 +140,35 @@ describe("shared fresh-session attachment read service", () => {
       )
     ).object;
   }
+  it.each(["STUDY_GROUP","DIRECT_MESSAGE"] as const)("keeps normal authorized %s reads but rejects the public-only constraint before provider I/O",async scope=>{
+    const f=await privateDomainFixture(scope),object=await selected(f.id),provider=storage();(provider.head as jest.Mock).mockResolvedValue(object);
+    const service=new AttachmentReadService(db.pool,provider);
+    const target=f.id;
+    expect(await service.read(async()=>owner,f.id,"HEAD")).toHaveProperty("status",200);
+    jest.clearAllMocks();
+    await expect(service.read(async()=>owner,target,"HEAD",{constraint:"AUTHENTICATED_PUBLIC_COMMUNITY"})).rejects.toMatchObject({code:"ATTACHMENT_UNAVAILABLE"});
+    expect(provider.head).not.toHaveBeenCalled();expect(provider.openRead).not.toHaveBeenCalled();
+  });
+  it("requires current PUBLIC eligibility for authenticated owner and nonowner, without changing ordinary owner reads", async () => {
+    const f = await fixture(), object = await selected(f.id), provider = storage();
+    (provider.head as jest.Mock).mockResolvedValue(object);
+    const service = new AttachmentReadService(db.pool, provider);
+    for (const actor of [owner, other]) expect(await service.read(async () => actor, f.id, "HEAD", {constraint:"AUTHENTICATED_PUBLIC_COMMUNITY"})).toHaveProperty("status",200);
+    await db.pool.query("UPDATE community_posts SET visibility='PRIVATE' WHERE id=$1",[f.post]);
+    jest.clearAllMocks();
+    await expect(service.read(async () => owner,f.id,"HEAD",{constraint:"AUTHENTICATED_PUBLIC_COMMUNITY"})).rejects.toMatchObject({code:"ATTACHMENT_UNAVAILABLE"});
+    expect(provider.head).not.toHaveBeenCalled();expect(provider.openRead).not.toHaveBeenCalled();
+    expect(await service.read(async () => owner,f.id,"HEAD")).toHaveProperty("status",200);
+  });
+  it.each(["REMOVED_BINDING","MISSING_BINDING","HIDDEN_POST","UNBOUND"])("denies constrained %s before provider I/O", async scenario => {
+    const f=await fixture(scenario!=="MISSING_BINDING"), provider=storage(), service=new AttachmentReadService(db.pool,provider);
+    let target=f.id;
+    if(scenario==="REMOVED_BINDING")await db.pool.query("UPDATE attachment_bindings SET removed_at=clock_timestamp() WHERE attachment_id=$1",[f.id]);
+    if(scenario==="UNBOUND"){target=randomUUID();await db.pool.query("INSERT INTO attachments(id,uploader_id,scope,scope_id,language_id,community_post_type,community_visibility,client_upload_id,init_fingerprint,format,declared_mime,expected_bytes,display_filename,reserved_bytes,expires_at) VALUES($1,$2,'COMMUNITY',$3,$3,'DISCUSSION','PUBLIC',$4,$5,'IMAGE','image/png',20,'synthetic.png',4456468,clock_timestamp()+interval '1 hour')",[target,owner,language,randomUUID(),'a'.repeat(64)]);}
+    if(scenario==="HIDDEN_POST")await db.pool.query("UPDATE community_posts SET moderation_state='HIDDEN' WHERE id=$1",[f.post]);
+    await expect(service.read(async()=>owner,target,"HEAD",{constraint:"AUTHENTICATED_PUBLIC_COMMUNITY"})).rejects.toMatchObject({code:"ATTACHMENT_UNAVAILABLE"});
+    expect(provider.head).not.toHaveBeenCalled();expect(provider.openRead).not.toHaveBeenCalled();
+  });
   it("refreshes identity on every full/range/HEAD request and rechecks changed parent visibility", async () => {
     const f = await fixture(),
       object = await selected(f.id),
