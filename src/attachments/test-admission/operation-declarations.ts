@@ -9,6 +9,7 @@ type Counter = keyof typeof RUN_LIMITS;
 type Principal =
   | { kind: "ACTOR"; actorId: string; sessionId: string }
   | { kind: "ANON" }
+  | { kind: "PUBLIC_AUTHENTICATED" }
   | { kind: "INVALID_CREDENTIAL_NEGATIVE" };
 type Common = {
   key: string;
@@ -144,6 +145,11 @@ const fields: Record<string, string[]> = {
  * slotKeys are policy-wide references: a later graph must bind each slot to an
  * individual attemptKey, never reburn all slots for each retry. A later matcher
  * must atomically claim the first unused attempt or fail immediately, not queue.
+ * PUBLIC_AUTHENTICATED describes unlisted normal-session readers of declared
+ * bound PUBLIC Community fixtures only. Later runtime selection MUST enforce
+ * normal guard/fresh session AND current PUBLIC parent eligibility, even when
+ * owner ACL would permit now-private content. This parser implements neither
+ * session validation nor that current-public check, and never anonymous fallback.
  * RAW_BODY malformed JSON negatives are deliberately unsupported in this slice. */
 export function validateOperationDeclarations(
   value: unknown,
@@ -154,6 +160,8 @@ export function validateOperationDeclarations(
     const keys = new Set<string>(),
       attempts = new Set<string>(),
       policies = new Map<string, string>(),
+      publicReads = new Set<string>(),
+      actorReads = new Set<string>(),
       totals = Object.fromEntries(
         Object.keys(RUN_LIMITS).map((k) => [k, 0]),
       ) as Record<Counter, number>;
@@ -188,6 +196,7 @@ export function validateOperationDeclarations(
         };
       } else if (
         p.kind === "ANON" ||
+        p.kind === "PUBLIC_AUTHENTICATED" ||
         p.kind === "INVALID_CREDENTIAL_NEGATIVE"
       ) {
         object(o.principal, ["kind"]);
@@ -204,6 +213,14 @@ export function validateOperationDeclarations(
       )
         return fail();
       if (principal.kind === "ANON" && kind !== "READ") return fail();
+      if (
+        principal.kind === "PUBLIC_AUTHENTICATED" &&
+        (kind !== "READ" ||
+          attachment.parent?.kind !== "COMMUNITY" ||
+          attachment.initiation.intent.kind !== "COMMUNITY" ||
+          attachment.initiation.intent.visibility !== "PUBLIC")
+      )
+        return fail();
       if (
         principal.kind === "ANON" &&
         o.assertion === "NORMAL_AUTHORIZATION" &&
@@ -407,6 +424,21 @@ export function validateOperationDeclarations(
               contentLength: detail.contentLength,
             }
           : detail;
+      if (detail.kind === "READ") {
+        const observedRead = JSON.stringify({
+          attachmentId: attachment.id,
+          method: detail.method,
+          variant: detail.variant,
+          range: detail.range,
+        });
+        if (principal.kind === "PUBLIC_AUTHENTICATED") {
+          if (actorReads.has(observedRead)) return fail();
+          publicReads.add(observedRead);
+        } else if (principal.kind === "ACTOR") {
+          if (publicReads.has(observedRead)) return fail();
+          actorReads.add(observedRead);
+        }
+      }
       const signature = JSON.stringify({
         principal,
         attachmentId: attachment.id,
