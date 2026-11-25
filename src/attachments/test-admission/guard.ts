@@ -14,6 +14,15 @@ export interface ActivationInputs {
   receipt?: {service: string; branch: string; sha: string; deploymentId: string; observedAt: string};
   nowMs?: number;
 }
+export type ColdActivationInputs = Omit<ActivationInputs,'activation'|'receipt'> & {
+  activation?: {expectedSourceSha:string;expectedManifestSha256:string};
+};
+export interface ColdPinnedLiteral {
+  readonly nowMs:number;
+  readonly sourceSha:string;
+  readonly manifestSha256:string;
+  readonly value:unknown;
+}
 const SERVICE = 'srv-dahnerh594qs73fp3420';
 const MAXIMA = Object.freeze({durationMs:600000,attachments:4,videos:1,declaredBytes:16777216,
   authenticatedRequests:120,anonymousRequests:20,ingressBytes:33554432,
@@ -71,16 +80,10 @@ function freezeParsed(value: unknown): unknown {
   }
   return value;
 }
-/** Hash and parse the same complete literal copy; never derive an external pin. */
-export function validatePinnedLiteral(options?: ActivationInputs): PinnedLiteral | null {
-  try {
-    const activation = options?.activation;
-    if (activation === undefined) return null; // Do not inspect any other option.
-    const active = record(activation,['expectedSourceSha','expectedManifestSha256','expectedDeploymentId']);
-    const sha = active.expectedSourceSha, hash = active.expectedManifestSha256, deployment = active.expectedDeploymentId;
-    if (typeof sha !== 'string' || !/^[a-f0-9]{40}$/.test(sha) || typeof hash !== 'string' ||
-        !/^[a-f0-9]{64}$/.test(hash) || typeof deployment !== 'string' || !/^dep-[a-z0-9-]{1,80}$/.test(deployment)) return reject();
-    const {env,config,platform,arch,execArgv,manifest,receipt,nowMs} = options!;
+type LocalIdentityInputs = Pick<ActivationInputs,'env'|'config'|'platform'|'arch'|'execArgv'|'manifest'|'nowMs'>;
+/** Both APIs use identical local identity checks and one bounded byte copy. */
+function localLiteral(options:LocalIdentityInputs,sha:string,hash:string):{literal:Buffer;nowMs:number}{
+  const {env,config,platform,arch,execArgv,manifest,nowMs}=options;
     if (!env || !config || env.NODE_ENV !== 'test' || env.RENDER_SERVICE_ID !== SERVICE ||
         env.RENDER_GIT_BRANCH !== 'dev' || env.RENDER_GIT_COMMIT !== sha ||
         config.environment !== 'test' || platform !== 'linux' || arch !== 'x64' ||
@@ -92,6 +95,35 @@ export function validatePinnedLiteral(options?: ActivationInputs): PinnedLiteral
         !Buffer.isBuffer(manifest) || manifest.length < 1 || manifest.length > 65536) return reject();
     const literal = Buffer.from(manifest);
     if (createHash('sha256').update(literal).digest('hex') !== hash) return reject();
+  return {literal,nowMs:nowMs!};
+}
+/** Cold local identity and literal parsing only. No receipt/deployment observation,
+ * envelope acceptance, DB clock, full-manifest validation or admission authority.
+ * Missing activation observes no other options; external pins are never derived. */
+export function validateColdPinnedLiteral(options?:ColdActivationInputs):ColdPinnedLiteral|null {
+  try {
+    const activation=options?.activation;
+    if(activation===undefined)return null;
+    const active=record(activation,['expectedSourceSha','expectedManifestSha256']);
+    const sha=active.expectedSourceSha,hash=active.expectedManifestSha256;
+    if(typeof sha!=='string'||!/^[a-f0-9]{40}$/.test(sha)||typeof hash!=='string'||!/^[a-f0-9]{64}$/.test(hash))return reject();
+    const {env,config,platform,arch,execArgv,manifest,nowMs}=options!;
+    const checked=localLiteral({env,config,platform,arch,execArgv,manifest,nowMs},sha,hash);
+    const value=freezeParsed(strictJson(checked.literal));
+    return Object.freeze({sourceSha:sha,manifestSha256:hash,nowMs:checked.nowMs,value});
+  } catch {return reject();}
+}
+/** Hash and parse the same complete literal copy; never derive an external pin. */
+export function validatePinnedLiteral(options?: ActivationInputs): PinnedLiteral | null {
+  try {
+    const activation = options?.activation;
+    if (activation === undefined) return null; // Do not inspect any other option.
+    const active = record(activation,['expectedSourceSha','expectedManifestSha256','expectedDeploymentId']);
+    const sha = active.expectedSourceSha, hash = active.expectedManifestSha256, deployment = active.expectedDeploymentId;
+    if (typeof sha !== 'string' || !/^[a-f0-9]{40}$/.test(sha) || typeof hash !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(hash) || typeof deployment !== 'string' || !/^dep-[a-z0-9-]{1,80}$/.test(deployment)) return reject();
+    const {env,config,platform,arch,execArgv,manifest,receipt,nowMs} = options!;
+    const {literal}=localLiteral({env,config,platform,arch,execArgv,manifest,nowMs},sha,hash);
     const checkedReceipt = record(receipt,['service','branch','sha','deploymentId','observedAt']);
     const observed = canonicalDate(checkedReceipt.observedAt);
     if (checkedReceipt.service !== SERVICE || checkedReceipt.branch !== 'dev' || checkedReceipt.sha !== sha ||
