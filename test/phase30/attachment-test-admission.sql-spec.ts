@@ -89,4 +89,57 @@ describe('inert execution ledger in disposable owned PostgreSQL schema',()=>{
   await expect(db.pool.query('TRUNCATE '+table('slots'))).rejects.toThrow();
   await expect(db.pool.query('TRUNCATE '+table('runs')+' CASCADE')).rejects.toThrow();
  });
+ function coarsePlan(){return plan({limits:{...RUN_LIMITS,authenticatedRequests:2},requests:{candidates:[{key:'public-head',method:'HEAD',path:'/api/v1/attachments/'+randomUUID()+'/content',authClass:'AUTH',ingressBytes:0,egressBytes:200}],attempts:[{key:'head-a',candidateKey:'public-head'},{key:'head-b',candidateKey:'public-head'}]}});}
+ it('durably reserves finite request ceilings before parsing without burning product slots or refunding failures',async()=>{
+  const p=coarsePlan();await ledger.prepare(p);const active=await ledger.activate(p.runId,p.activationId,randomUUID());
+  const results=await Promise.allSettled(Array.from({length:3},()=>ledger.reserveRequest(active,'public-head')));
+  expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(2);
+  const row=(await db.pool.query('SELECT counters,preparation_sealed FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0];
+  expect(row.preparation_sealed).toBe(true);expect(row.counters).toEqual({authenticatedRequests:2,anonymousRequests:0,ingressBytes:0,authenticatedEgressBytes:400,anonymousEgressBytes:0,processingAttempts:0});
+  expect((await db.pool.query('SELECT state FROM '+table('slots')+' WHERE run_id=$1',[p.runId])).rows[0].state).toBe('AVAILABLE');
+  expect((await db.pool.query('SELECT state FROM '+table('request_attempts')+' WHERE run_id=$1',[p.runId])).rows.every(r=>r.state==='RESERVED')).toBe(true);
+  // A cancelled/malformed caller has no refund/settlement API; every retry burns
+  // another prelisted attempt. This proof invokes no parser/HTTP/provider.
+  await expect(ledger.reserveRequest(active,'public-head')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+ });
+ it('rejects aggregate coarse-ceiling overcommit and leaves no partially prepared request inventory',async()=>{
+  const p=coarsePlan();p.limits.authenticatedEgressBytes=399;
+  await expect(ledger.prepare(p)).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  expect((await db.pool.query('SELECT 1 FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rowCount).toBe(0);
+ });
+ it('seals request inventory and blocks direct mutation, refunds, late insertion, legacy slot burns and truncate',async()=>{
+  const p=coarsePlan();await ledger.prepare(p);
+  await expect(db.pool.query('INSERT INTO '+table('request_attempts')+"(run_id,attempt_key,candidate_key) VALUES($1,'late','public-head')",[p.runId])).rejects.toThrow();
+  await expect(db.pool.query('UPDATE '+table('runs')+' SET preparation_sealed=false WHERE run_id=$1',[p.runId])).rejects.toThrow();
+  const active=await ledger.activate(p.runId,p.activationId,randomUUID());await ledger.reserveRequest(active,'public-head');
+  for(const sql of [
+   'UPDATE '+table('request_candidates')+' SET egress_bytes=1 WHERE run_id=$1',
+   'DELETE FROM '+table('request_candidates')+' WHERE run_id=$1',
+   'DELETE FROM '+table('request_attempts')+' WHERE run_id=$1',
+   'UPDATE '+table('request_attempts')+" SET state='AVAILABLE',reserved_at=NULL,boot_id=NULL WHERE run_id=$1 AND state='RESERVED'",
+   'UPDATE '+table('request_attempts')+" SET candidate_key='other' WHERE run_id=$1",
+   'UPDATE '+table('runs')+" SET counters=jsonb_set(counters,'{authenticatedRequests}','2') WHERE run_id=$1",
+   'UPDATE '+table('runs')+" SET counters=jsonb_set(counters,'{authenticatedEgressBytes}','0') WHERE run_id=$1",
+   'UPDATE '+table('slots')+" SET state='BURNED' WHERE run_id=$1",
+  ])await expect(db.pool.query(sql,[p.runId])).rejects.toThrow();
+  await expect(ledger.reserve(active,{operationKey:'upload',slots:[],charges:{authenticatedRequests:1}})).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  for(const name of ['request_candidates','request_attempts'])await expect(db.pool.query('TRUNCATE '+table(name)+' CASCADE')).rejects.toThrow();
+ });
+ it('charges stored anonymous byte ceilings independently and cannot reuse an original handle after restart',async()=>{
+  const p=coarsePlan();p.requests!.candidates[0].authClass='ANON';p.requests!.candidates[0].egressBytes=300;
+  await ledger.prepare(p);const active=await ledger.activate(p.runId,p.activationId,randomUUID());await ledger.reserveRequest(active,'public-head');
+  const row=(await db.pool.query('SELECT counters FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0];expect(row.counters.anonymousRequests).toBe(1);expect(row.counters.anonymousEgressBytes).toBe(300);expect(row.counters.authenticatedRequests).toBe(0);
+  await expect(new RunLedger(db.pool).reserveRequest(active,'public-head')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  await expect(ledger.reserveRequest({...active},'public-head')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+ });
+
+ it('expires request reservation naturally without renewal or clearing earlier charges',async()=>{
+  const now=(await db.pool.query('SELECT clock_timestamp() t')).rows[0].t as Date;
+  const p=coarsePlan();p.notBefore=new Date(now.getTime()-100).toISOString();p.expiresAt=new Date(now.getTime()+10000).toISOString();
+  await ledger.prepare(p);const active=await ledger.activate(p.runId,p.activationId,randomUUID());await ledger.reserveRequest(active,'public-head');
+  await db.pool.query('SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp()))+0.05)',[p.expiresAt]);
+  await expect(ledger.reserveRequest(active,'public-head')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  const row=(await db.pool.query('SELECT counters FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0];expect(row.counters.authenticatedRequests).toBe(1);expect(row.counters.authenticatedEgressBytes).toBe(200);
+ },30000);
+
 });
