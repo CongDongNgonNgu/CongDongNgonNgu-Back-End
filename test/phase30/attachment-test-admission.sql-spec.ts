@@ -6,7 +6,7 @@ import {RUN_LEDGER_DDL} from '../../src/attachments/test-admission/run-ledger-sc
 
 // Explicit SQL proof only. Never uses the fixed shared tooling schema.
 describe('inert execution ledger in disposable owned PostgreSQL schema',()=>{
- const db=new SqlHarness(); let ledger:RunLedger;
+ const db=new SqlHarness(); let ledger:RunLedger; let serverNow:number;
  beforeAll(async()=>{await db.open();
   if(!/^phase22_test_[a-f0-9]{32}$/.test(db.schema))throw Error('unsafe proof schema');
   await db.pool.query(RUN_LEDGER_DDL.replace(/phase30_test_execution/g,db.schema));
@@ -15,9 +15,11 @@ describe('inert execution ledger in disposable owned PostgreSQL schema',()=>{
    query:(text:string,values?:unknown[])=>c.query(text.replace(/phase30_test_execution/g,db.schema),values),release:()=>c.release(),
   };}} as unknown as Pool);
  },30000);
+ // Expiry authority is PostgreSQL; host clock skew must not invalidate fixtures.
+ beforeEach(async()=>{serverNow=((await db.pool.query('SELECT clock_timestamp() t')).rows[0].t as Date).getTime();});
  afterAll(async()=>db.close());
  const table=(name:string)=>'"'+db.schema+'".'+name;
- function plan(overrides:Partial<PreparedRun>={}):PreparedRun{return {runId:randomUUID(),activationId:randomUUID(),manifestSha256:createHash('sha256').update(randomUUID()).digest('hex'),sourceSha:'b'.repeat(40),notBefore:new Date(Date.now()-1000).toISOString(),expiresAt:new Date(Date.now()+60000).toISOString(),limits:{...RUN_LIMITS,authenticatedRequests:1},slots:[{key:'upload.source',operationKey:'upload',role:'SOURCE_OBJECT',id:randomUUID(),attachmentId:randomUUID()}],...overrides};}
+ function plan(overrides:Partial<PreparedRun>={}):PreparedRun{return {runId:randomUUID(),activationId:randomUUID(),manifestSha256:createHash('sha256').update(randomUUID()).digest('hex'),sourceSha:'b'.repeat(40),notBefore:new Date(serverNow-1000).toISOString(),expiresAt:new Date(serverNow+60000).toISOString(),limits:{...RUN_LIMITS,authenticatedRequests:1},slots:[{key:'upload.source',operationKey:'upload',role:'SOURCE_OBJECT',id:randomUUID(),attachmentId:randomUUID()}],...overrides};}
  it('allows only one activation, including across ledger instances/restarts',async()=>{
   const p=plan();await ledger.prepare(p);
   const result=await Promise.allSettled([ledger.activate(p.runId,p.activationId,randomUUID()),ledger.activate(p.runId,p.activationId,randomUUID())]);
@@ -140,6 +142,71 @@ describe('inert execution ledger in disposable owned PostgreSQL schema',()=>{
   await db.pool.query('SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp()))+0.05)',[p.expiresAt]);
   await expect(ledger.reserveRequest(active,'public-head')).rejects.toThrow('TEST_ADMISSION_LEDGER');
   const row=(await db.pool.query('SELECT counters FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0];expect(row.counters.authenticatedRequests).toBe(1);expect(row.counters.authenticatedEgressBytes).toBe(200);
+ },30000);
+
+ function bindingPlan():PreparedRun {
+  const p=plan();const attachmentId=p.slots[0].attachmentId!;
+  p.requests={candidates:[{key:'upload',method:'PUT',path:'/api/v1/attachments/'+attachmentId+'/content',authClass:'AUTH',ingressBytes:200,egressBytes:0}],attempts:[{key:'attempt-a',candidateKey:'upload'}]};
+  p.bindings={operations:[{key:'upload',attachmentId,ingressBytes:100,egressBytes:0,processingAttempts:1,slotKeys:['upload.source']}],edges:[{attemptKey:'attempt-a',operationKey:'upload'}]};
+  return p;
+ }
+ it('binds the original reserved request once, preserving byte charges and recording processing/debt',async()=>{
+  const p=bindingPlan();await ledger.prepare(p);const active=await ledger.activate(p.runId,p.activationId,randomUUID());
+  const request=await ledger.reserveRequest(active,'upload'),bound=await ledger.bindOperation(request,'upload');
+  expect(bound.slots).toEqual(p.slots);expect(Object.isFrozen(bound.slots[0])).toBe(true);
+  await expect(ledger.bindOperation(request,'upload')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  const row=(await db.pool.query('SELECT counters,recovery_debt FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0];
+  expect(row.counters).toEqual({authenticatedRequests:1,anonymousRequests:0,ingressBytes:200,authenticatedEgressBytes:0,anonymousEgressBytes:0,processingAttempts:1});expect(row.recovery_debt).toBe(true);
+  expect((await db.pool.query('SELECT state,bound_operation_key FROM '+table('request_attempts')+' WHERE run_id=$1',[p.runId])).rows[0]).toEqual({state:'BOUND',bound_operation_key:'upload'});
+ });
+ it('serializes competing distinct attempts for one operation with no request refunds',async()=>{
+  const p=bindingPlan();p.limits.authenticatedRequests=2;p.requests!.attempts.push({key:'attempt-b',candidateKey:'upload'});p.bindings!.edges.push({attemptKey:'attempt-b',operationKey:'upload'});
+  await ledger.prepare(p);const active=await ledger.activate(p.runId,p.activationId,randomUUID());
+  const requests=await Promise.all([ledger.reserveRequest(active,'upload'),ledger.reserveRequest(active,'upload')]);
+  const outcomes=await Promise.allSettled(requests.map(r=>ledger.bindOperation(r,'upload')));expect(outcomes.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+  const row=(await db.pool.query('SELECT counters FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0];expect(row.counters.authenticatedRequests).toBe(2);expect(row.counters.ingressBytes).toBe(400);expect(row.counters.processingAttempts).toBe(1);
+ });
+ it('does not grant reconstructed/restarted handles or undo accounting when exact matching fails',async()=>{
+  const p=bindingPlan();await ledger.prepare(p);const active=await ledger.activate(p.runId,p.activationId,randomUUID()),request=await ledger.reserveRequest(active,'upload');
+  await expect(ledger.bindOperation({...request},'upload')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  await expect(new RunLedger(db.pool).bindOperation(request,'upload')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  await expect(ledger.bindOperation(request,'unlisted')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  await expect(ledger.bindOperation(request,'upload')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  expect((await db.pool.query('SELECT state FROM '+table('request_attempts')+' WHERE run_id=$1',[p.runId])).rows[0].state).toBe('RESERVED');
+  expect((await db.pool.query('SELECT state FROM '+table('slots')+' WHERE run_id=$1',[p.runId])).rows[0].state).toBe('AVAILABLE');
+  expect((await db.pool.query('SELECT counters FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0].counters.ingressBytes).toBe(200);
+ });
+ it('rejects direct partial binding, invented slot authority and sealed inventory tampering',async()=>{
+  const p=bindingPlan();await ledger.prepare(p);const active=await ledger.activate(p.runId,p.activationId,randomUUID()),request=await ledger.reserveRequest(active,'upload');
+  for(const sql of [
+   'UPDATE '+table('runs')+' SET operation_count=2 WHERE run_id=$1',
+   'UPDATE '+table('bound_operations')+" SET ingress_bytes=0 WHERE run_id=$1",
+   'UPDATE '+table('bound_operations')+" SET state='BOUND',bound_attempt_key='attempt-a' WHERE run_id=$1",
+   'UPDATE '+table('request_attempts')+" SET state='BOUND',bound_operation_key='upload' WHERE run_id=$1",
+   'UPDATE '+table('slots')+" SET state='BURNED' WHERE run_id=$1",
+   'DELETE FROM '+table('operation_edges')+' WHERE run_id=$1',
+   'UPDATE '+table('operation_slots')+" SET slot_key='unlisted' WHERE run_id=$1",
+   'INSERT INTO '+table('operation_edges')+"(run_id,attempt_key,operation_key) VALUES($1,'attempt-a','upload')",
+  ])await expect(db.pool.query(sql,[p.runId])).rejects.toThrow();
+  for(const name of ['bound_operations','operation_edges','operation_slots'])await expect(db.pool.query('TRUNCATE '+table(name)+' CASCADE')).rejects.toThrow();
+  await ledger.bindOperation(request,'upload');
+  for(const sql of [
+   'UPDATE '+table('runs')+" SET counters=jsonb_set(counters,'{processingAttempts}','0') WHERE run_id=$1",
+   'UPDATE '+table('runs')+' SET recovery_debt=false WHERE run_id=$1',
+   'UPDATE '+table('bound_operations')+" SET state='AVAILABLE',bound_attempt_key=NULL WHERE run_id=$1",
+  ])await expect(db.pool.query(sql,[p.runId])).rejects.toThrow();
+ });
+ it('seals exact slot/edge coverage and rejects conservative processing overcommit before preparation',async()=>{
+  for(const missing of ['coverage','processing']){const p=bindingPlan();if(missing==='coverage')p.bindings!.operations[0].slotKeys=[];else{p.limits.processingAttempts=1;p.limits.authenticatedRequests=2;p.requests!.attempts.push({key:'attempt-b',candidateKey:'upload'});p.bindings!.edges.push({attemptKey:'attempt-b',operationKey:'upload'});}
+   await expect(ledger.prepare(p)).rejects.toThrow('TEST_ADMISSION_LEDGER');expect((await db.pool.query('SELECT 1 FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rowCount).toBe(0);
+  }
+ });
+ it('expires reserved binding naturally while retaining the original consumed request budget',async()=>{
+  const now=(await db.pool.query('SELECT clock_timestamp() t')).rows[0].t as Date,p=bindingPlan();p.notBefore=new Date(now.getTime()-100).toISOString();p.expiresAt=new Date(now.getTime()+10000).toISOString();
+  await ledger.prepare(p);const active=await ledger.activate(p.runId,p.activationId,randomUUID()),request=await ledger.reserveRequest(active,'upload');
+  await db.pool.query('SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp()))+0.05)',[p.expiresAt]);
+  await expect(ledger.bindOperation(request,'upload')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  const row=(await db.pool.query('SELECT counters FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0];expect(row.counters.ingressBytes).toBe(200);expect(row.counters.processingAttempts).toBe(0);
  },30000);
 
 });
