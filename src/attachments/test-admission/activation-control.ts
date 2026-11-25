@@ -26,7 +26,8 @@ export interface OperatorReceipt {
 export interface ControlSnapshot {
   readonly tuple: ControlTuple;
   readonly runState: "PREPARED" | "ACTIVE" | "CLOSED" | "EXPIRED";
-  readonly state: "ARMED" | "RECEIPT_STORED";
+  readonly state: "ARMED" | "RECEIPT_STORED" | "CONSUMED";
+  readonly consumedAt: string | null;
   readonly armedAt: string;
   readonly receipt: OperatorReceipt | null;
   readonly receiptStoredAt: string | null;
@@ -94,7 +95,8 @@ function canonical(value: unknown): string {
     return fail();
   return value;
 }
-function tuple(value: unknown): ControlTuple {
+/** Closed declaration snapshot only; does not attest process/deployment identity. */
+export function parseControlTuple(value: unknown): ControlTuple {
   const r = record(value, tupleKeys);
   for (const k of ["runId", "activationId", "bootId"])
     if (
@@ -174,7 +176,7 @@ export class ActivationControlRepository {
   }
   async arm(input: ControlTuple): Promise<void> {
     try {
-      const t = tuple(input),
+      const t = parseControlTuple(input),
         v = values(t);
       await this.transaction(async (c) => {
         if ((await c.query(runLock, v)).rowCount !== 1) return fail();
@@ -193,7 +195,7 @@ export class ActivationControlRepository {
     observation: OperatorReceipt,
   ): Promise<void> {
     try {
-      const t = tuple(input),
+      const t = parseControlTuple(input),
         r = receipt(observation, t),
         v = values(t);
       await this.transaction(async (c) => {
@@ -223,11 +225,11 @@ export class ActivationControlRepository {
   }
   async inspectExact(input: ControlTuple): Promise<ControlSnapshot | null> {
     try {
-      const t = tuple(input);
+      const t = parseControlTuple(input);
       return await this.transaction(async (c) => {
         const row = (
           await c.query(
-            "SELECT c.state,c.armed_at,c.receipt,c.receipt_stored_at,r.state AS run_state FROM phase30_test_execution.activation_controls c JOIN phase30_test_execution.runs r USING(run_id) WHERE " +
+            "SELECT c.state,c.armed_at,c.receipt,c.receipt_stored_at,c.consumed_at,r.state AS run_state FROM phase30_test_execution.activation_controls c JOIN phase30_test_execution.runs r USING(run_id) WHERE " +
               exact,
             values(t),
           )
@@ -237,12 +239,13 @@ export class ActivationControlRepository {
           !["PREPARED", "ACTIVE", "CLOSED", "EXPIRED"].includes(
             row.run_state,
           ) ||
-          !["ARMED", "RECEIPT_STORED"].includes(row.state)
+          !["ARMED", "RECEIPT_STORED", "CONSUMED"].includes(row.state)
         )
           return fail();
         const stamp = (v: unknown) =>
           v instanceof Date ? canonical(v.toISOString()) : canonical(v);
         const observed = row.receipt === null ? null : receipt(row.receipt, t);
+        if((row.state==="CONSUMED")!==(row.consumed_at!==null&&row.consumed_at!==undefined))return fail();
         if (
           (row.state === "ARMED") !== (observed === null) ||
           (row.state === "ARMED") !== (row.receipt_stored_at === null)
@@ -254,6 +257,7 @@ export class ActivationControlRepository {
           state: row.state,
           armedAt: stamp(row.armed_at),
           receipt: observed,
+          consumedAt: row.consumed_at==null?null:stamp(row.consumed_at),
           receiptStoredAt:
             row.receipt_stored_at === null
               ? null

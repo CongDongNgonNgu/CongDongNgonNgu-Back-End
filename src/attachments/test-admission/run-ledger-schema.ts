@@ -160,7 +160,19 @@ BEGIN
   IF NEW.request_count>0 AND NEW.counters<>phase30_test_execution.request_totals(NEW.run_id,true) THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
 
   IF OLD.state='PREPARED' AND NEW.state='ACTIVE' THEN
-   IF NEW.activation_control_required OR NOT NEW.preparation_sealed OR now_at<NEW.not_before OR now_at>=NEW.expires_at OR NEW.boot_id IS NULL
+   IF NEW.activation_control_required THEN
+    -- Legacy proof mode never references the separate optional control table.
+    PERFORM 1 FROM phase30_test_execution.activation_controls c WHERE c.run_id=NEW.run_id FOR UPDATE;
+    now_at:=clock_timestamp();
+    IF NOT FOUND OR NOT EXISTS(SELECT 1 FROM phase30_test_execution.activation_controls c WHERE c.run_id=NEW.run_id
+     AND c.state='CONSUMED' AND c.consumed_at IS NOT NULL AND c.branch='dev'
+     AND ROW(c.activation_id,c.source_sha,c.manifest_sha256,c.service_id,c.boot_id,c.not_before,c.expires_at)
+      IS NOT DISTINCT FROM ROW(NEW.activation_id,NEW.source_sha,NEW.manifest_sha256,NEW.service_id,NEW.boot_id,NEW.not_before,NEW.expires_at)
+     AND (c.receipt->>'observedAt')::timestamptz<=now_at
+     AND now_at-(c.receipt->>'observedAt')::timestamptz<=interval '5 minutes')
+    THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
+   END IF;
+   IF NOT NEW.preparation_sealed OR now_at<NEW.not_before OR now_at>=NEW.expires_at OR NEW.boot_id IS NULL
     OR (SELECT count(*) FROM phase30_test_execution.slots WHERE run_id=NEW.run_id)<>NEW.slot_count THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
    NEW.activated_at:=now_at;
   ELSE

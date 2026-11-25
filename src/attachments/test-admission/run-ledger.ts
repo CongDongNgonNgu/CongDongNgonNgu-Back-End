@@ -1,3 +1,4 @@
+import {parseControlTuple,type ControlTuple} from './activation-control';
 import type {Pool, PoolClient} from 'pg';
 import {RUN_LIMITS,SLOT_ROLES} from './run-ledger-schema';
 export {RUN_LIMITS} from './run-ledger-schema';
@@ -16,6 +17,7 @@ export interface BindingEdge {attemptKey:string;operationKey:string;}
 export interface BindingPreparation {operations:BindingOperation[];edges:BindingEdge[];}
 /** Inert committed allocation binding; not HTTP matching or domain authority. */
 export interface BoundOperation {readonly runId:string;readonly attemptKey:string;readonly operationKey:string;readonly attachmentId:string;readonly slots:ReadonlyArray<Readonly<RunSlot>>;}
+export interface ControlledActiveRun extends ActiveRun,ControlTuple {readonly mode:'CONTROLLED';}
 export interface ActiveRun {readonly runId:string;readonly activationId:string;readonly bootId:string;}
 export interface Reservation {operationKey:string;slots:ReadonlyArray<{key:string;role:Role}>;charges:Partial<Record<Counter,number>>;}
 const fail=():never=>{throw Error('TEST_ADMISSION_LEDGER');};
@@ -67,6 +69,7 @@ function bindingPreparation(value:unknown,requests:RequestPreparation|undefined,
  * Charges/burns are conservative, never refunded. No settlement or purge API. */
 export class RunLedger {
  private readonly active=new WeakSet<ActiveRun>();
+ private readonly controlled=new WeakSet<ControlledActiveRun>();
  private readonly bindings=new WeakMap<BoundOperation,{active:ActiveRun;attemptKey:string}>();
  private readonly requests=new WeakMap<RequestReservation,{active:ActiveRun;attemptKey:string}>();
  constructor(private readonly pool:Pool){}
@@ -109,6 +112,26 @@ export class RunLedger {
    await c.query('UPDATE phase30_test_execution.runs SET preparation_sealed=true WHERE run_id=$1',[facts.runId]);
 
   });
+ }
+ /** Atomic ledger correlation only, not process attestation or HTTP admission.
+  * Future bootstrap must establish actual cold identity/boot and enforce controlled mode. */
+ async activateControlled(input:unknown):Promise<ControlledActiveRun>{
+  try{
+   const t=parseControlTuple(input),v=[t.runId,t.activationId,t.sourceSha,t.manifestSha256,t.service,t.branch,t.deploymentId,t.bootId,t.notBefore,t.expiresAt];
+   const exact="run_id=$1 AND activation_id=$2 AND source_sha=$3 AND manifest_sha256=$4 AND service_id=$5 AND branch=$6 AND deployment_id=$7 AND boot_id=$8 AND not_before=$9::timestamptz AND expires_at=$10::timestamptz";
+   await this.transaction(async c=>{
+    const run=await c.query("SELECT run_id FROM phase30_test_execution.runs WHERE run_id=$1 AND activation_id=$2 AND source_sha=$3 AND manifest_sha256=$4 AND service_id=$5 AND $6::text='dev' AND $7::text ~ '^dep-[a-z0-9-]{1,80}$' AND $8::uuid IS NOT NULL AND not_before=$9::timestamptz AND expires_at=$10::timestamptz AND activation_control_required AND preparation_sealed AND state='PREPARED' FOR UPDATE",v);if(run.rowCount!==1)return fail();
+    const control=await c.query("SELECT run_id FROM phase30_test_execution.activation_controls WHERE "+exact+" AND state='RECEIPT_STORED' FOR UPDATE",v);if(control.rowCount!==1)return fail();
+    // SQL guards check current database time after the two row locks.
+    const consumed=await c.query("UPDATE phase30_test_execution.activation_controls SET state='CONSUMED' WHERE "+exact+" AND state='RECEIPT_STORED'",v);if(consumed.rowCount!==1)return fail();
+    const activated=await c.query("UPDATE phase30_test_execution.runs SET state='ACTIVE',boot_id=$3 WHERE run_id=$1 AND activation_id=$2 AND activation_control_required AND preparation_sealed AND state='PREPARED' RETURNING run_id",[t.runId,t.activationId,t.bootId]);if(activated.rowCount!==1)return fail();
+   });
+   const handle=Object.freeze({...t,mode:'CONTROLLED' as const});this.active.add(handle);this.controlled.add(handle);return handle;
+  }catch{return fail();}
+ }
+ /** Local ownership check only. Current expiry/ACL checks remain mandatory at use. */
+ requireControlled(active:ActiveRun):ControlledActiveRun{
+  if(!this.active.has(active)||!this.controlled.has(active as ControlledActiveRun))return fail();return active as ControlledActiveRun;
  }
  async activate(runId:string,activationId:string,bootId:string):Promise<ActiveRun>{
   if(![runId,activationId,bootId].every(uuid))return fail();

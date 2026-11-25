@@ -11,10 +11,11 @@ CREATE TABLE phase30_test_execution.activation_controls (
  boot_id uuid NOT NULL UNIQUE CHECK(boot_id::text ~ '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'),
  not_before timestamptz NOT NULL, expires_at timestamptz NOT NULL,
  armed_at timestamptz NOT NULL DEFAULT date_trunc('milliseconds',clock_timestamp()),
- state text NOT NULL DEFAULT 'ARMED' CHECK(state IN ('ARMED','RECEIPT_STORED')),
- receipt jsonb, receipt_stored_at timestamptz,
- CHECK((state='ARMED' AND receipt IS NULL AND receipt_stored_at IS NULL) OR
-  (state='RECEIPT_STORED' AND receipt IS NOT NULL AND receipt_stored_at IS NOT NULL)),
+ state text NOT NULL DEFAULT 'ARMED' CHECK(state IN ('ARMED','RECEIPT_STORED','CONSUMED')),
+ receipt jsonb, receipt_stored_at timestamptz, consumed_at timestamptz,
+ CHECK((state='ARMED' AND receipt IS NULL AND receipt_stored_at IS NULL AND consumed_at IS NULL) OR
+  (state='RECEIPT_STORED' AND receipt IS NOT NULL AND receipt_stored_at IS NOT NULL AND consumed_at IS NULL) OR
+  (state='CONSUMED' AND receipt IS NOT NULL AND receipt_stored_at IS NOT NULL AND consumed_at IS NOT NULL)),
  CHECK(expires_at>not_before AND expires_at<=not_before+interval '10 minutes')
 );
 CREATE FUNCTION phase30_test_execution.guard_activation_control() RETURNS trigger
@@ -23,8 +24,13 @@ DECLARE parent phase30_test_execution.runs%ROWTYPE; now_at timestamptz; observed
 BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
  SELECT * INTO parent FROM phase30_test_execution.runs WHERE run_id=NEW.run_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
+ IF TG_OP='UPDATE' THEN
+  PERFORM 1 FROM phase30_test_execution.activation_controls WHERE run_id=NEW.run_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
+ END IF;
  now_at:=clock_timestamp();
- IF NOT FOUND OR NOT parent.activation_control_required OR NOT parent.preparation_sealed OR parent.state<>'PREPARED'
+ IF NOT parent.activation_control_required OR NOT parent.preparation_sealed OR parent.state<>'PREPARED'
   OR now_at>=parent.expires_at
   OR ROW(NEW.run_id,NEW.activation_id,NEW.source_sha,NEW.manifest_sha256,NEW.service_id,NEW.not_before,NEW.expires_at)
    IS DISTINCT FROM ROW(parent.run_id,parent.activation_id,parent.source_sha,parent.manifest_sha256,parent.service_id,parent.not_before,parent.expires_at)
@@ -32,14 +38,19 @@ BEGIN
   OR NEW.not_before<>date_trunc('milliseconds',NEW.not_before) OR NEW.expires_at<>date_trunc('milliseconds',NEW.expires_at)
  THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
  IF TG_OP='INSERT' THEN
-  IF NEW.state<>'ARMED' OR NEW.receipt IS NOT NULL OR NEW.receipt_stored_at IS NOT NULL THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
+  IF NEW.state<>'ARMED' OR NEW.receipt IS NOT NULL OR NEW.receipt_stored_at IS NOT NULL OR NEW.consumed_at IS NOT NULL THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
   NEW.armed_at:=date_trunc('milliseconds',now_at);
  ELSE
   IF ROW(NEW.run_id,NEW.activation_id,NEW.source_sha,NEW.manifest_sha256,NEW.service_id,NEW.branch,NEW.deployment_id,NEW.boot_id,NEW.not_before,NEW.expires_at,NEW.armed_at)
    IS DISTINCT FROM ROW(OLD.run_id,OLD.activation_id,OLD.source_sha,OLD.manifest_sha256,OLD.service_id,OLD.branch,OLD.deployment_id,OLD.boot_id,OLD.not_before,OLD.expires_at,OLD.armed_at)
-   OR OLD.state<>'ARMED' OR NEW.state<>'RECEIPT_STORED' OR NEW.receipt_stored_at IS NOT NULL
    OR jsonb_typeof(NEW.receipt) IS DISTINCT FROM 'object'
   THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
+  IF OLD.state='ARMED' AND NEW.state='RECEIPT_STORED' THEN
+   IF NEW.receipt_stored_at IS NOT NULL OR NEW.consumed_at IS NOT NULL THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
+  ELSIF OLD.state='RECEIPT_STORED' AND NEW.state='CONSUMED' THEN
+   IF NEW.receipt IS DISTINCT FROM OLD.receipt OR NEW.receipt_stored_at IS DISTINCT FROM OLD.receipt_stored_at
+    OR NEW.consumed_at IS NOT NULL OR now_at<parent.not_before THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
+  ELSE RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
   IF (SELECT count(*) FROM jsonb_object_keys(NEW.receipt))<>10
    OR NOT (NEW.receipt ?& ARRAY['service','branch','sha','manifestSha256','deploymentId','bootId','observedAt','liveObserved','originalDisabledCommandObserved','allFourFlagsFalseObserved'])
    OR NEW.receipt->'service' IS DISTINCT FROM to_jsonb(NEW.service_id)
@@ -60,7 +71,9 @@ BEGIN
   IF to_char(observed AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')<>observed_text
    OR observed<NEW.armed_at OR observed>now_at OR now_at-observed>interval '5 minutes'
   THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
-  NEW.receipt_stored_at:=date_trunc('milliseconds',now_at);
+  IF NEW.state='RECEIPT_STORED' THEN
+   NEW.receipt_stored_at:=date_trunc('milliseconds',now_at);
+  ELSE NEW.consumed_at:=date_trunc('milliseconds',now_at); END IF;
  END IF;
  RETURN NEW;
 END $$;
@@ -71,4 +84,30 @@ LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 BEGIN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END $$;
 CREATE TRIGGER refuse_activation_control_truncate BEFORE TRUNCATE ON phase30_test_execution.activation_controls
  FOR EACH STATEMENT EXECUTE FUNCTION phase30_test_execution.refuse_activation_control_truncate();
+
+-- Reciprocal obligations apply to new transitions, not all future run states.
+CREATE FUNCTION phase30_test_execution.check_control_consumption() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE parent phase30_test_execution.runs%ROWTYPE; control phase30_test_execution.activation_controls%ROWTYPE;
+BEGIN
+ IF TG_TABLE_NAME='runs' THEN
+  IF NOT NEW.activation_control_required OR OLD.state<>'PREPARED' OR NEW.state<>'ACTIVE' THEN RETURN NULL; END IF;
+ ELSE
+  IF OLD.state<>'RECEIPT_STORED' OR NEW.state<>'CONSUMED' THEN RETURN NULL; END IF;
+ END IF;
+ SELECT * INTO parent FROM phase30_test_execution.runs WHERE run_id=NEW.run_id;
+ IF NOT FOUND THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
+ SELECT * INTO control FROM phase30_test_execution.activation_controls WHERE run_id=NEW.run_id;
+ IF NOT FOUND OR NOT parent.activation_control_required OR NOT parent.preparation_sealed
+  OR parent.state NOT IN ('ACTIVE','CLOSED','EXPIRED') OR control.state<>'CONSUMED' OR control.consumed_at IS NULL
+  OR parent.activated_at IS NULL OR parent.activated_at<control.consumed_at
+  OR ROW(parent.run_id,parent.activation_id,parent.source_sha,parent.manifest_sha256,parent.service_id,parent.boot_id,parent.not_before,parent.expires_at)
+   IS DISTINCT FROM ROW(control.run_id,control.activation_id,control.source_sha,control.manifest_sha256,control.service_id,control.boot_id,control.not_before,control.expires_at)
+ THEN RAISE EXCEPTION 'TEST_ACTIVATION_CONTROL'; END IF;
+ RETURN NULL;
+END $$;
+CREATE CONSTRAINT TRIGGER check_control_consumption AFTER UPDATE ON phase30_test_execution.activation_controls
+ DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION phase30_test_execution.check_control_consumption();
+CREATE CONSTRAINT TRIGGER check_control_consumption AFTER UPDATE ON phase30_test_execution.runs
+ DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION phase30_test_execution.check_control_consumption();
 `;
