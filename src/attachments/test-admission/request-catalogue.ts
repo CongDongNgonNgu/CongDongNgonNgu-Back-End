@@ -59,24 +59,18 @@ function route(
       ];
   }
 }
-/** Pure declaration catalogue only. Inventory/envelope are trusted validated
- * snapshots; operation records are revalidated here. No full-manifest, source
+/** Pure declaration catalogue only. Operations/envelope must be trusted validator-output
+ * snapshots; this helper does not accept raw operation records. No full-manifest, source
  * or actual-object-size proof, request matcher, identity/ACL or runtime grant.
  * Ceilings are maxima of declared policy charges, including HEAD declarations;
  * later provenance/selection must prove the full chosen object fits, even HEAD.
  * Policy attempt names are provenance, NOT coarse request-slot/operation edges.
  * No ledger preparation, allocation expansion, I/O, activation or cleanup. */
-export function compileRequestCatalogue(
-  value: unknown,
-  inventory: FixtureInventory,
+export function catalogueFromValidatedOperations(
+  operations: readonly OperationDeclaration[],
   envelope: ActivationEnvelope,
 ): RequestCatalogue {
   try {
-    const operations = validateOperationDeclarations(
-      value,
-      inventory,
-      envelope,
-    );
     const groups = new Map<
       string,
       {
@@ -173,6 +167,23 @@ export function compileRequestCatalogue(
       ),
       totals: Object.freeze(totals),
     });
+  } catch {
+    throw Error("TEST_ADMISSION_CATALOGUE");
+  }
+}
+
+/** Raw-record compatibility API: validate once, then group the detached snapshot.
+ * The internal grouping helper requires trusted validator output, not authority. */
+export function compileRequestCatalogue(
+  value: unknown,
+  inventory: FixtureInventory,
+  envelope: ActivationEnvelope,
+): RequestCatalogue {
+  try {
+    return catalogueFromValidatedOperations(
+      validateOperationDeclarations(value, inventory, envelope),
+      envelope,
+    );
   } catch {
     throw Error("TEST_ADMISSION_CATALOGUE");
   }

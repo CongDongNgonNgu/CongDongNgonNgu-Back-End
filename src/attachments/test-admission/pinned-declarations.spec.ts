@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ATTACHMENT_LIMITS } from "../attachment-policy";
 import { validatePinnedDeclarations } from "./pinned-declarations";
 import { validateActivationEnvelope, type ActivationInputs } from "./guard";
 
@@ -437,4 +438,38 @@ describe("pinned complete successful declaration composition only", () => {
     reject(fixture([]));
     reject(fixture({ ...root(), inventory: null }));
   });
+  it.each(["GET", "HEAD"])(
+    "requires the frozen full-object ceiling for pinned %s range declarations",
+    (method) => {
+      const addRead = (bytes: number) => {
+        const r = root();
+        r.operations.push({
+          key: "budgeted-read",
+          kind: "READ",
+          attachmentId: id(7),
+          principal: { kind: "ACTOR", actorId: id(3), sessionId: id(4) },
+          assertion: "NORMAL_AUTHORIZATION",
+          attemptKeys: ["budgeted-read-attempt"],
+          charges: { ...charges(), authenticatedEgressBytes: bytes },
+          slotKeys: [],
+          method,
+          variant: "normalized",
+          range: "bytes=0-9",
+        });
+        return r;
+      };
+      reject(fixture(addRead(ATTACHMENT_LIMITS.imageBytes - 1)));
+      const valid = validatePinnedDeclarations(
+        fixture(addRead(ATTACHMENT_LIMITS.imageBytes)),
+      )!;
+      expect(
+        valid.catalogue.groups.find(
+          (g) => g.method === method && g.path.endsWith("/content"),
+        ),
+      ).toMatchObject({
+        egressBytes: ATTACHMENT_LIMITS.imageBytes,
+        attemptCount: 1,
+      });
+    },
+  );
 });
