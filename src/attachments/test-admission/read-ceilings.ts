@@ -21,6 +21,21 @@ export interface ReadCeilingCatalogue {
   readonly catalogue: RequestCatalogue;
   readonly reads: readonly ConservativeReadCeiling[];
 }
+/** Frozen derivative-output policy bound, never an actual artifact measurement. */
+export function frozenReadOutputCap(
+  format: AttachmentFormat,
+  variant: "normalized" | "thumbnail",
+): number {
+  if (!["IMAGE", "VIDEO", "TEXT"].includes(format))
+    throw Error("TEST_ADMISSION_READ_CEILINGS");
+  if (variant === "thumbnail" && format !== "TEXT") return L.thumbnailBytes;
+  if (variant !== "normalized") throw Error("TEST_ADMISSION_READ_CEILINGS");
+  return format === "IMAGE"
+    ? L.imageBytes
+    : format === "VIDEO"
+      ? L.videoBytes
+      : L.textBytes;
+}
 /** Pure planning against frozen processor-output policy caps only. Inventory and
  * envelope are trusted validated snapshots. Source lengths, ranges and expected
  * denials never reduce the full derivative ceiling, including HEAD.
@@ -46,17 +61,7 @@ export function compileConservativeReadCatalogue(
       const fixture = fixtures.get(operation.attachmentId);
       if (!fixture) throw Error("TEST_ADMISSION_READ_CEILINGS");
       const format = fixture.initiation.format;
-      let outputCap: number;
-      if (operation.variant === "thumbnail") {
-        if (format === "TEXT") throw Error("TEST_ADMISSION_READ_CEILINGS");
-        outputCap = L.thumbnailBytes;
-      } else
-        outputCap =
-          format === "IMAGE"
-            ? L.imageBytes
-            : format === "VIDEO"
-              ? L.videoBytes
-              : L.textBytes;
+      const outputCap = frozenReadOutputCap(format, operation.variant);
       const charge =
         operation.charges[
           operation.principal.kind === "ANON"
