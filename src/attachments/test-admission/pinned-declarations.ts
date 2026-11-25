@@ -20,10 +20,8 @@ import {
   validateObjectIdentities,
   type ObjectIdentityTuple,
 } from "./object-identities";
-import {
-  compileRequestCatalogue,
-  type RequestCatalogue,
-} from "./request-catalogue";
+import { type RequestCatalogue } from "./request-catalogue";
+import { compileConservativeReadCatalogue } from "./read-ceilings";
 
 export interface PinnedDeclarations {
   readonly sourceSha: string;
@@ -80,6 +78,7 @@ function root(value: unknown): Record<(typeof fields)[number], unknown> {
 }
 /** Pure declarations for complete planned source/derivative identities.
  * All sections come from one identity-checked literal.
+ * Read declarations must cover frozen full derivative caps, including HEAD/ranges.
  * No independently supplied snapshots are accepted. This is not a complete
  * executable manifest or proof of actual object/HEAD bytes, role cardinality,
  * attempt/allocation compatibility, internal cleanup, provider/source provenance,
@@ -139,7 +138,7 @@ export function validatePinnedDeclarations(
         return fail();
     }
     // Revalidate the same frozen raw records. Parsed INITIATE bodies are not raw DTOs.
-    const catalogue = compileRequestCatalogue(
+    const { catalogue } = compileConservativeReadCatalogue(
       raw.operations,
       inventory,
       envelope,
