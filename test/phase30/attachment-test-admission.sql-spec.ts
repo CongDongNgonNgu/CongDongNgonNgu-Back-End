@@ -272,4 +272,44 @@ describe('inert execution ledger in disposable owned PostgreSQL schema',()=>{
   expect(await pending).toBe(false);const snapshot=await controls.inspectExact(t);expect(snapshot!.state).toBe('ARMED');expect(snapshot!.runState).toBe('PREPARED');await expect(controls.storeReceipt(t,receipt)).rejects.toThrow('TEST_ACTIVATION_CONTROL');await expect(controls.arm(t)).rejects.toThrow('TEST_ACTIVATION_CONTROL');
  },30000);
 
+ async function readyControl(expiresInMs=60000){const t=await controlled(expiresInMs);await controls.arm(t);await controls.storeReceipt(t,await observation(t));return t;}
+ function anotherLedger(){return new RunLedger({connect:async()=>{const c=await db.pool.connect();return{query:(text:string,values?:unknown[])=>c.query(text.replace(/phase30_test_execution/g,db.schema),values),release:()=>c.release()};}} as unknown as Pool);}
+ it('atomically consumes the receipt and activates once across independent ledger instances',async()=>{
+  const t=await readyControl(),other=anotherLedger(),outcomes=await Promise.allSettled([ledger.activateControlled(t),other.activateControlled(t)]);expect(outcomes.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+  const index=outcomes.findIndex(r=>r.status==='fulfilled'),handle=(outcomes[index] as PromiseFulfilledResult<Awaited<ReturnType<RunLedger['activateControlled']>>>).value,owner=index===0?ledger:other;
+  expect(owner.requireControlled(handle)).toBe(handle);expect(handle).toMatchObject({...t,mode:'CONTROLLED'});expect(()=>owner.requireControlled({...handle})).toThrow();expect(()=>(index===0?other:ledger).requireControlled(handle)).toThrow();
+  const snapshot=await controls.inspectExact(t);expect(snapshot).toMatchObject({state:'CONSUMED',runState:'ACTIVE'});expect(snapshot!.consumedAt).not.toBeNull();expect(Object.isFrozen(snapshot!.receipt)).toBe(true);
+  await expect(ledger.activateControlled(t)).rejects.toThrow('TEST_ADMISSION_LEDGER');await expect(ledger.activate(t.runId,t.activationId,t.bootId)).rejects.toThrow('TEST_ADMISSION_LEDGER');
+ });
+ it('rejects direct half transitions at commit without leaving partial consumption',async()=>{
+  const t=await readyControl(),c=await db.pool.connect();await c.query('BEGIN');
+  try{expect((await c.query('UPDATE '+table('activation_controls')+" SET state='CONSUMED' WHERE run_id=$1",[t.runId])).rowCount).toBe(1);await expect(c.query('COMMIT')).rejects.toThrow();}finally{await c.query('ROLLBACK');c.release();}
+  expect(await controls.inspectExact(t)).toMatchObject({state:'RECEIPT_STORED',runState:'PREPARED',consumedAt:null});
+  await expect(db.pool.query('UPDATE '+table('runs')+" SET state='ACTIVE',boot_id=$2 WHERE run_id=$1",[t.runId,t.bootId])).rejects.toThrow();
+  await ledger.activateControlled(t);
+ });
+ it('rejects wrong original tuple, replacement boots and legacy runs without consuming receipt',async()=>{
+  const t=await readyControl();for(const patch of [{bootId:randomUUID()},{deploymentId:'dep-other'},{sourceSha:'c'.repeat(40)},{manifestSha256:'c'.repeat(64)},{expiresAt:new Date(Date.parse(t.expiresAt)+1).toISOString()}])await expect(ledger.activateControlled({...t,...patch})).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  expect(await controls.inspectExact(t)).toMatchObject({state:'RECEIPT_STORED',runState:'PREPARED',consumedAt:null});
+  const p=plan();await ledger.prepare(p);await expect(ledger.activateControlled({...t,runId:p.runId,activationId:p.activationId,manifestSha256:p.manifestSha256,notBefore:p.notBefore,expiresAt:p.expiresAt})).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  const legacy=await ledger.activate(p.runId,p.activationId,randomUUID());expect(()=>ledger.requireControlled(legacy)).toThrow();await ledger.activateControlled(t);
+ });
+ it('keeps consumed evidence immutable and supports later legitimate terminal closure',async()=>{
+  const t=await readyControl();await ledger.activateControlled(t);const before=await controls.inspectExact(t);
+  for(const sql of [
+   'UPDATE '+table('activation_controls')+" SET state='RECEIPT_STORED',consumed_at=NULL WHERE run_id=$1",
+   'UPDATE '+table('activation_controls')+" SET consumed_at=consumed_at+interval '1 millisecond' WHERE run_id=$1",
+   'UPDATE '+table('activation_controls')+" SET receipt=jsonb_set(receipt,'{sha}',to_jsonb(repeat('c',40))) WHERE run_id=$1",
+  ])await expect(db.pool.query(sql,[t.runId])).rejects.toThrow();
+  await db.pool.query('UPDATE '+table('runs')+" SET state='CLOSED' WHERE run_id=$1",[t.runId]);const after=await controls.inspectExact(t);expect(after).toMatchObject({state:'CONSUMED',runState:'CLOSED',consumedAt:before!.consumedAt,receipt:before!.receipt});await expect(ledger.activateControlled(t)).rejects.toThrow();
+ });
+ it('issues no handle on uncertain actual commit and never reconstructs one from durable inspection',async()=>{
+  const t=await readyControl();let connects=0;const uncertain=new RunLedger({connect:async()=>{connects++;const c=await db.pool.connect();return{query:async(text:string,values?:unknown[])=>{const result=await c.query(text.replace(/phase30_test_execution/g,db.schema),values);if(text==='COMMIT')throw Error('lost commit acknowledgement');return result;},release:()=>c.release()};}} as unknown as Pool);
+  await expect(uncertain.activateControlled(t)).rejects.toThrow('TEST_ADMISSION_LEDGER');expect(connects).toBe(1);expect(await controls.inspectExact(t)).toMatchObject({state:'CONSUMED',runState:'ACTIVE'});await expect(anotherLedger().activateControlled(t)).rejects.toThrow();const reconstructed={...t,mode:'CONTROLLED'};expect(()=>uncertain.requireControlled(reconstructed)).toThrow();
+ });
+ it('rechecks original expiry after waiting for locks without consuming or renewing',async()=>{
+  const t=await readyControl(10000);await db.pool.query('SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp())-1.2))',[t.expiresAt]);const c=await db.pool.connect();await c.query('BEGIN');await c.query('SELECT run_id FROM '+table('runs')+' WHERE run_id=$1 FOR UPDATE',[t.runId]);
+  const pending=ledger.activateControlled(t).then(()=>true,()=>false);try{await db.pool.query('SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp()))+0.05)',[t.expiresAt]);}finally{await c.query('ROLLBACK');c.release();}expect(await pending).toBe(false);expect(await controls.inspectExact(t)).toMatchObject({state:'RECEIPT_STORED',runState:'PREPARED',consumedAt:null});
+ },30000);
+
 });
