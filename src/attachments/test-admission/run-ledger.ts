@@ -5,7 +5,7 @@ type Role=typeof SLOT_ROLES[number];
 type Counter=keyof typeof RUN_LIMITS;
 export interface RunSlot {key:string;operationKey:string;role:Role;id:string;attachmentId?:string;}
 export interface PreparedRun {runId:string;activationId:string;manifestSha256:string;sourceSha:string;
- notBefore:string;expiresAt:string;limits:Record<Counter,number>;slots:RunSlot[];requests?:RequestPreparation;bindings?:BindingPreparation;}
+ notBefore:string;expiresAt:string;limits:Record<Counter,number>;slots:RunSlot[];requests?:RequestPreparation;bindings?:BindingPreparation;activationControlRequired?:boolean;}
 export interface RequestCandidate {key:string;method:'GET'|'HEAD'|'POST'|'PUT'|'PATCH'|'DELETE';path:string;authClass:'AUTH'|'ANON';ingressBytes:number;egressBytes:number;}
 export interface RequestAttempt {key:string;candidateKey:string;}
 export interface RequestPreparation {candidates:RequestCandidate[];attempts:RequestAttempt[];}
@@ -84,6 +84,9 @@ export class RunLedger {
    ||Date.parse(plan.expiresAt)<=Date.parse(plan.notBefore)||Date.parse(plan.expiresAt)-Date.parse(plan.notBefore)>600000
    ||!plan.limits||Object.keys(plan.limits).length!==keys.length||keys.some(k=>!Number.isSafeInteger(plan.limits[k])||plan.limits[k]<1||plan.limits[k]>RUN_LIMITS[k])
    ||!Array.isArray(plan.slots)||plan.slots.length<1||plan.slots.length>256)return fail();
+  const controlField=Object.getOwnPropertyDescriptor(plan,'activationControlRequired');
+  if(controlField&&(!controlField.enumerable||!('value'in controlField)||typeof controlField.value!=='boolean'))return fail();
+  const activationControlRequired=controlField?.value??false;
   const slots=plan.slots.map(s=>({...s})),limits={...plan.limits};
   const facts={runId:plan.runId,activationId:plan.activationId,manifestSha256:plan.manifestSha256,sourceSha:plan.sourceSha,notBefore:plan.notBefore,expiresAt:plan.expiresAt};
   if(new Set(slots.map(s=>s.key)).size!==slots.length||new Set(slots.map(s=>s.id)).size!==slots.length
@@ -95,8 +98,8 @@ export class RunLedger {
   if(bindingField&&(!bindingField.enumerable||!('value'in bindingField)))return fail();
   const bindings=bindingField?.value===undefined?undefined:bindingPreparation(bindingField.value,requests,slots,limits);
   await this.transaction(async c=>{
-   await c.query(`INSERT INTO phase30_test_execution.runs(run_id,activation_id,manifest_sha256,source_sha,service_id,not_before,expires_at,limits,slot_count,candidate_count,request_count,operation_count,edge_count,operation_slot_count)
-    VALUES($1,$2,$3,$4,'srv-dahnerh594qs73fp3420',$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13)`,[facts.runId,facts.activationId,facts.manifestSha256,facts.sourceSha,facts.notBefore,facts.expiresAt,JSON.stringify(limits),slots.length,requests?.candidates.length??0,requests?.attempts.length??0,bindings?.operations.length??0,bindings?.edges.length??0,bindings?slots.length:0]);
+   await c.query(`INSERT INTO phase30_test_execution.runs(run_id,activation_id,manifest_sha256,source_sha,service_id,not_before,expires_at,limits,slot_count,candidate_count,request_count,operation_count,edge_count,operation_slot_count,activation_control_required)
+    VALUES($1,$2,$3,$4,'srv-dahnerh594qs73fp3420',$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14)`,[facts.runId,facts.activationId,facts.manifestSha256,facts.sourceSha,facts.notBefore,facts.expiresAt,JSON.stringify(limits),slots.length,requests?.candidates.length??0,requests?.attempts.length??0,bindings?.operations.length??0,bindings?.edges.length??0,bindings?slots.length:0,activationControlRequired]);
    for(const s of slots.sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0))await c.query(`INSERT INTO phase30_test_execution.slots(run_id,slot_key,operation_key,role,id,attachment_id) VALUES($1,$2,$3,$4,$5,$6)`,[facts.runId,s.key,s.operationKey,s.role,s.id,s.attachmentId??null]);
    for(const cnd of requests?.candidates??[])await c.query('INSERT INTO phase30_test_execution.request_candidates(run_id,candidate_key,method,path,auth_class,ingress_bytes,egress_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)',[facts.runId,cnd.key,cnd.method,cnd.path,cnd.authClass,cnd.ingressBytes,cnd.egressBytes]);
    for(const a of requests?.attempts??[])await c.query('INSERT INTO phase30_test_execution.request_attempts(run_id,attempt_key,candidate_key) VALUES($1,$2,$3)',[facts.runId,a.key,a.candidateKey]);
@@ -110,7 +113,7 @@ export class RunLedger {
  async activate(runId:string,activationId:string,bootId:string):Promise<ActiveRun>{
   if(![runId,activationId,bootId].every(uuid))return fail();
   await this.transaction(async c=>{const result=await c.query(`UPDATE phase30_test_execution.runs SET state='ACTIVE',boot_id=$3
-   WHERE run_id=$1 AND activation_id=$2 AND state='PREPARED' AND not_before<=clock_timestamp() AND expires_at>clock_timestamp() RETURNING run_id`,[runId,activationId,bootId]);if(result.rowCount!==1)fail();});
+   WHERE run_id=$1 AND activation_id=$2 AND state='PREPARED' AND NOT activation_control_required AND not_before<=clock_timestamp() AND expires_at>clock_timestamp() RETURNING run_id`,[runId,activationId,bootId]);if(result.rowCount!==1)fail();});
   const value=Object.freeze({runId,activationId,bootId});this.active.add(value);return value;
  }
 

@@ -2,14 +2,18 @@ import {randomUUID,createHash} from 'node:crypto';
 import type {Pool} from 'pg';
 import {SqlHarness} from '../phase22/sql-harness';
 import {RunLedger, RUN_LIMITS, type PreparedRun} from '../../src/attachments/test-admission/run-ledger';
+import {ActivationControlRepository,type ControlTuple,type OperatorReceipt} from '../../src/attachments/test-admission/activation-control';
+import {ACTIVATION_CONTROL_DDL} from '../../src/attachments/test-admission/activation-control-schema';
 import {RUN_LEDGER_DDL} from '../../src/attachments/test-admission/run-ledger-schema';
 
 // Explicit SQL proof only. Never uses the fixed shared tooling schema.
 describe('inert execution ledger in disposable owned PostgreSQL schema',()=>{
- const db=new SqlHarness(); let ledger:RunLedger; let serverNow:number;
+ const db=new SqlHarness(); let ledger:RunLedger; let controls:ActivationControlRepository; let serverNow:number;
  beforeAll(async()=>{await db.open();
   if(!/^phase22_test_[a-f0-9]{32}$/.test(db.schema))throw Error('unsafe proof schema');
   await db.pool.query(RUN_LEDGER_DDL.replace(/phase30_test_execution/g,db.schema));
+  await db.pool.query(ACTIVATION_CONTROL_DDL.replace(/phase30_test_execution/g,db.schema));
+  controls=new ActivationControlRepository({connect:async()=>{const c=await db.pool.connect();return{query:(text:string,values?:unknown[])=>c.query(text.replace(/phase30_test_execution/g,db.schema),values),release:()=>c.release()};}} as unknown as Pool);
   // SQL qualification is fixed in production. Only this test projects queries.
   ledger=new RunLedger({connect:async()=>{const c=await db.pool.connect();return {
    query:(text:string,values?:unknown[])=>c.query(text.replace(/phase30_test_execution/g,db.schema),values),release:()=>c.release(),
@@ -207,6 +211,65 @@ describe('inert execution ledger in disposable owned PostgreSQL schema',()=>{
   await db.pool.query('SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp()))+0.05)',[p.expiresAt]);
   await expect(ledger.bindOperation(request,'upload')).rejects.toThrow('TEST_ADMISSION_LEDGER');
   const row=(await db.pool.query('SELECT counters FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0];expect(row.counters.ingressBytes).toBe(200);expect(row.counters.processingAttempts).toBe(0);
+ },30000);
+
+ it('keeps controlled preparation blocked from legacy activation and direct SQL',async()=>{
+  const p=plan();Object.assign(p,{activationControlRequired:true});await ledger.prepare(p);
+  const row=(await db.pool.query('SELECT activation_control_required FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0];expect(row.activation_control_required).toBe(true);
+  await expect(ledger.activate(p.runId,p.activationId,randomUUID())).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  await expect(db.pool.query('UPDATE '+table('runs')+" SET state='ACTIVE',boot_id=$2 WHERE run_id=$1",[p.runId,randomUUID()])).rejects.toThrow();
+  await expect(db.pool.query('UPDATE '+table('runs')+' SET activation_control_required=false WHERE run_id=$1',[p.runId])).rejects.toThrow();
+  const legacy=plan();await ledger.prepare(legacy);await expect(db.pool.query('UPDATE '+table('runs')+' SET activation_control_required=true WHERE run_id=$1',[legacy.runId])).rejects.toThrow();
+ });
+
+ async function controlled(expiresInMs=60000):Promise<ControlTuple>{
+  const now=((await db.pool.query('SELECT clock_timestamp() t')).rows[0].t as Date).getTime(),p=plan({activationControlRequired:true,notBefore:new Date(now-1000).toISOString(),expiresAt:new Date(now+expiresInMs).toISOString()});await ledger.prepare(p);
+  return{runId:p.runId,activationId:p.activationId,sourceSha:p.sourceSha,manifestSha256:p.manifestSha256,service:'srv-dahnerh594qs73fp3420',branch:'dev',deploymentId:'dep-owned-proof',bootId:randomUUID(),notBefore:p.notBefore,expiresAt:p.expiresAt};
+ }
+ async function observation(t:ControlTuple):Promise<OperatorReceipt>{return{service:t.service,branch:t.branch,sha:t.sourceSha,manifestSha256:t.manifestSha256,deploymentId:t.deploymentId,bootId:t.bootId,observedAt:((await db.pool.query('SELECT clock_timestamp() t')).rows[0].t as Date).toISOString(),liveObserved:true,originalDisabledCommandObserved:true,allFourFlagsFalseObserved:true};}
+ it('arms/stores once without ever activating, including concurrent contenders',async()=>{
+  const t=await controlled(),arms=await Promise.allSettled([controls.arm(t),controls.arm(t)]);expect(arms.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+  const receipt=await observation(t),stores=await Promise.allSettled([controls.storeReceipt(t,receipt),controls.storeReceipt(t,receipt)]);expect(stores.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+  const out=await controls.inspectExact(t);expect(out).toMatchObject({tuple:t,runState:'PREPARED',state:'RECEIPT_STORED',receipt});expect(Object.isFrozen(out)).toBe(true);expect(Object.isFrozen(out!.receipt)).toBe(true);
+  await expect(ledger.activate(t.runId,t.activationId,t.bootId)).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  await expect(db.pool.query('UPDATE '+table('runs')+" SET state='ACTIVE',boot_id=$2 WHERE run_id=$1",[t.runId,t.bootId])).rejects.toThrow();
+ });
+ it('compares exact original tuple and cannot arm legacy runs or reuse a boot',async()=>{
+  const t=await controlled();for(const patch of [{activationId:randomUUID()},{sourceSha:'c'.repeat(40)},{manifestSha256:'c'.repeat(64)},{expiresAt:new Date(Date.parse(t.expiresAt)+1000).toISOString()}])await expect(controls.arm({...t,...patch})).rejects.toThrow('TEST_ACTIVATION_CONTROL');
+  await controls.arm(t);expect(await controls.inspectExact({...t,bootId:randomUUID()})).toBeNull();
+  const other=await controlled();await expect(controls.arm({...other,bootId:t.bootId})).rejects.toThrow('TEST_ACTIVATION_CONTROL');
+  const p=plan();await ledger.prepare(p);await expect(controls.arm({...t,runId:p.runId,activationId:p.activationId,manifestSha256:p.manifestSha256,notBefore:p.notBefore,expiresAt:p.expiresAt,bootId:randomUUID()})).rejects.toThrow('TEST_ACTIVATION_CONTROL');
+ });
+ it('rejects stale/future/prearm receipt and exact-identity or procedural mismatches atomically',async()=>{
+  const t=await controlled();await controls.arm(t);const receipt=await observation(t);
+  for(const patch of [{observedAt:new Date(Date.parse(receipt.observedAt)+60000).toISOString()},{observedAt:new Date(Date.parse(receipt.observedAt)-300001).toISOString()},{deploymentId:'dep-other'},{bootId:randomUUID()},{manifestSha256:'d'.repeat(64)},{liveObserved:false},{allFourFlagsFalseObserved:false}])await expect(controls.storeReceipt(t,{...receipt,...patch} as OperatorReceipt)).rejects.toThrow('TEST_ACTIVATION_CONTROL');
+  expect((await controls.inspectExact(t))!.state).toBe('ARMED');await controls.storeReceipt(t,await observation(t));
+ });
+ it('rejects control tuple/receipt/direct SQL mutation, deletion and truncation',async()=>{
+  const t=await controlled();await controls.arm(t);
+  for(const sql of [
+   'UPDATE '+table('activation_controls')+" SET deployment_id='dep-other' WHERE run_id=$1",
+   'UPDATE '+table('activation_controls')+" SET expires_at=expires_at+interval '1 second' WHERE run_id=$1",
+   'UPDATE '+table('activation_controls')+" SET armed_at=armed_at-interval '1 second' WHERE run_id=$1",
+   'UPDATE '+table('activation_controls')+" SET state='RECEIPT_STORED',receipt='{}'::jsonb WHERE run_id=$1",
+   'DELETE FROM '+table('activation_controls')+' WHERE run_id=$1',
+  ])await expect(db.pool.query(sql,[t.runId])).rejects.toThrow();
+  await controls.storeReceipt(t,await observation(t));
+  for(const sql of [
+   'UPDATE '+table('activation_controls')+" SET receipt=jsonb_set(receipt,'{observedAt}',to_jsonb(clock_timestamp())) WHERE run_id=$1",
+   'UPDATE '+table('activation_controls')+" SET state='ARMED',receipt=NULL,receipt_stored_at=NULL WHERE run_id=$1",
+   'UPDATE '+table('activation_controls')+" SET boot_id=$2 WHERE run_id=$1",
+  ])await expect(db.pool.query(sql,sql.includes('$2')?[t.runId,randomUUID()]:[t.runId])).rejects.toThrow();
+  await expect(db.pool.query('TRUNCATE '+table('activation_controls'))).rejects.toThrow();
+ });
+ it('uses database expiry after a blocked lock and retains inspectable facts without authority',async()=>{
+  const t=await controlled(10000);await controls.arm(t);const receipt=await observation(t);
+  // Leave less than the 2s lock timeout so the waiter acquires the lock after expiry.
+  await db.pool.query('SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp())-1.2))',[t.expiresAt]);
+  const c=await db.pool.connect();await c.query('BEGIN');await c.query('SELECT run_id FROM '+table('runs')+' WHERE run_id=$1 FOR UPDATE',[t.runId]);
+  const pending=controls.storeReceipt(t,receipt).then(()=>true,()=>false);
+  try{await db.pool.query('SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp()))+0.05)',[t.expiresAt]);}finally{await c.query('ROLLBACK');c.release();}
+  expect(await pending).toBe(false);const snapshot=await controls.inspectExact(t);expect(snapshot!.state).toBe('ARMED');expect(snapshot!.runState).toBe('PREPARED');await expect(controls.storeReceipt(t,receipt)).rejects.toThrow('TEST_ACTIVATION_CONTROL');await expect(controls.arm(t)).rejects.toThrow('TEST_ACTIVATION_CONTROL');
  },30000);
 
 });

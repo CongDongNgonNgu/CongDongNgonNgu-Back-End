@@ -16,6 +16,7 @@ CREATE TABLE phase30_test_execution.runs (
  source_sha text NOT NULL CHECK(source_sha ~ '^[a-f0-9]{40}$'),
  service_id text NOT NULL CHECK(service_id='srv-dahnerh594qs73fp3420'),
  issued_at timestamptz NOT NULL DEFAULT clock_timestamp(), not_before timestamptz NOT NULL,
+ activation_control_required boolean NOT NULL DEFAULT false,
  expires_at timestamptz NOT NULL, activated_at timestamptz, boot_id uuid,
  state text NOT NULL DEFAULT 'PREPARED' CHECK(state IN ('PREPARED','ACTIVE','CLOSED','EXPIRED')),
  slot_count integer NOT NULL CHECK(slot_count BETWEEN 1 AND 256),
@@ -125,8 +126,8 @@ BEGIN
   NEW.issued_at:=now_at;
   IF NEW.state<>'PREPARED' OR NEW.preparation_sealed OR NEW.counters<>'${zero}'::jsonb OR NEW.recovery_debt THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
  ELSE
-  IF ROW(NEW.run_id,NEW.activation_id,NEW.manifest_sha256,NEW.source_sha,NEW.service_id,NEW.issued_at,NEW.not_before,NEW.expires_at,NEW.limits,NEW.slot_count,NEW.candidate_count,NEW.request_count,NEW.operation_count,NEW.edge_count,NEW.operation_slot_count)
-   IS DISTINCT FROM ROW(OLD.run_id,OLD.activation_id,OLD.manifest_sha256,OLD.source_sha,OLD.service_id,OLD.issued_at,OLD.not_before,OLD.expires_at,OLD.limits,OLD.slot_count,OLD.candidate_count,OLD.request_count,OLD.operation_count,OLD.edge_count,OLD.operation_slot_count)
+  IF ROW(NEW.run_id,NEW.activation_id,NEW.manifest_sha256,NEW.source_sha,NEW.service_id,NEW.issued_at,NEW.not_before,NEW.expires_at,NEW.limits,NEW.slot_count,NEW.candidate_count,NEW.request_count,NEW.operation_count,NEW.edge_count,NEW.operation_slot_count,NEW.activation_control_required)
+   IS DISTINCT FROM ROW(OLD.run_id,OLD.activation_id,OLD.manifest_sha256,OLD.source_sha,OLD.service_id,OLD.issued_at,OLD.not_before,OLD.expires_at,OLD.limits,OLD.slot_count,OLD.candidate_count,OLD.request_count,OLD.operation_count,OLD.edge_count,OLD.operation_slot_count,OLD.activation_control_required)
    OR (OLD.recovery_debt AND NOT NEW.recovery_debt) THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
   FOR k IN SELECT jsonb_object_keys(maximum) LOOP
    IF (NEW.counters->>k)::numeric<(OLD.counters->>k)::numeric THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
@@ -159,7 +160,7 @@ BEGIN
   IF NEW.request_count>0 AND NEW.counters<>phase30_test_execution.request_totals(NEW.run_id,true) THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
 
   IF OLD.state='PREPARED' AND NEW.state='ACTIVE' THEN
-   IF NOT NEW.preparation_sealed OR now_at<NEW.not_before OR now_at>=NEW.expires_at OR NEW.boot_id IS NULL
+   IF NEW.activation_control_required OR NOT NEW.preparation_sealed OR now_at<NEW.not_before OR now_at>=NEW.expires_at OR NEW.boot_id IS NULL
     OR (SELECT count(*) FROM phase30_test_execution.slots WHERE run_id=NEW.run_id)<>NEW.slot_count THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
    NEW.activated_at:=now_at;
   ELSE
