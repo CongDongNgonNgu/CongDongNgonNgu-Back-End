@@ -96,6 +96,19 @@ describe('inert execution ledger in disposable owned PostgreSQL schema',()=>{
   await expect(db.pool.query('TRUNCATE '+table('runs')+' CASCADE')).rejects.toThrow();
  });
  function coarsePlan(){return plan({limits:{...RUN_LIMITS,authenticatedRequests:2},requests:{candidates:[{key:'public-head',method:'HEAD',path:'/api/v1/attachments/'+randomUUID()+'/content',authClass:'AUTH',ingressBytes:0,egressBytes:200}],attempts:[{key:'head-a',candidateKey:'public-head'},{key:'head-b',candidateKey:'public-head'}]}});}
+ it('exposes only original committed candidate facts until the request is consumed',async()=>{
+  const p=coarsePlan(),expected={...p.requests!.candidates[0]};await ledger.prepare(p);const active=await ledger.activate(p.runId,p.activationId,randomUUID()),receipt=await ledger.reserveRequest(active,'public-head');
+  p.requests!.candidates[0].egressBytes=1;p.requests!.candidates[0].path='/not-the-committed-route';
+  const actual=ledger.requireRequestCandidate(receipt);expect(actual).toEqual(expected);expect(Object.isFrozen(actual)).toBe(true);expect(Object.keys(receipt).sort()).toEqual(['attemptKey','candidateKey','runId']);
+  expect(()=>ledger.requireRequestCandidate({...receipt})).toThrow('TEST_ADMISSION_LEDGER');expect(()=>new RunLedger(db.pool).requireRequestCandidate(receipt)).toThrow('TEST_ADMISSION_LEDGER');
+  await expect(ledger.bindOperation(receipt,'nonexistent')).rejects.toThrow('TEST_ADMISSION_LEDGER');expect(()=>ledger.requireRequestCandidate(receipt)).toThrow('TEST_ADMISSION_LEDGER');
+  expect((await db.pool.query('SELECT counters FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0].counters).toMatchObject({authenticatedRequests:1,authenticatedEgressBytes:200});
+ });
+ it('retains a committed reservation without registering candidate authority after actual lost acknowledgement',async()=>{
+  let uncertain=false;const owner=new RunLedger({connect:async()=>{const c=await db.pool.connect();return{query:async(sql:string,values?:unknown[])=>{const result=await c.query(sql.replace(/phase30_test_execution/g,db.schema),values);if(sql==='COMMIT'&&uncertain)throw Error('synthetic lost acknowledgement');return result;},release:()=>c.release()};}} as unknown as Pool);
+  const p=coarsePlan();await owner.prepare(p);const active=await owner.activate(p.runId,p.activationId,randomUUID());uncertain=true;await expect(owner.reserveRequest(active,'public-head')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  const row=(await db.pool.query('SELECT attempt_key,candidate_key FROM '+table('request_attempts')+" WHERE run_id=$1 AND state='RESERVED'",[p.runId])).rows[0];expect(row).toBeDefined();expect(()=>owner.requireRequestCandidate({runId:p.runId,attemptKey:row.attempt_key,candidateKey:row.candidate_key})).toThrow('TEST_ADMISSION_LEDGER');expect((await db.pool.query('SELECT counters FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0].counters).toMatchObject({authenticatedRequests:1,authenticatedEgressBytes:200});
+ });
  it('durably reserves finite request ceilings before parsing without burning product slots or refunding failures',async()=>{
   const p=coarsePlan();await ledger.prepare(p);const active=await ledger.activate(p.runId,p.activationId,randomUUID());
   const results=await Promise.allSettled(Array.from({length:3},()=>ledger.reserveRequest(active,'public-head')));

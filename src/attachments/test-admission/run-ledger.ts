@@ -74,7 +74,7 @@ export class RunLedger {
  private readonly controlled=new WeakSet<ControlledActiveRun>();
  private readonly bindings=new WeakMap<BoundOperation,{active:ActiveRun;attemptKey:string}>();
  private readonly matchedBindings=new WeakMap<MatchedBoundOperation,{active:ControlledActiveRun}>();
- private readonly requests=new WeakMap<RequestReservation,{active:ActiveRun;attemptKey:string}>();
+ private readonly requests=new WeakMap<RequestReservation,{active:ActiveRun;attemptKey:string;candidate:Readonly<RequestCandidate>}>();
  constructor(private readonly pool:Pool){}
  private async transaction<T>(work:(client:PoolClient)=>Promise<T>):Promise<T>{
   let client:PoolClient|undefined;
@@ -143,18 +143,28 @@ export class RunLedger {
   const value=Object.freeze({runId,activationId,bootId});this.active.add(value);return value;
  }
 
+ /** Local committed provenance only, not fresh expiry, ACL or provider authority.
+  * Binding consumes the original request and immediately invalidates this view. */
+ requireRequestCandidate(request:RequestReservation):Readonly<RequestCandidate>{
+  const facts=this.requests.get(request);if(!facts)return fail();return facts.candidate;
+ }
  /** Pre-parser accounting only. Stored immutable ceilings are charged by the
   * database transition, never supplied by the caller. No refunds or role burns.
-  * Candidate compilation and middleware remain unimplemented. */
+  * Local committed accounting/provenance only; no full runtime/bootstrap authority. */
  async reserveRequest(active:ActiveRun,candidateKey:string):Promise<RequestReservation>{
   if(!this.active.has(active)||!key(candidateKey))return fail();
   const attempt=await this.transaction(async c=>{
    const run=(await c.query("SELECT run_id FROM phase30_test_execution.runs WHERE run_id=$1 AND activation_id=$2 AND boot_id=$3 AND state='ACTIVE' AND preparation_sealed AND request_count>0 AND not_before<=clock_timestamp() AND expires_at>clock_timestamp() FOR UPDATE",[active.runId,active.activationId,active.bootId])).rows[0];if(!run)return fail();
    const row=(await c.query("SELECT attempt_key,candidate_key FROM phase30_test_execution.request_attempts WHERE run_id=$1 AND candidate_key=$2 AND state='AVAILABLE' ORDER BY attempt_key COLLATE \"C\" LIMIT 1 FOR UPDATE",[active.runId,candidateKey])).rows[0];if(!row||typeof row.attempt_key!=='string'||!key(row.attempt_key)||row.candidate_key!==candidateKey)return fail();
    const changed=await c.query("UPDATE phase30_test_execution.request_attempts SET state='RESERVED',boot_id=$3 WHERE run_id=$1 AND attempt_key=$2 AND state='AVAILABLE' RETURNING attempt_key",[active.runId,row.attempt_key,active.bootId]);if(changed.rowCount!==1)return fail();
-   return {attemptKey:String(row.attempt_key),candidateKey:String(row.candidate_key)};
+   const raw=(await c.query("SELECT c.candidate_key,c.method,c.path,c.auth_class,c.ingress_bytes,c.egress_bytes FROM phase30_test_execution.request_candidates c JOIN phase30_test_execution.request_attempts a USING(run_id,candidate_key) WHERE a.run_id=$1 AND a.attempt_key=$2 AND a.state='RESERVED' AND a.boot_id=$3",[active.runId,row.attempt_key,active.bootId])).rows[0];
+    if(!raw||raw.candidate_key!==candidateKey)return fail();
+    const bytes=(value:unknown):number=>{if((typeof value!=='string'||!/^\d+$/.test(value))&&(typeof value!=='number'||!Number.isSafeInteger(value)))return fail();const n=Number(value);if(!Number.isSafeInteger(n)||n<0)return fail();return n;};
+    const parsed=requestPreparation({candidates:[{key:raw.candidate_key,method:raw.method,path:raw.path,authClass:raw.auth_class,ingressBytes:bytes(raw.ingress_bytes),egressBytes:bytes(raw.egress_bytes)}],attempts:[{key:'candidate-fact',candidateKey:raw.candidate_key}]},{...RUN_LIMITS});
+    const candidate=Object.freeze({...parsed.candidates[0]});
+    return {attemptKey:String(row.attempt_key),candidateKey:String(row.candidate_key),candidate};
   });
-  const handle=Object.freeze({runId:active.runId,...attempt});this.requests.set(handle,{active,attemptKey:attempt.attemptKey});return handle;
+  const handle=Object.freeze({runId:active.runId,attemptKey:attempt.attemptKey,candidateKey:attempt.candidateKey});this.requests.set(handle,{active,attemptKey:attempt.attemptKey,candidate:attempt.candidate});return handle;
  }
 
 

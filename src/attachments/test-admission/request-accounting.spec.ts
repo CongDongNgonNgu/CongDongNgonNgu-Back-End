@@ -16,6 +16,16 @@ function fixture() {
       attemptKey: "coarse-r000",
     }) as RequestReservation;
   const ledger = {
+    requireRequestCandidate: jest.fn(() =>
+      Object.freeze({
+        key: "read-anon",
+        method: "GET" as const,
+        path,
+        authClass: "ANON" as const,
+        ingressBytes: 0,
+        egressBytes: 100,
+      }),
+    ),
     requireControlled: jest.fn(() => active),
     reserveRequest: jest.fn(async () => handle),
   };
@@ -92,6 +102,36 @@ const dispatch = async (
   return next;
 };
 describe("explicit controlled pre-parser accounting only", () => {
+  it("peeks only committed ledger facts without consuming the private handle", async () => {
+    const f = fixture(),
+      req = request(),
+      r = response();
+    const facts = Object.freeze({
+      key: "read-anon",
+      method: "GET" as const,
+      path,
+      authClass: "ANON" as const,
+      ingressBytes: 0,
+      egressBytes: 250,
+    });
+    Object.assign(f.ledger, { requireRequestCandidate: jest.fn(() => facts) });
+    expect(f.accounting.peekCandidate(req)).toBeUndefined();
+    await dispatch(f, req, r.res);
+    f.plan.requests.candidates[0].egressBytes = 999;
+    expect(f.accounting.peekCandidate(req)).toBe(facts);
+    expect(f.accounting.peekCandidate(req)).toBe(facts);
+    expect(f.accounting.take(req)).toBe(f.handle);
+    expect(f.accounting.peekCandidate(req)).toBeUndefined();
+  });
+  it("never peeks candidate facts after response closure", async () => {
+    const f = fixture(),
+      req = request(),
+      r = response();
+    await dispatch(f, req, r.res);
+    r.raw.writableEnded = true;
+    expect(f.accounting.peekCandidate(req)).toBeUndefined();
+  });
+
   it("does not issue a stored handle after the response has closed", async () => {
     const f = fixture(),
       req = request(),
