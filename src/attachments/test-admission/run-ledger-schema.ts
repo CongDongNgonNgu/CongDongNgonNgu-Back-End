@@ -75,6 +75,11 @@ CREATE TABLE phase30_test_execution.bound_operations (
  egress_bytes bigint NOT NULL CHECK(egress_bytes BETWEEN 0 AND 67108864),
  processing_attempts integer NOT NULL CHECK(processing_attempts IN (0,1)),
  slot_count integer NOT NULL CHECK(slot_count BETWEEN 0 AND 256),
+ policy_key text, policy_attempt_key text,
+ CHECK((policy_key IS NULL AND policy_attempt_key IS NULL) OR
+  (policy_key IS NOT NULL AND policy_attempt_key IS NOT NULL
+   AND policy_key ~ '^[a-z0-9][a-z0-9._-]{0,79}$' AND policy_attempt_key ~ '^[a-z0-9][a-z0-9._-]{0,79}$')),
+ UNIQUE(run_id,policy_key,policy_attempt_key),
  state text NOT NULL DEFAULT 'AVAILABLE' CHECK(state IN ('AVAILABLE','BOUND')), bound_attempt_key text,
  CHECK((state='AVAILABLE' AND bound_attempt_key IS NULL) OR (state='BOUND' AND bound_attempt_key IS NOT NULL)),
  PRIMARY KEY(run_id,operation_key), UNIQUE(run_id,bound_attempt_key),
@@ -292,12 +297,16 @@ BEGIN
   IF parent.state<>'PREPARED' OR parent.preparation_sealed OR now_at>=parent.expires_at
    OR NEW.state<>'AVAILABLE' OR NEW.bound_attempt_key IS NOT NULL
    OR (SELECT count(*) FROM phase30_test_execution.bound_operations WHERE run_id=NEW.run_id)>=parent.operation_count
+   OR (NEW.policy_key IS NOT NULL AND EXISTS(SELECT 1 FROM phase30_test_execution.bound_operations o
+    WHERE o.run_id=NEW.run_id AND o.policy_key=NEW.policy_key
+     AND ROW(o.attachment_id,o.ingress_bytes,o.egress_bytes,o.processing_attempts)
+      IS DISTINCT FROM ROW(NEW.attachment_id,NEW.ingress_bytes,NEW.egress_bytes,NEW.processing_attempts)))
    OR NEW.ingress_bytes>(parent.limits->>'ingressBytes')::numeric
    OR NEW.egress_bytes>GREATEST((parent.limits->>'authenticatedEgressBytes')::numeric,(parent.limits->>'anonymousEgressBytes')::numeric)
   THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
  ELSE
-  IF ROW(NEW.run_id,NEW.operation_key,NEW.attachment_id,NEW.ingress_bytes,NEW.egress_bytes,NEW.processing_attempts,NEW.slot_count)
-   IS DISTINCT FROM ROW(OLD.run_id,OLD.operation_key,OLD.attachment_id,OLD.ingress_bytes,OLD.egress_bytes,OLD.processing_attempts,OLD.slot_count)
+  IF ROW(NEW.run_id,NEW.operation_key,NEW.attachment_id,NEW.ingress_bytes,NEW.egress_bytes,NEW.processing_attempts,NEW.slot_count,NEW.policy_key,NEW.policy_attempt_key)
+   IS DISTINCT FROM ROW(OLD.run_id,OLD.operation_key,OLD.attachment_id,OLD.ingress_bytes,OLD.egress_bytes,OLD.processing_attempts,OLD.slot_count,OLD.policy_key,OLD.policy_attempt_key)
    OR OLD.state<>'AVAILABLE' OR NEW.state<>'BOUND' OR OLD.bound_attempt_key IS NOT NULL
    OR parent.state<>'ACTIVE' OR NOT parent.preparation_sealed OR now_at<parent.not_before OR now_at>=parent.expires_at
    OR NOT EXISTS(SELECT 1 FROM phase30_test_execution.request_attempts a
