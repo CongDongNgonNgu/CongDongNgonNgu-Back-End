@@ -8,6 +8,8 @@ import type { RequestHandler } from 'express';
 export interface AppSetupOptions {
   /** Trusted bootstrap injection before init/listen; accounting grants no product capability. */
   attachmentRequestAccounting?: RequestHandler;
+  /** Explicit diagnostic apps must disable Nest built-in parsers and supply accounting first. */
+  attachmentBodyParser?: RequestHandler;
 }
 export function configureApp(app: INestApplication, options: AppSetupOptions = {}): void {
   const config = app.get(ConfigService<RuntimeConfig, true>);
@@ -43,5 +45,9 @@ export function configureApp(app: INestApplication, options: AppSetupOptions = {
   // app.use runs before Nest installs body parsers during init/listen. Module
   // route middleware is too late for conservative pre-parser accounting.
   if (options.attachmentRequestAccounting) app.use(options.attachmentRequestAccounting);
+  if (options.attachmentBodyParser) {
+    if (!options.attachmentRequestAccounting) throw Error('ATTACHMENT_DIAGNOSTIC_PARSER_REQUIRES_ACCOUNTING');
+    app.use(options.attachmentBodyParser);
+  }
   configureSwagger(app);
 }

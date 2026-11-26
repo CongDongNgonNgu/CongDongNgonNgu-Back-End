@@ -258,7 +258,8 @@ export function validateOperationDeclarations(
         (kind !== "READ" &&
           (charges.authenticatedEgressBytes !== 0 ||
             charges.anonymousEgressBytes !== 0)) ||
-        (kind !== "UPLOAD" && charges.ingressBytes !== 0) ||
+        (!["UPLOAD", "INITIATE", "PATCH_METADATA"].includes(kind) &&
+          charges.ingressBytes !== 0) ||
         (kind !== "FINALIZE" && charges.processingAttempts !== 0) ||
         charges.processingAttempts > 1
       )

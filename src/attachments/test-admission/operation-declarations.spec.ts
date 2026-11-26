@@ -557,3 +557,24 @@ it("public authenticated policy cannot declare initiate, patch or upload even wi
   const read = { ...op(), principal };
   reject([read, { ...read, key: "duplicate", attemptKeys: ["another"] }]);
 });
+
+it("retains legacy zero JSON charges and permits explicit bounded INITIATE/PATCH ingress", () => {
+  const { method, variant, range, ...o } = op();
+  for (const ingressBytes of [0, 102400])
+    for (const kind of ["INITIATE", "PATCH_METADATA"]) {
+      const value = {
+        ...o,
+        kind,
+        body:
+          kind === "INITIATE"
+            ? { ...body }
+            : { expectedMetadataVersion: 0, caption: "", alt: "" },
+        charges: { ...o.charges, authenticatedEgressBytes: 0, ingressBytes },
+      };
+      expect(
+        validateOperationDeclarations([value], inventory(), env)[0].charges
+          .ingressBytes,
+      ).toBe(ingressBytes);
+    }
+  reject([{ ...op(), charges: { ...op().charges, ingressBytes: 102400 } }]);
+});
