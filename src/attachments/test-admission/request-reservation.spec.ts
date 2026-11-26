@@ -34,7 +34,7 @@ const plan = () => ({
 function db() {
   const query = jest.fn(async (sql: string, _values?: unknown[]) => ({
     rowCount: 1,
-    rows: sql.includes("FROM phase30_test_execution.request_candidates")
+    rows: sql.includes("AS observed_at") ? [{expires_at:new Date(2000),observed_at:new Date(1000)}] : sql.includes("FROM phase30_test_execution.request_candidates")
       ? [
           {
             candidate_key: "read",
@@ -150,7 +150,7 @@ describe("durable coarse request reservation only", () => {
       if (sql === "COMMIT") throw Error("private commit uncertain");
       return {
         rowCount: 1,
-        rows: sql.includes("FROM phase30_test_execution.request_candidates")
+        rows: sql.includes("AS observed_at") ? [{expires_at:new Date(2000),observed_at:new Date(1000)}] : sql.includes("FROM phase30_test_execution.request_candidates")
           ? [
               {
                 candidate_key: "read",

@@ -29,7 +29,12 @@ function namespace(path: string): boolean {
   }
   return detected === base || detected.startsWith(base + "/");
 }
-function reject(req: Request, res: Response, status: number): void {
+function reject(
+  req: Request,
+  res: Response,
+  status: number,
+  cancelInput = false,
+): void {
   if (req.aborted || res.destroyed || res.writableEnded) return;
   if (res.headersSent) {
     res.destroy();
@@ -39,26 +44,27 @@ function reject(req: Request, res: Response, status: number): void {
   res.vary("Authorization");
   res.vary("Cookie");
   res.setHeader("Connection", "close");
-  res.once("finish", () => req.socket.end());
-  res
-    .status(status)
-    .json({
-      success: false,
-      error: {
-        code: status === 503 ? "ATTACHMENTS_UNAVAILABLE" : "INVALID_REQUEST",
-        message:
-          status === 503
-            ? "Attachments are temporarily unavailable"
-            : "Invalid request body",
-      },
-    });
+  res.once("finish", () => {
+    if (cancelInput) req.socket.end(() => req.destroy());
+    else req.socket.end();
+  });
+  res.status(status).json({
+    success: false,
+    error: {
+      code: status === 503 ? "ATTACHMENTS_UNAVAILABLE" : "INVALID_REQUEST",
+      message:
+        status === 503
+          ? "Attachments are temporarily unavailable"
+          : "Invalid request body",
+    },
+  });
 }
 /** Explicit diagnostic composition only: Nest bodyParser:false, committed request
  * accounting first, this parser second. Never install alongside an earlier body
  * parser. Finite declared application input is bounded; this is not a wire-byte,
  * authentication, provider-write or runtime-activation grant. */
 export function createDiagnosticBodyParser(
-  accounting: Pick<RequestAccounting, "peekCandidate">,
+  accounting: Pick<RequestAccounting, "peekCandidate" | "peekBodyRemaining">,
 ): RequestHandler {
   const normalJson = json(),
     normalForm = urlencoded({ extended: true });
@@ -152,21 +158,79 @@ export function createDiagnosticBodyParser(
       reject(req, res, 413);
       return;
     }
-    if (isRaw) {
-      next();
-      return;
-    }
+
     const contentType = req.headers["content-type"];
     if (
-      typeof contentType !== "string" ||
-      !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(
-        contentType,
-      )
+      !isRaw &&
+      (typeof contentType !== "string" ||
+        !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(
+          contentType,
+        ))
     ) {
       reject(req, res, 415);
       return;
     }
+    const started = performance.now();
+    let remaining: number | undefined;
+    try {
+      remaining = accounting.peekBodyRemaining(req);
+    } catch {
+      reject(req, res, 503);
+      return;
+    }
+    if (
+      typeof remaining !== "number" ||
+      !Number.isFinite(remaining) ||
+      remaining < 0 ||
+      remaining > 600000
+    ) {
+      reject(req, res, 503);
+      return;
+    }
+    if (remaining === 0) {
+      reject(req, res, 408, true);
+      return;
+    }
+    const deadline = started + Math.min(30000, remaining);
+    if (performance.now() >= deadline) {
+      reject(req, res, 408, true);
+      return;
+    }
+    let settled = false;
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      for (const event of ["end", "error", "aborted", "close"])
+        req.removeListener(event, cleanup);
+      for (const event of ["finish", "close"])
+        res.removeListener(event, cleanup);
+    };
+    const timeout = () => {
+      if (settled) return;
+      cleanup();
+      reject(req, res, 408, true);
+    };
+    const timer = setTimeout(
+      timeout,
+      Math.max(0, deadline - performance.now()),
+    );
+    for (const event of isRaw
+      ? ["end", "error", "aborted", "close"]
+      : ["aborted", "close"])
+      req.once(event, cleanup);
+    for (const event of ["finish", "close"]) res.once(event, cleanup);
+    if (isRaw) {
+      next();
+      return;
+    }
     diagnosticJson(req, res, (error) => {
+      if (settled) return;
+      if (performance.now() >= deadline) {
+        timeout();
+        return;
+      }
+      cleanup();
       if (error) {
         const status = (error as { status?: number }).status;
         reject(req, res, status === 413 ? 413 : status === 415 ? 415 : 400);

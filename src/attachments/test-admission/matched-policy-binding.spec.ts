@@ -31,6 +31,11 @@ function db() {
       state: available.has(key) ? "AVAILABLE" : "BOUND",
     }));
   const query = jest.fn(async (sql: string, v?: unknown[]) => {
+    if (sql.includes("AS observed_at"))
+      return {
+        rowCount: 1,
+        rows: [{ expires_at: new Date(2000), observed_at: new Date(1000) }],
+      };
     if (sql.includes("SELECT o.operation_key"))
       return { rowCount: 2, rows: rows() };
     if (sql.includes("FROM phase30_test_execution.request_candidates"))

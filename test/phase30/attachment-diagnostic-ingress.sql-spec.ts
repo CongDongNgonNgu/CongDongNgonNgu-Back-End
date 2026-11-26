@@ -3,7 +3,7 @@ import type { Pool } from "pg";
 import { Test } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
 import type { INestApplication } from "@nestjs/common";
-import type { Response } from "express";
+import type { Request, Response } from "express";
 import request from "supertest";
 import { SqlHarness } from "../phase22/sql-harness";
 import {
@@ -212,7 +212,7 @@ describe("bounded diagnostic parser with committed SQL reservations", () => {
       accounting: new RequestAccounting(ledger, active, compiled),
     };
   }
-  async function application(accounting?: RequestAccounting) {
+  async function application(accounting?: RequestAccounting, parkedRaw?: (req: Request, res: Response) => void) {
     const identity = new InMemoryIdentityRepository();
     const config = new ConfigService({
       app: { environment: "test", corsOrigins: ["http://localhost:5173"] },
@@ -251,7 +251,8 @@ describe("bounded diagnostic parser with committed SQL reservations", () => {
             parser(req, res, (error) => {
               if (req.method === "PUT")
                 observed.push({ body: req.body, ended: req.readableEnded });
-              next(error);
+              if (!error && req.method === "PUT" && parkedRaw) parkedRaw(req, res);
+              else next(error);
             })
         : undefined,
     });
@@ -428,4 +429,39 @@ describe("bounded diagnostic parser with committed SQL reservations", () => {
       await app.close();
     }
   }, 30000);
+  async function incomplete(app: INestApplication, method: string, path: string) {
+    if (!app.getHttpServer().listening) await app.listen(0, '127.0.0.1');
+    const address=app.getHttpServer().address();
+    return new Promise<number>((resolve,reject)=>{
+      const call=nativeRequest({host:'127.0.0.1',port:address.port,method,path,agent:false,headers:{'Content-Type':'application/json','Content-Length':'8'}},res=>{
+        res.resume();res.once('end',()=>{resolve(res.statusCode!);call.destroy();});res.once('error',reject);
+      });
+      call.setTimeout(15000,()=>call.destroy(Error('incomplete proof timeout')));
+      call.once('error',reject);call.write('{');
+    });
+  }
+  it('expires incomplete finite JSON before native authentication while retaining the charge',async()=>{
+    const f=await accounting(8000),{app,observed}=await application(f.accounting);
+    try{
+      expect(await incomplete(app,'POST',base)).toBe(408);
+      expect(observed).toEqual([]);
+      expect(await counters(f.runId)).toMatchObject({authenticatedRequests:1,ingressBytes:CAP});
+    }finally{await app.close();}
+  },30000);
+  it('cancels a parked raw consumer after receipt take without parsing or refunding',async()=>{
+    const f=await accounting(8000);let taken=false,cancelled=false;
+    const {app,observed}=await application(f.accounting,(req)=>{
+      taken=Boolean(f.accounting.take(req));
+      expect(f.accounting.peekCandidate(req)).toBeUndefined();
+      req.once('aborted',()=>{cancelled=true;});req.once('error',()=>{});req.resume();
+    });
+    try{
+      expect(await incomplete(app,'PUT',base+'/'+attachmentId+'/content')).toBe(408);
+      await new Promise(r=>setImmediate(r));
+      expect(taken).toBe(true);expect(cancelled).toBe(true);
+      expect(observed).toEqual([{body:undefined,ended:false}]);
+      expect(await counters(f.runId)).toMatchObject({authenticatedRequests:1,ingressBytes:1024});
+    }finally{await app.close();}
+  },30000);
+
 });

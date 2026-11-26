@@ -13,11 +13,13 @@ function fixture() {
   };
   const query = jest.fn(async (sql: string) => ({
     rowCount: 1,
-    rows: sql.includes("request_candidates")
-      ? [candidate]
-      : sql.includes("SELECT attempt_key")
-        ? [{ attempt_key: "attempt", candidate_key: "candidate" }]
-        : [{ run_id: id(1) }],
+    rows: sql.includes("AS observed_at")
+      ? [{ expires_at: new Date(2000), observed_at: new Date(1000) }]
+      : sql.includes("request_candidates")
+        ? [candidate]
+        : sql.includes("SELECT attempt_key")
+          ? [{ attempt_key: "attempt", candidate_key: "candidate" }]
+          : [{ run_id: id(1) }],
   }));
   const connect = jest.fn(async () => ({ query, release: jest.fn() }));
   const ledger = new RunLedger({ connect } as unknown as Pool);

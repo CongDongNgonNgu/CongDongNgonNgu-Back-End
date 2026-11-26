@@ -64,7 +64,10 @@ export class RequestAccounting {
   constructor(
     private readonly ledger: Pick<
       RunLedger,
-      "requireControlled" | "reserveRequest" | "requireRequestCandidate"
+      | "requireControlled"
+      | "reserveRequest"
+      | "requireRequestCandidate"
+      | "requireRequestBodyRemaining"
     >,
     private readonly active: ControlledActiveRun,
     plan: CoarseRequestPlan,
@@ -130,6 +133,13 @@ export class RequestAccounting {
       response = this.responses.get(req);
     if (!handle || !response || closed(req, response)) return undefined;
     return this.ledger.requireRequestCandidate(handle);
+  }
+  /** Original private receipt time only; never reconstruct from a request or plan. */
+  peekBodyRemaining(req: Request): number | undefined {
+    const handle = this.handles.get(req),
+      response = this.responses.get(req);
+    if (!handle || !response || closed(req, response)) return undefined;
+    return this.ledger.requireRequestBodyRemaining(handle);
   }
   take(req: Request): RequestReservation | undefined {
     const handle = this.handles.get(req),
