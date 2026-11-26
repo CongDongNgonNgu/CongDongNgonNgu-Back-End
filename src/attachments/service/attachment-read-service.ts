@@ -1,3 +1,4 @@
+import type { ControlledInitiationContext } from "../initiation/controlled-initiation.port";
 ﻿import type { Pool } from "pg";
 import type { Readable } from "node:stream";
 import { SessionFailure } from "../../auth/session/session.service";
@@ -114,9 +115,12 @@ export class AttachmentReadService {
     refresh: RefreshAttachmentIdentity,
     repository: AttachmentInitiationRepository,
     input: unknown,
+    context?: ControlledInitiationContext,
   ): Promise<AttachmentDraftStatus> {
     const actor = (await this.actor(refresh, true))!,
-      created = await repository.initiate(actor, input);
+      created = await (arguments.length >= 4
+        ? repository.initiate(actor, input, context)
+        : repository.initiate(actor, input));
     // Every replay, including bound history, receives fresh exact-parent metadata
     // authorization. An internal replay reference never becomes an API projection.
     return this.metadata(

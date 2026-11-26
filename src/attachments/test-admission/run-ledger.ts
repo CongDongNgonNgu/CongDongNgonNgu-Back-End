@@ -1,3 +1,4 @@
+import type {ControlledInitiationContext,ControlledInitiationAccess} from '../initiation/controlled-initiation.port';
 import {parseControlTuple,type ControlTuple} from './activation-control';
 import type {Pool, PoolClient} from 'pg';
 import {RUN_LIMITS,SLOT_ROLES} from './run-ledger-schema';
@@ -75,6 +76,8 @@ export class RunLedger {
  private readonly bindings=new WeakMap<BoundOperation,{active:ActiveRun;attemptKey:string}>();
  private readonly matchedBindings=new WeakMap<MatchedBoundOperation,{active:ControlledActiveRun}>();
  private readonly attachmentClaims=new WeakSet<MatchedBoundOperation>();
+ private readonly initiationIssued=new WeakSet<MatchedBoundOperation>();
+ private readonly initiationContexts=new WeakMap<ControlledInitiationContext,{handle:MatchedBoundOperation;actorId:string;sessionId:string;fingerprint:string;signal:AbortSignal}>();
  private readonly requests=new WeakMap<RequestReservation,{active:ActiveRun;attemptKey:string;candidate:Readonly<RequestCandidate>;bodyDeadline:number}>();
  constructor(private readonly pool:Pool){}
  private async transaction<T>(work:(client:PoolClient)=>Promise<T>):Promise<T>{
@@ -198,7 +201,174 @@ export class RunLedger {
   const handle=Object.freeze({runId:active.runId,attemptKey,operationKey,...result});this.bindings.set(handle,{active,attemptKey});return handle;
  }
 
+ /** Trusted native binder correlation only. This does not prove native identity or policy kind. */
+ issueMatchedInitiationContext(
+   handle: BoundOperation,
+   input: { actorId: string; sessionId: string; fingerprint: string },
+   signal: AbortSignal,
+ ): ControlledInitiationContext {
+   const h = this.requireMatchedBoundOperation(handle);
+   if (this.initiationIssued.has(h)) return fail();
+   this.initiationIssued.add(h);
+   if (!(signal instanceof AbortSignal) || signal.aborted) return fail();
+   const f = closed(input, ["actorId", "sessionId", "fingerprint"]),
+     slot = h.slots[0],
+     c = h.candidate;
+   if (
+     typeof f.actorId !== "string" ||
+     !uuid(f.actorId) ||
+     typeof f.sessionId !== "string" ||
+     !uuid(f.sessionId) ||
+     typeof f.fingerprint !== "string" ||
+     !/^[a-f0-9]{64}$/.test(f.fingerprint) ||
+     c.method !== "POST" ||
+     c.path !== "/api/v1/attachments" ||
+     c.authClass !== "AUTH" ||
+     c.ingressBytes < 102400 ||
+     c.egressBytes !== 0 ||
+     h.slots.length !== 1 ||
+     !slot ||
+     slot.role !== "ATTACHMENT" ||
+     slot.id !== h.attachmentId ||
+     slot.attachmentId !== h.attachmentId ||
+     slot.operationKey !== h.operationKey ||
+     this.attachmentClaims.has(h)
+   )
+     return fail();
+   const context = Object.freeze({}) as ControlledInitiationContext;
+   this.initiationContexts.set(
+     context,
+     Object.freeze({
+       handle: h,
+       actorId: f.actorId,
+       sessionId: f.sessionId,
+       fingerprint: f.fingerprint,
+       signal,
+     }),
+   );
+   return context;
+ }
+ /** Trusted repository callbacks only, never request callbacks or external I/O.
+  * Each independent transaction locks the original ledger rows before product writes. */
+ async continueInitiation<T>(
+   context: ControlledInitiationContext,
+   input: { actorId: string; fingerprint: string },
+   rate: (client: PoolClient) => Promise<void>,
+   domain: (
+     client: PoolClient,
+     access: ControlledInitiationAccess,
+   ) => Promise<T>,
+ ): Promise<T> {
+   const facts = this.initiationContexts.get(context);
+   this.initiationContexts.delete(context);
+   if (!facts || facts.signal.aborted) return fail();
+   const f = closed(input, ["actorId", "fingerprint"]);
+   if (
+     f.actorId !== facts.actorId ||
+     f.fingerprint !== facts.fingerprint ||
+     typeof rate !== "function" ||
+     typeof domain !== "function"
+   )
+     return fail();
+   const h = this.requireMatchedBoundOperation(facts.handle),
+     active = this.matchedBindings.get(h)!.active;
+   const locked = async (client: PoolClient) => {
+     if (
+       !(
+         await client.query(
+           "SELECT run_id FROM phase30_test_execution.runs WHERE run_id=$1 AND activation_id=$2 AND boot_id=$3 AND state='ACTIVE' AND activation_control_required AND preparation_sealed FOR UPDATE",
+           [h.runId, active.activationId, active.bootId],
+         )
+       ).rows[0]
+     )
+       return fail();
+     if (
+       !(
+         await client.query(
+           "SELECT attempt_key FROM phase30_test_execution.request_attempts WHERE run_id=$1 AND attempt_key=$2 AND candidate_key=$3 AND state='BOUND' AND bound_operation_key=$4 AND boot_id=$5 FOR UPDATE",
+           [
+             h.runId,
+             h.attemptKey,
+             h.candidateKey,
+             h.operationKey,
+             active.bootId,
+           ],
+         )
+       ).rows[0]
+     )
+       return fail();
+     if (
+       !(
+         await client.query(
+           "SELECT operation_key FROM phase30_test_execution.bound_operations WHERE run_id=$1 AND operation_key=$2 AND state='BOUND' AND bound_attempt_key=$3 AND policy_key=$4 AND policy_attempt_key=$5 AND attachment_id=$6 FOR UPDATE",
+           [
+             h.runId,
+             h.operationKey,
+             h.attemptKey,
+             h.policyKey,
+             h.policyAttemptKey,
+             h.attachmentId,
+           ],
+         )
+       ).rows[0]
+     )
+       return fail();
+     const check = async () => {
+       if (facts.signal.aborted) return fail();
+       const row = (
+         await client.query(
+           "SELECT not_before,expires_at,clock_timestamp() AS observed_at FROM phase30_test_execution.runs WHERE run_id=$1 AND activation_id=$2 AND boot_id=$3 AND state='ACTIVE' AND activation_control_required AND preparation_sealed",
+           [h.runId, active.activationId, active.bootId],
+         )
+       ).rows[0];
+       if (
+         facts.signal.aborted ||
+         !row ||
+         ![row.not_before, row.expires_at, row.observed_at].every(
+           (d) => d instanceof Date && Number.isFinite(d.getTime()),
+         ) ||
+         row.observed_at < row.not_before ||
+         row.observed_at >= row.expires_at
+       )
+         return fail();
+     };
+     await check();
+     return check;
+   };
+   await this.transaction(async (client) => {
+     const check = await locked(client);
+     await rate(client);
+     await check();
+   });
+   if (facts.signal.aborted) return fail();
+   const continued = await this.transaction(async (client) => {
+     const check = await locked(client);
 
+     let open = true;
+     let result: T;
+     const access: ControlledInitiationAccess = Object.freeze({
+       attachmentId: h.attachmentId,
+       takeAttachment: () => {
+         if (!open || facts.signal.aborted) return fail();
+         return this.takeMatchedAttachment(h);
+       },
+       fresh: async () => {
+         if (!open) return fail();
+         await check();
+         if (!open) return fail();
+       },
+     });
+     try {
+       result = await domain(client, access);
+     } finally {
+       open = false;
+     }
+     await check();
+     return result;
+   });
+   if (facts.signal.aborted) return fail();
+   return continued;
+ }
  /** One local identity claim from the original already-burned matched slots.
   * No fresh SQL expiry, ACL, policy-kind, producer or provider authority. No refund. */
  takeMatchedAttachment(handle:BoundOperation):string{
