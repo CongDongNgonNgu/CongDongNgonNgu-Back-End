@@ -165,10 +165,17 @@ describe("controlled matched policy instances in owned PostgreSQL schema", () =>
       owner?: RunLedger;
       omitFirstEdge?: boolean;
       expiresInMs?: number;
+      attachmentSetup?: boolean;
     } = {},
   ) {
     const owner = options.owner ?? ledger,
       p = await plan(options.expiresInMs);
+    if(options.attachmentSetup){
+      const slot=p.slots[0],operation=p.bindings!.operations.find(o=>o.key==='setup')!,candidate=p.requests!.candidates.find(c=>c.key==='setup')!;
+      slot.role='ATTACHMENT';slot.id=slot.attachmentId!;
+      operation.policyKey='initiate.policy';operation.policyAttemptKey='create-one';operation.ingressBytes=102400;
+      candidate.method='POST';candidate.path='/api/v1/attachments';candidate.ingressBytes=102400;p.limits.ingressBytes=102400;
+    }
     if (options.omitFirstEdge)
       p.bindings!.edges = p.bindings!.edges.filter(
         (e) => e.attemptKey !== "coarse-0" || e.operationKey !== "read.b",
@@ -440,4 +447,25 @@ describe("controlled matched policy instances in owned PostgreSQL schema", () =>
       authenticatedEgressBytes: 200,
     });
   }, 30000);
+  it('exposes the exact committed attachment identity once only through its original matched handle',async()=>{
+    const f=await ready({attachmentSetup:true}),r=await ledger.reserveRequest(f.active,'setup');
+    const handle=await ledger.bindMatchedPolicy(r,{policyKey:'initiate.policy',instanceKeys:['setup']});
+    const burned=(await db.pool.query('SELECT state,id FROM '+table('slots')+' WHERE run_id=$1 AND slot_key=$2',[f.p.runId,'setup.object'])).rows[0];
+    expect(burned).toMatchObject({state:'BURNED',id:handle.attachmentId});
+    expect(()=>ledger.takeMatchedAttachment({...handle})).toThrow('TEST_ADMISSION_LEDGER');
+    expect(()=>new RunLedger(scoped()).takeMatchedAttachment(handle)).toThrow('TEST_ADMISSION_LEDGER');
+    expect(ledger.takeMatchedAttachment(handle)).toBe(f.p.slots[0].id);
+    expect(()=>ledger.takeMatchedAttachment(handle)).toThrow('TEST_ADMISSION_LEDGER');
+    expect(await counters(f.p.runId)).toMatchObject({authenticatedRequests:1,ingressBytes:102400});
+    expect((await db.pool.query('SELECT state,id FROM '+table('slots')+' WHERE run_id=$1 AND slot_key=$2',[f.p.runId,'setup.object'])).rows[0]).toEqual(burned);
+  });
+  it('rejects generic and slot-free identities without reconstructing attachment allocation authority',async()=>{
+    const f=await ready({attachmentSetup:true});
+    const generic=await ledger.bindOperation(await ledger.reserveRequest(f.active,'setup'),'setup');
+    expect(()=>ledger.takeMatchedAttachment(generic)).toThrow('TEST_ADMISSION_LEDGER');
+    const read=await ledger.bindMatchedPolicy(await ledger.reserveRequest(f.active,'read'),matched);
+    expect(()=>ledger.takeMatchedAttachment(read)).toThrow('TEST_ADMISSION_LEDGER');
+    expect(await counters(f.p.runId)).toMatchObject({authenticatedRequests:2,ingressBytes:102400,authenticatedEgressBytes:200});
+  });
+
 });

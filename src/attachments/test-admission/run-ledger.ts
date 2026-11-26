@@ -74,6 +74,7 @@ export class RunLedger {
  private readonly controlled=new WeakSet<ControlledActiveRun>();
  private readonly bindings=new WeakMap<BoundOperation,{active:ActiveRun;attemptKey:string}>();
  private readonly matchedBindings=new WeakMap<MatchedBoundOperation,{active:ControlledActiveRun}>();
+ private readonly attachmentClaims=new WeakSet<MatchedBoundOperation>();
  private readonly requests=new WeakMap<RequestReservation,{active:ActiveRun;attemptKey:string;candidate:Readonly<RequestCandidate>;bodyDeadline:number}>();
  constructor(private readonly pool:Pool){}
  private async transaction<T>(work:(client:PoolClient)=>Promise<T>):Promise<T>{
@@ -197,6 +198,14 @@ export class RunLedger {
   const handle=Object.freeze({runId:active.runId,attemptKey,operationKey,...result});this.bindings.set(handle,{active,attemptKey});return handle;
  }
 
+
+ /** One local identity claim from the original already-burned matched slots.
+  * No fresh SQL expiry, ACL, policy-kind, producer or provider authority. No refund. */
+ takeMatchedAttachment(handle:BoundOperation):string{
+  const matched=this.requireMatchedBoundOperation(handle);if(this.attachmentClaims.has(matched))return fail();this.attachmentClaims.add(matched);
+  const slot=matched.slots[0];if(matched.slots.length!==1||!slot||slot.role!=='ATTACHMENT'||slot.operationKey!==matched.operationKey||slot.attachmentId!==matched.attachmentId||slot.id!==matched.attachmentId||!uuid(slot.id))return fail();
+  return slot.id;
+ }
  /** Local provenance membership only; not fresh expiry, ACL or provider authority. */
  requireMatchedBoundOperation(handle:BoundOperation):MatchedBoundOperation{
   const facts=this.matchedBindings.get(handle as MatchedBoundOperation);if(!facts)return fail();this.requireControlled(facts.active);return handle as MatchedBoundOperation;

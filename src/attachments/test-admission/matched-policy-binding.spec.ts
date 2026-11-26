@@ -181,6 +181,9 @@ describe("controlled matched policy instance ledger binding", () => {
   it("never treats the legacy bindOperation result as a matched-policy receipt", async () => {
     const p = await reserved();
     const old = await p.ledger.bindOperation(p.request, "instance-a");
+    expect(() => p.ledger.takeMatchedAttachment(old)).toThrow(
+      "TEST_ADMISSION_LEDGER",
+    );
     expect(() => p.ledger.requireMatchedBoundOperation(old)).toThrow(
       "TEST_ADMISSION_LEDGER",
     );
@@ -347,6 +350,94 @@ describe("controlled matched policy instance ledger binding", () => {
       expect(
         p.query.mock.calls.some((c) => c[0].includes("SET state='BOUND'")),
       ).toBe(false);
+    }
+  });
+});
+
+async function attachmentBound(
+  slots = [
+    {
+      slot_key: "attachment",
+      operation_key: "instance-a",
+      role: "ATTACHMENT",
+      id: id(5),
+      attachment_id: id(5),
+    },
+  ],
+) {
+  const p = await reserved(),
+    real = p.query.getMockImplementation()!;
+  p.query.mockImplementation(async (sql: string, v?: unknown[]) => {
+    if (sql.includes("SELECT s.slot_key"))
+      return { rowCount: slots.length, rows: slots } as unknown as Awaited<
+        ReturnType<typeof real>
+      >;
+    const result = await real(sql, v);
+    if (sql.includes("SELECT o.operation_key"))
+      result.rows = result.rows.map((row) => ({
+        ...row,
+        slot_count: slots.length,
+      })) as typeof result.rows;
+    return result;
+  });
+  const handle = await p.ledger.bindMatchedPolicy(p.request, matched());
+  return { ...p, handle };
+}
+describe("local original matched ATTACHMENT identity, never fresh producer authority", () => {
+  it("takes the exact durably burned attachment once without SQL or public handle mutation", async () => {
+    const f = await attachmentBound(),
+      before = JSON.stringify(f.handle);
+    f.query.mockClear();
+    f.connect.mockClear();
+    expect(f.ledger.takeMatchedAttachment(f.handle)).toBe(id(5));
+    expect(JSON.stringify(f.handle)).toBe(before);
+    expect(() => f.ledger.takeMatchedAttachment(f.handle)).toThrow(
+      "TEST_ADMISSION_LEDGER",
+    );
+    expect(f.query).not.toHaveBeenCalled();
+    expect(f.connect).not.toHaveBeenCalled();
+    expect(f.ledger.requireMatchedBoundOperation(f.handle)).toBe(f.handle);
+  });
+  it("rejects copies, foreign/restarted ledgers and legacy objects without consuming original authority", async () => {
+    const f = await attachmentBound();
+    for (const h of [
+      { ...f.handle },
+      {
+        runId: id(1),
+        attemptKey: "a",
+        operationKey: "o",
+        attachmentId: id(5),
+        slots: f.handle.slots,
+      },
+    ])
+      expect(() => f.ledger.takeMatchedAttachment(h)).toThrow(
+        "TEST_ADMISSION_LEDGER",
+      );
+    expect(() =>
+      new RunLedger({} as Pool).takeMatchedAttachment(f.handle),
+    ).toThrow("TEST_ADMISSION_LEDGER");
+    expect(f.ledger.takeMatchedAttachment(f.handle)).toBe(id(5));
+  });
+  it("rejects missing, extra, wrong-role and wrong-identity mapped slots", async () => {
+    const slot = {
+      slot_key: "attachment",
+      operation_key: "instance-a",
+      role: "ATTACHMENT",
+      id: id(5),
+      attachment_id: id(5),
+    };
+    for (const slots of [
+      [],
+      [{ ...slot, role: "SOURCE_OBJECT" }],
+      [{ ...slot, id: id(6) }],
+      [slot, { ...slot, slot_key: "owner", role: "UPLOAD_OWNER", id: id(6) }],
+    ]) {
+      const f = await attachmentBound(slots);
+      f.query.mockClear();
+      expect(() => f.ledger.takeMatchedAttachment(f.handle)).toThrow(
+        "TEST_ADMISSION_LEDGER",
+      );
+      expect(f.query).not.toHaveBeenCalled();
     }
   });
 });
