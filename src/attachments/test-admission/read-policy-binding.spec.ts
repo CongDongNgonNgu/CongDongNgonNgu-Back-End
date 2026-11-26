@@ -171,6 +171,7 @@ describe("native-principal READ policy to original controlled reservation bindin
       attemptKeys: ["public-read"],
       charges: {
         ...(root.operations[0].charges as Record<string, number>),
+        ingressBytes: 0,
         authenticatedEgressBytes: 4194304,
       },
       slotKeys: [],
@@ -278,7 +279,10 @@ describe("native-principal READ policy to original controlled reservation bindin
       principal: raw.operations[0].principal,
       assertion: "NORMAL_AUTHORIZATION",
       attemptKeys: ["metadata-read"],
-      charges: raw.operations[0].charges,
+      charges: {
+        ...(raw.operations[0].charges as Record<string, number>),
+        ingressBytes: 0,
+      },
       slotKeys: [],
     } as never);
     const f = fixture(

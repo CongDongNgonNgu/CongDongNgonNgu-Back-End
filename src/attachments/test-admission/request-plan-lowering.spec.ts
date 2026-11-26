@@ -169,3 +169,50 @@ describe("lower pinned declarations into controlled coarse/instance ledger inven
     expect(p).not.toHaveProperty("runtime");
   });
 });
+
+it("requires every JSON policy to reserve the parser cap without rewriting charges", () => {
+  const r = root();
+  r.operations.find((o) => o.kind === "INITIATE")!.charges = {
+    ...charges(),
+    ingressBytes: 102399,
+  };
+  const d = declarations(r);
+  expect(() => lowerPinnedRequestPlan(d)).toThrow(
+    "TEST_ADMISSION_REQUEST_LOWERING",
+  );
+});
+
+it("requires PATCH ingress even when INITIATE has its full cap, preserving exact reserved amounts", () => {
+  const r = root();
+  const original = r.operations.find((o) => o.kind === "INITIATE")!;
+  const { body: unused, ...common } = original as typeof original & {
+    body: unknown;
+  };
+  r.operations.push({
+    ...common,
+    key: "patch",
+    kind: "PATCH_METADATA",
+    attemptKeys: ["patch-attempt"],
+    slotKeys: [],
+    body: { expectedMetadataVersion: 0, caption: "", alt: "" },
+    charges: { ...charges(), ingressBytes: 102399 },
+  } as typeof original);
+  const d = declarations(r);
+  expect(() => lowerPinnedRequestPlan(d)).toThrow(
+    "TEST_ADMISSION_REQUEST_LOWERING",
+  );
+  r.operations[r.operations.length - 1].charges = {
+    ...charges(),
+    ingressBytes: 102400,
+  };
+  const p = lowerPinnedRequestPlan(declarations(r));
+  expect(
+    p.prepared
+      .requests!.candidates.filter(
+        (c) =>
+          c.method === "PATCH" ||
+          (c.method === "POST" && c.path === "/api/v1/attachments"),
+      )
+      .map((c) => c.ingressBytes),
+  ).toEqual([102400, 102400]);
+});

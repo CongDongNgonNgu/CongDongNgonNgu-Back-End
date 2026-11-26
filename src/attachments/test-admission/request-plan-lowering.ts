@@ -1,3 +1,4 @@
+import { DIAGNOSTIC_JSON_INGRESS_CAP } from "./diagnostic-ingress-policy";
 import type { PinnedDeclarations } from "./pinned-declarations";
 import type {
   PreparedRun,
@@ -60,6 +61,8 @@ export function lowerPinnedRequestPlan(
       compare(a.key, b.key),
     )) {
       if (
+        (["INITIATE", "PATCH_METADATA"].includes(policy.kind) &&
+          policy.charges.ingressBytes < DIAGNOSTIC_JSON_INGRESS_CAP) ||
         seenPolicies.has(policy.key) ||
         policy.attemptKeys.length < 1 ||
         policy.attemptKeys.length > 140 ||

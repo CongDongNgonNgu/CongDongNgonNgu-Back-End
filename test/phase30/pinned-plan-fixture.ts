@@ -74,7 +74,11 @@ export function createPinnedPlanRoot() {
     slotKeys: [] as string[],
   });
   const operations = [
-    { ...operation("INITIATE", "init"), body: initiation },
+    {
+      ...operation("INITIATE", "init"),
+      body: initiation,
+      charges: { ...charges(), ingressBytes: 102400 },
+    },
     {
       ...operation("UPLOAD", "upload"),
       contentType: "image/jpeg",
