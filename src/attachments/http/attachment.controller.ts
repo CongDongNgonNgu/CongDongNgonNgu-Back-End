@@ -1,3 +1,6 @@
+import {AttachmentInitiationUnavailable} from '../initiation/attachment-initiation-repository';
+import type {ControlledInitiationContext} from '../initiation/controlled-initiation.port';
+import {ATTACHMENT_INITIATION_POLICY,type AttachmentInitiationPolicy} from './attachment-initiation-policy.port';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {ATTACHMENT_LIMITS} from '../attachment-policy';
 import {AttachmentValidationError} from '../validation/validation-error';
@@ -17,7 +20,7 @@ import type {AttachmentFinalizeService} from '../service/attachment-finalize-ser
 import {ATTACHMENT_REQUEST_POLICY,type AttachmentRequestPolicy} from './attachment-request-policy.port';
 export const ATTACHMENT_HTTP_APPLICATION='ATTACHMENT_HTTP_APPLICATION';
 export interface AttachmentHttpApplication extends Pick<AttachmentReadService,'metadata'|'patchMetadata'|'delete'|'read'> {
- initiate(refresh:()=>Promise<string|null>,input:unknown):Promise<unknown>;
+ initiate(refresh:()=>Promise<string|null>,input:unknown,context?:ControlledInitiationContext):Promise<unknown>;
  upload(input:Parameters<AttachmentUploadService['upload']>[0]):ReturnType<AttachmentUploadService['upload']>;
  finalize(input:Parameters<AttachmentFinalizeService['finalize']>[0]):ReturnType<AttachmentFinalizeService['finalize']>;
 }
@@ -32,7 +35,7 @@ const uuid=()=>new ParseUUIDPipe({version:'4'});
 @ApiResponse({ status: 429, description: 'Attachment rate or quota limit exceeded', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('attachments')
 export class AttachmentController {
- constructor(@Inject(ATTACHMENT_HTTP_APPLICATION)private readonly application:AttachmentHttpApplication,private readonly sessions:SessionService,private readonly config:ConfigService,@Optional() @Inject(ATTACHMENT_REQUEST_POLICY)private readonly requestPolicy?:AttachmentRequestPolicy){}
+ constructor(@Inject(ATTACHMENT_HTTP_APPLICATION)private readonly application:AttachmentHttpApplication,private readonly sessions:SessionService,private readonly config:ConfigService,@Optional() @Inject(ATTACHMENT_REQUEST_POLICY)private readonly requestPolicy?:AttachmentRequestPolicy,@Optional() @Inject(ATTACHMENT_INITIATION_POLICY)private readonly initiationPolicy?:AttachmentInitiationPolicy){}
  private query(value:Record<string,unknown>):void{if(Object.keys(value).length)throw new AttachmentValidationError('ATTACHMENT_INVALID_REQUEST');}
  private identity(request:AuthenticatedRequest):()=>Promise<string|null>{
   const principal=request.user,authorization=request.headers.authorization;
@@ -64,7 +67,7 @@ export class AttachmentController {
   @ApiResponse({ status: 201, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @ApiBody({ required: true, description: 'Reserves a draft under existing scope, ownership, format and quota policies; capabilities may be disabled', schema: {"type":"object","additionalProperties":false,"required":["clientUploadId","scope","filename","mime","bytes"],"properties":{"clientUploadId":{"type":"string","format":"uuid"},"scope":{"oneOf":[{"type":"object","additionalProperties":false,"required":["kind","postType","languageId","visibility"],"properties":{"kind":{"type":"string","enum":["COMMUNITY"]},"postType":{"type":"string","enum":["DISCUSSION","QUESTION","RESOURCE","LEARNING_JOURNAL","CULTURE","PRONUNCIATION_REQUEST","CORRECTION_REQUEST","CHALLENGE"]},"languageId":{"type":"string","format":"uuid"},"visibility":{"type":"string","enum":["PUBLIC","PRIVATE"]}}},{"type":"object","additionalProperties":false,"required":["kind","groupId"],"properties":{"kind":{"type":"string","enum":["STUDY_GROUP"]},"groupId":{"type":"string","format":"uuid"}}},{"type":"object","additionalProperties":false,"required":["kind","conversationId"],"properties":{"kind":{"type":"string","enum":["DIRECT_MESSAGE"]},"conversationId":{"type":"string","format":"uuid"}}}]},"filename":{"type":"string","minLength":1,"maxLength":180,"description":"Normalized filename; path separators and control characters are rejected"},"mime":{"type":"string","enum":["image/jpeg","image/png","image/webp","text/plain","video/mp4"]},"bytes":{"type":"integer","minimum":1,"maximum":4194304,"description":"Source bytes; format-specific and parent-budget limits also apply"},"caption":{"type":"string","maxLength":500},"alt":{"type":"string","maxLength":300}}} })
   @Post() @UseGuards(AccessTokenGuard) @Header('Cache-Control','private, no-store')
- async initiate(@Req()req:AuthenticatedRequest,@Body()input:unknown,@Query()query:Record<string,unknown>){try{this.query(query);this.sessions.assertCsrfForCookie(req);return success(await this.application.initiate(this.identity(req),input));}catch(e){throw attachmentHttpError(e);}}
+ async initiate(@Req()req:AuthenticatedRequest,@Body()input:unknown,@Query()query:Record<string,unknown>,@Res({passthrough:true})response:Response){try{this.query(query);this.sessions.assertCsrfForCookie(req);const refresh=this.identity(req);const context=this.initiationPolicy?await this.initiationPolicy.bind(req,input,response):undefined;if(this.initiationPolicy&&!context)throw new AttachmentInitiationUnavailable();return success(await(this.initiationPolicy?this.application.initiate(refresh,input,context):this.application.initiate(refresh,input)));}catch(e){throw attachmentHttpError(e);}}
  @ApiOperation({ summary: "Metadata - Attachments" })
   @ApiBearerAuth('bearer')
   @ApiResponse({ status: 401, description: 'Valid application access token required before metadata lookup', schema: { $ref: '#/components/schemas/ApiError' } })

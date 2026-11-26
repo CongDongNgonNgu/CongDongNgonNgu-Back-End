@@ -1,3 +1,4 @@
+import type {ControlledInitiationContext} from './initiation/controlled-initiation.port';
 import {Logger,type OnModuleInit,type OnModuleDestroy} from '@nestjs/common';
 import type {ConfigService} from '@nestjs/config';
 import {Pool} from 'pg';import {join} from 'node:path';
@@ -62,7 +63,7 @@ export class AttachmentRuntime implements AttachmentHttpApplication,OnModuleInit
   if(!this.ready||this.stopped||!this.capabilities.enabled)throw new AttachmentInitiationUnavailable();
   const promise=work();this.active.add(promise);try{return await promise;}finally{this.active.delete(promise);const now=Date.now();if(!this.stopped&&now-this.lastKick>=L.cleanupIntervalMs){this.lastKick=now;this.cleanup!.kick();void this.putRecovery?.run().catch(()=>this.logger.warn('ATTACHMENT_RECOVERY_UNAVAILABLE'));}}
  }
- initiate(refresh:()=>Promise<string|null>,input:unknown){return this.run(()=>this.reads!.initiate(refresh,this.initiation!,input));}
+ initiate(refresh:()=>Promise<string|null>,input:unknown,context?:ControlledInitiationContext){if(arguments.length>=3)throw new AttachmentInitiationUnavailable();return this.run(()=>this.reads!.initiate(refresh,this.initiation!,input));}
  metadata(...args:Parameters<AttachmentReadService['metadata']>){return this.run(()=>this.reads!.metadata(...args));}
  patchMetadata(...args:Parameters<AttachmentReadService['patchMetadata']>){return this.run(()=>this.reads!.patchMetadata(...args));}
  delete(...args:Parameters<AttachmentReadService['delete']>){return this.run(()=>this.reads!.delete(...args));}

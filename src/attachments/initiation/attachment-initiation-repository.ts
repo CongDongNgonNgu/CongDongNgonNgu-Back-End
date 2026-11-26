@@ -1,12 +1,21 @@
-﻿import { randomUUID } from "node:crypto";
+import type {
+  ControlledInitiationContext,
+  ControlledInitiationPort,
+  ControlledInitiationAccess,
+} from "./controlled-initiation.port";
+import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { transaction } from "../../study-groups/study-group.store";
-import { AttachmentQuotaLedger } from "../attachment-quota-ledger";
+import {
+  AttachmentQuotaLedger,
+  AttachmentQuotaError,
+} from "../attachment-quota-ledger";
 import {
   ATTACHMENT_LIMITS as L,
   type parseAttachmentCapabilities,
 } from "../attachment-policy";
 import {
+  AttachmentAuthorizationError,
   authorizeDraftScope,
   opaqueAttachmentAuthorizationError,
 } from "../authorization/attachment-authorization";
@@ -50,6 +59,7 @@ export class AttachmentInitiationRepository {
       typeof parseAttachmentCapabilities
     >,
     private readonly quotas = new AttachmentQuotaLedger(),
+    private readonly controlled?: ControlledInitiationPort,
   ) {}
   private async admission(
     client: PoolClient,
@@ -76,7 +86,10 @@ export class AttachmentInitiationRepository {
   async initiate(
     actorValue: string,
     inputValue: unknown,
+    context?: ControlledInitiationContext,
   ): Promise<AttachmentDraftStatus | BoundInitiationReplay> {
+    if (this.controlled ? !context : arguments.length >= 3)
+      throw new AttachmentInitiationUnavailable();
     const actor = initiationUuid(actorValue),
       input = parseInitiation(inputValue);
     if (
@@ -90,10 +103,11 @@ export class AttachmentInitiationRepository {
       ]
     )
       throw new AttachmentInitiationUnavailable();
-    // Rate-only transaction: admission -> sorted counters, then commit. It must
+    // Rate-only transaction: controlled ledger locks (when injected), then
+    // admission -> sorted counters and a separate commit. It must
     // never acquire account, scope or attachment locks. Failed NEW domain work
     // remains durably charged; immutable retries share the same admission.
-    await transaction(this.pool, async (client) => {
+    const rate = async (client: PoolClient) => {
       const added = await client.query(
         `INSERT INTO attachment_initiation_admissions(uploader_id,client_upload_id,fingerprint,source_bytes,format,created_at,expires_at) SELECT $1,$2,$3,$4,$5,t,t+interval '24 hours' FROM (SELECT clock_timestamp() t) stamp ON CONFLICT DO NOTHING RETURNING uploader_id`,
         [
@@ -107,8 +121,13 @@ export class AttachmentInitiationRepository {
       await this.admission(client, actor, input);
       if (added.rowCount === 1)
         await this.quotas.consumeInitiation(client, actor, input.bytes);
-    });
-    return transaction(this.pool, async (client) => {
+    };
+    const domain = async (
+      client: PoolClient,
+      access?: ControlledInitiationAccess,
+    ) => {
+      if (this.controlled && !access)
+        throw new AttachmentInitiationUnavailable();
       // Unlocked candidate is not an authorization result; immutable request and
       // current scope/generation are checked before admission/attachment locks.
       const candidate = (
@@ -134,8 +153,9 @@ export class AttachmentInitiationRepository {
         );
       const admission = await this.admission(client, actor, input);
       if (admission.status === "CREATED") {
+        if (access) await access.fresh();
         const row = (
-          await client.query<DraftRow>(
+          await client.query<DraftRow & { declared_mime: string }>(
             "SELECT * FROM attachments WHERE id=$1 AND uploader_id=$2 FOR UPDATE",
             [admission.attachment_id, actor],
           )
@@ -143,11 +163,22 @@ export class AttachmentInitiationRepository {
         if (
           !row ||
           row.init_fingerprint !== input.fingerprint ||
-          row.state === "DELETED"
+          row.state === "DELETED" ||
+          (access &&
+            (row.id !== access.attachmentId ||
+              row.client_upload_id !== input.clientUploadId ||
+              row.declared_mime !== input.mime ||
+              String(row.expected_bytes) !== String(input.bytes) ||
+              row.format !== input.format))
         )
           throw opaqueAttachmentAuthorizationError();
-        if (row.first_bound_at)
-          return { attachmentId: row.id, requiresBoundProjection: true };
+        if (row.first_bound_at) {
+          if (access) await access.fresh();
+          return {
+            attachmentId: row.id,
+            requiresBoundProjection: true,
+          } as BoundInitiationReplay;
+        }
         if (!authorized || row.scope_generation !== authorized.generation)
           throw opaqueAttachmentAuthorizationError();
         if (
@@ -159,19 +190,21 @@ export class AttachmentInitiationRepository {
           ).rowCount !== 1
         )
           throw opaqueAttachmentAuthorizationError();
+        if (access) await access.fresh();
         return projectDraft(row);
       }
       // Current actor account lock serializes any same-actor reservation writer.
       // ADMITTED has no draft yet; capture current membership/connection generation.
       if (!authorized) throw opaqueAttachmentAuthorizationError();
       const scope = input.intent,
-        id = randomUUID();
+        id = access ? access.takeAttachment() : randomUUID();
       const scopeId =
         scope.kind === "COMMUNITY"
           ? scope.languageId
           : scope.kind === "STUDY_GROUP"
             ? scope.groupId
             : scope.conversationId;
+      if (access) await access.fresh();
       const row = (
         await client.query<DraftRow>(
           `INSERT INTO attachments(id,uploader_id,scope,scope_id,language_id,group_id,conversation_id,scope_generation,community_post_type,community_visibility,client_upload_id,init_fingerprint,format,declared_mime,expected_bytes,display_filename,caption,alt,reserved_bytes,created_at,expires_at) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,t,t+($20::bigint*interval '1 millisecond') FROM (SELECT clock_timestamp() t) stamp RETURNING *`,
@@ -199,6 +232,7 @@ export class AttachmentInitiationRepository {
           ],
         )
       ).rows[0];
+      if (access) await access.fresh();
       await this.quotas.changeCapacity(client, actor, {
         bytesDelta: input.reservedBytes,
         metadataDelta: 1,
@@ -207,7 +241,37 @@ export class AttachmentInitiationRepository {
         "UPDATE attachment_initiation_admissions SET status='CREATED',attachment_id=$3 WHERE uploader_id=$1 AND client_upload_id=$2",
         [actor, input.clientUploadId, id],
       );
+      if (access) await access.fresh();
       return projectDraft(row);
-    });
+    };
+    if (!this.controlled) {
+      await transaction(this.pool, rate);
+      return transaction(this.pool, (client) => domain(client));
+    }
+    let normalError: unknown;
+    const protect = async <T>(work: () => Promise<T>): Promise<T> => {
+      try {
+        return await work();
+      } catch (error) {
+        if (
+          error instanceof AttachmentAuthorizationError ||
+          error instanceof AttachmentQuotaError ||
+          error instanceof AttachmentDraftConflict
+        )
+          normalError = error;
+        throw error;
+      }
+    };
+    try {
+      return await this.controlled.continueInitiation(
+        context!,
+        { actorId: actor, fingerprint: input.fingerprint },
+        (client) => protect(() => rate(client)),
+        (client, access) => protect(() => domain(client, access)),
+      );
+    } catch {
+      if (normalError) throw normalError;
+      throw new AttachmentInitiationUnavailable();
+    }
   }
 }
