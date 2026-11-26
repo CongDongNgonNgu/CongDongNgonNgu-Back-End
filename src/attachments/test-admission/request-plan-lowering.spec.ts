@@ -216,3 +216,55 @@ it("requires PATCH ingress even when INITIATE has its full cap, preserving exact
       .map((c) => c.ingressBytes),
   ).toEqual([102400, 102400]);
 });
+
+describe("INITIATE attachment role cardinality", () => {
+  it("rejects a validator-produced INITIATE with an extra unrelated allocation role", () => {
+    const r = root(),
+      init = r.operations.find((o) => o.kind === "INITIATE")!;
+    const key = "extra-init-owner";
+    (init.slotKeys as string[]).push(key);
+    r.allocationSlots.push({
+      key,
+      operationKey: "init",
+      role: "UPLOAD_OWNER",
+      id: id(999),
+      attachmentId: id(7),
+    });
+    const d = declarations(r);
+    expect(() => lowerPinnedRequestPlan(d)).toThrow(
+      "TEST_ADMISSION_REQUEST_LOWERING",
+    );
+  });
+  it("rejects missing, wrong-role or wrong-identity trusted INITIATE slots defensively", () => {
+    const d = declarations(),
+      slot = d.allocations.slots.find((s) => s.role === "ATTACHMENT")!;
+    for (const change of ["missing", "role", "identity"]) {
+      const changed = {
+        ...d,
+        operations: d.operations.map((o) =>
+          o.kind === "INITIATE" && change === "missing"
+            ? { ...o, slotKeys: [] }
+            : o,
+        ),
+        allocations: {
+          ...d.allocations,
+          slots: d.allocations.slots.map((s) =>
+            s === slot
+              ? {
+                  ...s,
+                  ...(change === "role"
+                    ? { role: "UPLOAD_OWNER" as const }
+                    : change === "identity"
+                      ? { id: id(999) }
+                      : {}),
+                }
+              : s,
+          ),
+        },
+      };
+      expect(() => lowerPinnedRequestPlan(changed)).toThrow(
+        "TEST_ADMISSION_REQUEST_LOWERING",
+      );
+    }
+  });
+});

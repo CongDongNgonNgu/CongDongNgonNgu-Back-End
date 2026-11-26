@@ -69,6 +69,20 @@ export function lowerPinnedRequestPlan(
         (policy.slotKeys.length > 0 && policy.attemptKeys.length !== 1)
       )
         return fail();
+      if (policy.kind === "INITIATE") {
+        const slot =
+          policy.slotKeys.length === 1
+            ? sourceSlots.get(policy.slotKeys[0])
+            : undefined;
+        if (
+          !slot ||
+          slot.role !== "ATTACHMENT" ||
+          slot.id !== policy.attachmentId ||
+          slot.attachmentId !== policy.attachmentId ||
+          slot.operationKey !== policy.key
+        )
+          return fail();
+      }
       seenPolicies.add(policy.key);
       const groups = coarse.candidates.filter((c) =>
         c.policyKeys.includes(policy.key),
