@@ -81,7 +81,10 @@ it("preserves only known normal callback failures across ledger rollback, never 
     continueInitiation: async (
       _ctx: ControlledInitiationContext,
       facts: { actorId: string; fingerprint: string },
-      rate: (c: PoolClient) => Promise<void>,
+      rate: (
+        c: PoolClient,
+        mode: "CREATE_ALLOWED" | "REPLAY_ONLY",
+      ) => Promise<void>,
     ) => {
       query.mockImplementation(async (sql: string) =>
         sql.includes("SELECT *,expires_at")
@@ -100,7 +103,7 @@ it("preserves only known normal callback failures across ledger rollback, never 
           : { rowCount: 1, rows: [] },
       );
       try {
-        await rate({ query } as unknown as PoolClient);
+        await rate({ query } as unknown as PoolClient, "CREATE_ALLOWED");
       } catch {
         throw Error("TEST_ADMISSION_LEDGER");
       }
@@ -118,3 +121,56 @@ it("preserves only known normal callback failures across ledger rollback, never 
     repo.initiate(actor, input(), {} as ControlledInitiationContext),
   ).rejects.toBe(normal);
 });
+
+it.each(["missing", "ADMITTED", "CREATED"])(
+  "replay rate path requires existing CREATED immutable admission (%s), without new reservation",
+  async (status) => {
+    const queries: string[] = [],
+      quotas = {
+        consumeInitiation: jest.fn(),
+      } as unknown as AttachmentQuotaLedger;
+    const port = {
+        continueInitiation: async (
+          _ctx: ControlledInitiationContext,
+          facts: { actorId: string; fingerprint: string },
+          rate: (client: PoolClient, mode: "REPLAY_ONLY") => Promise<void>,
+        ) => {
+          await rate(
+            {
+              query: async (sql: string) => {
+                queries.push(sql);
+                return {
+                  rowCount: 1,
+                  rows:
+                    sql.includes("SELECT *,expires_at") && status !== "missing"
+                      ? [
+                          {
+                            fingerprint: facts.fingerprint,
+                            source_bytes: "100",
+                            format: "IMAGE",
+                            status,
+                            expired: false,
+                            attachment_id: actor,
+                          },
+                        ]
+                      : [],
+                };
+              },
+            } as unknown as PoolClient,
+            "REPLAY_ONLY",
+          );
+          return { id: "existing" };
+        },
+      } as ControlledInitiationPort,
+      repo = new AttachmentInitiationRepository({} as Pool, caps, quotas, port),
+      out = repo.initiate(actor, input(), {} as ControlledInitiationContext);
+    if (status === "CREATED")
+      await expect(out).resolves.toEqual({ id: "existing" });
+    else
+      await expect(out).rejects.toMatchObject({
+        code: "ATTACHMENT_INITIATION_CONFLICT",
+      });
+    expect(queries.some((q) => q.includes("INSERT"))).toBe(false);
+    expect(quotas.consumeInitiation).not.toHaveBeenCalled();
+  },
+);

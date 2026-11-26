@@ -268,3 +268,43 @@ describe("INITIATE attachment role cardinality", () => {
     }
   });
 });
+
+it("lowers explicit creator ordinal0 and slot-free same-policy replay attempts without cloning IDs", () => {
+  const r = root(),
+    init = r.operations.find((o) => o.kind === "INITIATE")!;
+  init.attemptKeys = ["aaa-replay", "zzz-creator", "bbb-replay"];
+  init.creatorAttemptKey = "zzz-creator";
+  const d = declarations(r),
+    p = lowerPinnedRequestPlan(d),
+    policy = p.policies.find((p) => p.policyKey === "init")!;
+  expect(policy.instances.map((i) => i.policyAttemptKey)).toEqual([
+    "zzz-creator",
+    "aaa-replay",
+    "bbb-replay",
+  ]);
+  const operations = policy.instances.map((i) =>
+    p.prepared.bindings!.operations.find((o) => o.key === i.instanceKey)!,
+  );
+  expect(operations.map((o) => o.slotKeys.length)).toEqual([1, 0, 0]);
+  expect(
+    policy.instances.map(
+      (i) => (i as { initiationMode?: string }).initiationMode,
+    ),
+  ).toEqual(["CREATE_ALLOWED", "REPLAY_ONLY", "REPLAY_ONLY"]);
+  expect(p.prepared.slots.filter((s) => s.role === "ATTACHMENT")).toHaveLength(
+    1,
+  );
+  expect(
+    p.prepared.bindings!.edges.filter((e) =>
+      operations.some((o) => o.key === e.operationKey),
+    ),
+  ).toHaveLength(9);
+});
+
+it("rejects implicit allocating INITIATE retries without explicit creator ownership", () => {
+  const r = root();
+  r.operations[0].attemptKeys = ["one", "two"];
+  expect(() => lowerPinnedRequestPlan(declarations(r))).toThrow(
+    "TEST_ADMISSION_REQUEST_LOWERING",
+  );
+});

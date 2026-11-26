@@ -578,3 +578,35 @@ it("retains legacy zero JSON charges and permits explicit bounded INITIATE/PATCH
     }
   reject([{ ...op(), charges: { ...op().charges, ingressBytes: 102400 } }]);
 });
+
+it("accepts only an explicit finite INITIATE creator key and keeps it outside observed signature selection", () => {
+  const common = op();
+  const { method, variant, range, ...base } = common;
+  const init = {
+    ...base,
+    kind: "INITIATE",
+    body: { ...body },
+    attemptKeys: ["creator", "retry"],
+    creatorAttemptKey: "creator",
+    charges: { ...common.charges, authenticatedEgressBytes: 0 },
+  };
+  expect(
+    (
+      validateOperationDeclarations([init], inventory(), env)[0] as {
+        creatorAttemptKey?: string;
+      }
+    ).creatorAttemptKey,
+  ).toBe("creator");
+  for (const key of [null, undefined, "missing", 1])
+    reject([{ ...init, creatorAttemptKey: key }]);
+  reject([{ ...op(), creatorAttemptKey: "attempt-1" }]);
+  reject([
+    init,
+    {
+      ...init,
+      key: "second",
+      attemptKeys: ["other", "third"],
+      creatorAttemptKey: "third",
+    },
+  ]);
+});

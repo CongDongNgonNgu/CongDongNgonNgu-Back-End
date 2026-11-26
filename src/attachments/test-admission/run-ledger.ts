@@ -1,4 +1,4 @@
-import type {ControlledInitiationContext,ControlledInitiationAccess} from '../initiation/controlled-initiation.port';
+import type {ControlledInitiationContext,ControlledInitiationAccess,InitiationAttemptPlan,InitiationMode} from '../initiation/controlled-initiation.port';
 import {parseControlTuple,type ControlTuple} from './activation-control';
 import type {Pool, PoolClient} from 'pg';
 import {RUN_LIMITS,SLOT_ROLES} from './run-ledger-schema';
@@ -77,7 +77,7 @@ export class RunLedger {
  private readonly matchedBindings=new WeakMap<MatchedBoundOperation,{active:ControlledActiveRun}>();
  private readonly attachmentClaims=new WeakSet<MatchedBoundOperation>();
  private readonly initiationIssued=new WeakSet<MatchedBoundOperation>();
- private readonly initiationContexts=new WeakMap<ControlledInitiationContext,{handle:MatchedBoundOperation;actorId:string;sessionId:string;fingerprint:string;signal:AbortSignal}>();
+ private readonly initiationContexts=new WeakMap<ControlledInitiationContext,{handle:MatchedBoundOperation;actorId:string;sessionId:string;fingerprint:string;signal:AbortSignal;mode:InitiationMode}>();
  private readonly requests=new WeakMap<RequestReservation,{active:ActiveRun;attemptKey:string;candidate:Readonly<RequestCandidate>;bodyDeadline:number}>();
  constructor(private readonly pool:Pool){}
  private async transaction<T>(work:(client:PoolClient)=>Promise<T>):Promise<T>{
@@ -206,6 +206,7 @@ export class RunLedger {
    handle: BoundOperation,
    input: { actorId: string; sessionId: string; fingerprint: string },
    signal: AbortSignal,
+   plan?: InitiationAttemptPlan,
  ): ControlledInitiationContext {
    const h = this.requireMatchedBoundOperation(handle);
    if (this.initiationIssued.has(h)) return fail();
@@ -214,6 +215,31 @@ export class RunLedger {
    const f = closed(input, ["actorId", "sessionId", "fingerprint"]),
      slot = h.slots[0],
      c = h.candidate;
+   let mode: InitiationMode = "CREATE_ALLOWED";
+   if (plan !== undefined) {
+     const p = closed(plan, [
+       "policyKey",
+       "policyAttemptKey",
+       "creatorAttemptKey",
+       "mode",
+     ]);
+     if (
+       typeof p.policyKey !== "string" ||
+       !key(p.policyKey) ||
+       p.policyKey !== h.policyKey ||
+       typeof p.policyAttemptKey !== "string" ||
+       p.policyAttemptKey !== h.policyAttemptKey ||
+       typeof p.creatorAttemptKey !== "string" ||
+       !key(p.creatorAttemptKey) ||
+       (p.mode !== "CREATE_ALLOWED" && p.mode !== "REPLAY_ONLY") ||
+       p.mode !==
+         (p.policyAttemptKey === p.creatorAttemptKey
+           ? "CREATE_ALLOWED"
+           : "REPLAY_ONLY")
+     )
+       return fail();
+     mode = p.mode;
+   }
    if (
      typeof f.actorId !== "string" ||
      !uuid(f.actorId) ||
@@ -226,12 +252,14 @@ export class RunLedger {
      c.authClass !== "AUTH" ||
      c.ingressBytes < 102400 ||
      c.egressBytes !== 0 ||
-     h.slots.length !== 1 ||
-     !slot ||
-     slot.role !== "ATTACHMENT" ||
-     slot.id !== h.attachmentId ||
-     slot.attachmentId !== h.attachmentId ||
-     slot.operationKey !== h.operationKey ||
+     (mode === "REPLAY_ONLY"
+       ? h.slots.length !== 0
+       : h.slots.length !== 1 ||
+         !slot ||
+         slot.role !== "ATTACHMENT" ||
+         slot.id !== h.attachmentId ||
+         slot.attachmentId !== h.attachmentId ||
+         slot.operationKey !== h.operationKey) ||
      this.attachmentClaims.has(h)
    )
      return fail();
@@ -243,6 +271,7 @@ export class RunLedger {
        actorId: f.actorId,
        sessionId: f.sessionId,
        fingerprint: f.fingerprint,
+       mode,
        signal,
      }),
    );
@@ -253,7 +282,7 @@ export class RunLedger {
  async continueInitiation<T>(
    context: ControlledInitiationContext,
    input: { actorId: string; fingerprint: string },
-   rate: (client: PoolClient) => Promise<void>,
+   rate: (client: PoolClient, mode: InitiationMode) => Promise<void>,
    domain: (
      client: PoolClient,
      access: ControlledInitiationAccess,
@@ -337,7 +366,7 @@ export class RunLedger {
    };
    await this.transaction(async (client) => {
      const check = await locked(client);
-     await rate(client);
+     await rate(client, facts.mode);
      await check();
    });
    if (facts.signal.aborted) return fail();
@@ -348,8 +377,10 @@ export class RunLedger {
      let result: T;
      const access: ControlledInitiationAccess = Object.freeze({
        attachmentId: h.attachmentId,
+       mode: facts.mode,
        takeAttachment: () => {
-         if (!open || facts.signal.aborted) return fail();
+         if (!open || facts.signal.aborted || facts.mode === "REPLAY_ONLY")
+           return fail();
          return this.takeMatchedAttachment(h);
        },
        fresh: async () => {

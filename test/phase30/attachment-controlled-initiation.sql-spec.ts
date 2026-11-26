@@ -112,7 +112,12 @@ describe("controlled INITIATE exact identity and fresh SQL continuation", () => 
   }
   async function ready(
     value: unknown,
-    options: { attachmentId?: string; expiresInMs?: number; send?: Send } = {},
+    options: {
+      attachmentId?: string;
+      expiresInMs?: number;
+      send?: Send;
+      retry?: boolean;
+    } = {},
   ) {
     const pool = scoped(options.send),
       ledger = new RunLedger(pool),
@@ -168,6 +173,23 @@ describe("controlled INITIATE exact identity and fresh SQL continuation", () => 
         edges: [{ attemptKey: "coarse", operationKey: "create.instance" }],
       },
     };
+    if (options.retry) {
+      p.limits.authenticatedRequests = 2;
+      p.limits.ingressBytes = 204800;
+      p.requests!.attempts.push({ key: "coarse-replay", candidateKey: "json" });
+      p.bindings!.operations.push({
+        ...p.bindings!.operations[0],
+        key: "replay.instance",
+        policyAttemptKey: "two",
+        slotKeys: [],
+      });
+      p.bindings!.edges = ["coarse", "coarse-replay"].flatMap((attemptKey) =>
+        ["create.instance", "replay.instance"].map((operationKey) => ({
+          attemptKey,
+          operationKey,
+        })),
+      );
+    }
     await ledger.prepare(p);
     const tuple: ControlTuple = {
       runId: p.runId,
@@ -217,6 +239,28 @@ describe("controlled INITIATE exact identity and fresh SQL continuation", () => 
       ledger,
       handle,
       context,
+      replay: async () => {
+        const request = await ledger.reserveRequest(active, "json"),
+          bound = await ledger.bindMatchedPolicy(request, {
+            policyKey: "create.policy",
+            instanceKeys: ["create.instance", "replay.instance"],
+          });
+        return ledger.issueMatchedInitiationContext(
+          bound,
+          {
+            actorId: actor,
+            sessionId: randomUUID(),
+            fingerprint: parseInitiation(value).fingerprint,
+          },
+          new AbortController().signal,
+          {
+            policyKey: "create.policy",
+            policyAttemptKey: "two",
+            creatorAttemptKey: "one",
+            mode: "REPLAY_ONLY",
+          },
+        );
+      },
       abort,
       attachmentId,
       repo: new AttachmentInitiationRepository(
@@ -547,4 +591,137 @@ describe("controlled INITIATE exact identity and fresh SQL continuation", () => 
     expect(await count(value.clientUploadId)).toBe(0);
     await retained(f, value.clientUploadId);
   }, 30000);
+  it("replays a committed controlled creator in the same run without allocating or charging rate/capacity twice", async () => {
+    const writes: string[] = [];
+    let replaying = false;
+    const value = input(),
+      f = await ready(value, {
+        retry: true,
+        send: async (c, sql, values) => {
+          if (
+            replaying &&
+            /INSERT INTO (attachments|attachment_initiation_admissions)/.test(
+              sql,
+            )
+          )
+            writes.push(sql);
+          return c.query(sql, values);
+        },
+      });
+    const created = await f.repo.initiate(actor, value, f.context);
+    expect(created).toMatchObject({ id: f.attachmentId });
+    const before = (
+      await db.pool.query(
+        "SELECT used FROM attachment_quota_counters WHERE kind=$1 AND subject=$2 AND action=$3",
+        ["ACTOR", actor, "initiate"],
+      )
+    ).rows[0].used;
+    const capacities = (
+      await db.pool.query(
+        "SELECT kind,subject,action,used FROM attachment_quota_counters WHERE action IN ('bytes','metadata') AND (subject=$1 OR kind='DEPLOYMENT') ORDER BY kind,subject,action",
+        [actor],
+      )
+    ).rows;
+    expect(capacities).toHaveLength(3);
+    replaying = true;
+    const replay = await f.replay();
+    expect(await f.repo.initiate(actor, value, replay)).toMatchObject({
+      id: f.attachmentId,
+    });
+    expect(await count(value.clientUploadId)).toBe(1);
+    expect(writes).toEqual([]);
+    expect(
+      (
+        await db.pool.query(
+          "SELECT used FROM attachment_quota_counters WHERE kind=$1 AND subject=$2 AND action=$3",
+          ["ACTOR", actor, "initiate"],
+        )
+      ).rows[0].used,
+    ).toBe(before);
+    expect(
+      (
+        await db.pool.query(
+          "SELECT kind,subject,action,used FROM attachment_quota_counters WHERE action IN ('bytes','metadata') AND (subject=$1 OR kind='DEPLOYMENT') ORDER BY kind,subject,action",
+          [actor],
+        )
+      ).rows,
+    ).toEqual(capacities);
+    expect(
+      (
+        await db.pool.query(
+          "SELECT counters FROM " + table("runs") + " WHERE run_id=$1",
+          [f.p.runId],
+        )
+      ).rows[0].counters,
+    ).toMatchObject({ authenticatedRequests: 2, ingressBytes: 204800 });
+    expect(
+      (
+        await db.pool.query(
+          "SELECT state FROM " + table("slots") + " WHERE run_id=$1",
+          [f.p.runId],
+        )
+      ).rows,
+    ).toEqual([{ state: "BURNED" }]);
+  });
+  it("recovers the same committed identity through a new replay attempt after lost creator acknowledgement", async () => {
+    const value = input();
+    let armed = false,
+      commits = 0;
+    const f = await ready(value, {
+      retry: true,
+      send: async (c, sql, values) => {
+        const result = await c.query(sql, values);
+        if (armed && sql === "COMMIT" && ++commits === 2)
+          throw Error("synthetic lost creator acknowledgement");
+        return result;
+      },
+    });
+    armed = true;
+    await expect(f.repo.initiate(actor, value, f.context)).rejects.toThrow();
+    armed = false;
+    const replay = await f.replay();
+    expect(await f.repo.initiate(actor, value, replay)).toMatchObject({
+      id: f.attachmentId,
+    });
+    expect(await count(value.clientUploadId)).toBe(1);
+  });
+  it("rejects replay after creator rollback without reusing its burned identity or inserting again", async () => {
+    const value = input(),
+      f = await ready(value, { retry: true });
+    await db.pool.query("UPDATE users SET email_verified_at=NULL WHERE id=$1", [
+      actor,
+    ]);
+    await expect(f.repo.initiate(actor, value, f.context)).rejects.toThrow();
+    await db.pool.query(
+      "UPDATE users SET email_verified_at=clock_timestamp() WHERE id=$1",
+      [actor],
+    );
+    const replay = await f.replay();
+    await expect(f.repo.initiate(actor, value, replay)).rejects.toThrow();
+    expect(await count(value.clientUploadId)).toBe(0);
+    expect(
+      (
+        await db.pool.query(
+          "SELECT status FROM attachment_initiation_admissions WHERE uploader_id=$1 AND client_upload_id=$2",
+          [actor, value.clientUploadId],
+        )
+      ).rows[0].status,
+    ).toBe("ADMITTED");
+    expect(
+      (
+        await db.pool.query(
+          "SELECT used FROM attachment_quota_counters WHERE kind=$1 AND subject=$2 AND action=$3",
+          ["ACTOR", actor, "initiate"],
+        )
+      ).rows[0].used,
+    ).toBe("1");
+    expect(
+      (
+        await db.pool.query(
+          "SELECT counters FROM " + table("runs") + " WHERE run_id=$1",
+          [f.p.runId],
+        )
+      ).rows[0].counters,
+    ).toMatchObject({ authenticatedRequests: 2, ingressBytes: 204800 });
+  });
 });

@@ -21,7 +21,11 @@ type Common = {
   slotKeys: string[];
 };
 type Detail =
-  | { kind: "INITIATE"; body: ReturnType<typeof parseInitiation> }
+  | {
+      kind: "INITIATE";
+      body: ReturnType<typeof parseInitiation>;
+      creatorAttemptKey?: string;
+    }
   | { kind: "PATCH_METADATA"; body: ReturnType<typeof parseDraftMetadata> }
   | { kind: "FINALIZE" | "METADATA" | "DELETE" }
   | {
@@ -166,11 +170,18 @@ export function validateOperationDeclarations(
         Object.keys(RUN_LIMITS).map((k) => [k, 0]),
       ) as Record<Counter, number>;
     const result = array(value, 140, 1).map((raw) => {
-      const broad = object(raw, common, Object.values(fields).flat()),
+      const broad = object(raw, common, [
+          ...Object.values(fields).flat(),
+          "creatorAttemptKey",
+        ]),
         kind = broad.kind;
       if (typeof kind !== "string" || !Object.hasOwn(fields, kind))
         return fail();
-      const o = object(raw, [...common, ...fields[kind]]),
+      const o = object(
+          raw,
+          [...common, ...fields[kind]],
+          kind === "INITIATE" ? ["creatorAttemptKey"] : [],
+        ),
         operationKey = key(o.key);
       if (keys.has(operationKey)) return fail();
       keys.add(operationKey);
@@ -309,7 +320,16 @@ export function validateOperationDeclarations(
         const body = parseInitiation({ ...dto, scope });
         if (body.fingerprint !== attachment.initiation.fingerprint)
           return fail();
-        detail = { kind, body };
+        const creator = Object.hasOwn(o, "creatorAttemptKey")
+          ? key(o.creatorAttemptKey)
+          : undefined;
+        if (creator !== undefined && !attemptKeys.includes(creator))
+          return fail();
+        detail = {
+          kind,
+          body,
+          ...(creator === undefined ? {} : { creatorAttemptKey: creator }),
+        };
       } else if (kind === "PATCH_METADATA") {
         detail = {
           kind,
@@ -417,14 +437,16 @@ export function validateOperationDeclarations(
       // Assertion and charges never select an alternate admission policy for the
       // same principal/resource/input. Combine retries in one finite entry instead.
       const observedDetail =
-        detail.kind === "UPLOAD"
-          ? {
-              kind: "UPLOAD",
-              method: "PUT",
-              contentType: detail.contentType,
-              contentLength: detail.contentLength,
-            }
-          : detail;
+        detail.kind === "INITIATE"
+          ? { kind: detail.kind, body: detail.body }
+          : detail.kind === "UPLOAD"
+            ? {
+                kind: "UPLOAD",
+                method: "PUT",
+                contentType: detail.contentType,
+                contentLength: detail.contentLength,
+              }
+            : detail;
       if (detail.kind === "READ") {
         const observedRead = JSON.stringify({
           attachmentId: attachment.id,

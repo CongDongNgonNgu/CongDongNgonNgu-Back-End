@@ -2,6 +2,7 @@ import type {
   ControlledInitiationContext,
   ControlledInitiationPort,
   ControlledInitiationAccess,
+  InitiationMode,
 } from "./controlled-initiation.port";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
@@ -107,7 +108,16 @@ export class AttachmentInitiationRepository {
     // admission -> sorted counters and a separate commit. It must
     // never acquire account, scope or attachment locks. Failed NEW domain work
     // remains durably charged; immutable retries share the same admission.
-    const rate = async (client: PoolClient) => {
+    const rate = async (
+      client: PoolClient,
+      mode: InitiationMode = "CREATE_ALLOWED",
+    ) => {
+      if (mode === "REPLAY_ONLY") {
+        const existing = await this.admission(client, actor, input);
+        if (existing.status !== "CREATED")
+          throw new AttachmentDraftConflict("ATTACHMENT_INITIATION_CONFLICT");
+        return;
+      }
       const added = await client.query(
         `INSERT INTO attachment_initiation_admissions(uploader_id,client_upload_id,fingerprint,source_bytes,format,created_at,expires_at) SELECT $1,$2,$3,$4,$5,t,t+interval '24 hours' FROM (SELECT clock_timestamp() t) stamp ON CONFLICT DO NOTHING RETURNING uploader_id`,
         [
@@ -193,6 +203,8 @@ export class AttachmentInitiationRepository {
         if (access) await access.fresh();
         return projectDraft(row);
       }
+      if (access?.mode === "REPLAY_ONLY")
+        throw new AttachmentDraftConflict("ATTACHMENT_INITIATION_CONFLICT");
       // Current actor account lock serializes any same-actor reservation writer.
       // ADMITTED has no draft yet; capture current membership/connection generation.
       if (!authorized) throw opaqueAttachmentAuthorizationError();
@@ -266,7 +278,7 @@ export class AttachmentInitiationRepository {
       return await this.controlled.continueInitiation(
         context!,
         { actorId: actor, fingerprint: input.fingerprint },
-        (client) => protect(() => rate(client)),
+        (client, mode) => protect(() => rate(client, mode)),
         (client, access) => protect(() => domain(client, access)),
       );
     } catch {
