@@ -12,11 +12,12 @@ export interface RequestAttempt {key:string;candidateKey:string;}
 export interface RequestPreparation {candidates:RequestCandidate[];attempts:RequestAttempt[];}
 /** Process-local reservation only; not operation/identity/provider authority. */
 export interface RequestReservation {readonly runId:string;readonly candidateKey:string;readonly attemptKey:string;}
-export interface BindingOperation {key:string;attachmentId:string;ingressBytes:number;egressBytes:number;processingAttempts:number;slotKeys:string[];}
+export interface BindingOperation {key:string;attachmentId:string;ingressBytes:number;egressBytes:number;processingAttempts:number;slotKeys:string[];policyKey?:string;policyAttemptKey?:string;}
 export interface BindingEdge {attemptKey:string;operationKey:string;}
 export interface BindingPreparation {operations:BindingOperation[];edges:BindingEdge[];}
 /** Inert committed allocation binding; not HTTP matching or domain authority. */
 export interface BoundOperation {readonly runId:string;readonly attemptKey:string;readonly operationKey:string;readonly attachmentId:string;readonly slots:ReadonlyArray<Readonly<RunSlot>>;}
+export interface MatchedBoundOperation extends BoundOperation {readonly policyKey:string;readonly policyAttemptKey:string;readonly candidateKey:string;readonly candidate:Readonly<RequestCandidate>;}
 export interface ControlledActiveRun extends ActiveRun,ControlTuple {readonly mode:'CONTROLLED';}
 export interface ActiveRun {readonly runId:string;readonly activationId:string;readonly bootId:string;}
 export interface Reservation {operationKey:string;slots:ReadonlyArray<{key:string;role:Role}>;charges:Partial<Record<Counter,number>>;}
@@ -52,10 +53,11 @@ function requestPreparation(value:unknown,limits:Record<Counter,number>):Request
 
 function bindingPreparation(value:unknown,requests:RequestPreparation|undefined,slots:RunSlot[],limits:Record<Counter,number>):BindingPreparation{
  try{
-  if(!requests)return fail();const root=closed(value,['operations','edges']),usedSlots=new Set<string>(),operationKeys=new Set<string>();
-  const operations=bounded(root.operations).map(raw=>{const o=closed(raw,['key','attachmentId','ingressBytes','egressBytes','processingAttempts','slotKeys']);if(typeof o.key!=='string'||!key(o.key)||operationKeys.has(o.key)||typeof o.attachmentId!=='string'||!uuid(o.attachmentId)||!Number.isSafeInteger(o.ingressBytes)||Number(o.ingressBytes)<0||Number(o.ingressBytes)>limits.ingressBytes||!Number.isSafeInteger(o.egressBytes)||Number(o.egressBytes)<0||Number(o.egressBytes)>Math.max(limits.authenticatedEgressBytes,limits.anonymousEgressBytes)||!Number.isSafeInteger(o.processingAttempts)||![0,1].includes(Number(o.processingAttempts)))return fail();operationKeys.add(o.key);
+  if(!requests)return fail();const root=closed(value,['operations','edges']),usedSlots=new Set<string>(),operationKeys=new Set<string>(),policyAttempts=new Set<string>(),policyFacts=new Map<string,string>();
+  const operations=bounded(root.operations).map(raw=>{const hasPolicy=Reflect.ownKeys(raw as object).some(k=>k==='policyKey'||k==='policyAttemptKey'),o=closed(raw,['key','attachmentId','ingressBytes','egressBytes','processingAttempts','slotKeys',...(hasPolicy?['policyKey','policyAttemptKey']:[])]);if(typeof o.key!=='string'||!key(o.key)||operationKeys.has(o.key)||typeof o.attachmentId!=='string'||!uuid(o.attachmentId)||!Number.isSafeInteger(o.ingressBytes)||Number(o.ingressBytes)<0||Number(o.ingressBytes)>limits.ingressBytes||!Number.isSafeInteger(o.egressBytes)||Number(o.egressBytes)<0||Number(o.egressBytes)>Math.max(limits.authenticatedEgressBytes,limits.anonymousEgressBytes)||!Number.isSafeInteger(o.processingAttempts)||![0,1].includes(Number(o.processingAttempts)))return fail();operationKeys.add(o.key);
+   if(hasPolicy){if(typeof o.policyKey!=='string'||!key(o.policyKey)||typeof o.policyAttemptKey!=='string'||!key(o.policyAttemptKey))return fail();const pair=o.policyKey+':'+o.policyAttemptKey,signature=JSON.stringify([o.attachmentId,o.ingressBytes,o.egressBytes,o.processingAttempts]);if(policyAttempts.has(pair)||(policyFacts.has(o.policyKey)&&policyFacts.get(o.policyKey)!==signature))return fail();policyAttempts.add(pair);policyFacts.set(o.policyKey,signature);}
    const slotKeys=bounded(o.slotKeys,256,0).map(v=>{if(typeof v!=='string'||!key(v)||usedSlots.has(v))return fail();const slot=slots.find(s=>s.key===v);if(!slot||slot.operationKey!==o.key||slot.attachmentId!==o.attachmentId)return fail();usedSlots.add(v);return v;}).sort();
-   return {key:o.key,attachmentId:o.attachmentId,ingressBytes:Number(o.ingressBytes),egressBytes:Number(o.egressBytes),processingAttempts:Number(o.processingAttempts),slotKeys};
+   return {key:o.key,attachmentId:o.attachmentId,ingressBytes:Number(o.ingressBytes),egressBytes:Number(o.egressBytes),processingAttempts:Number(o.processingAttempts),slotKeys,...(hasPolicy?{policyKey:o.policyKey as string,policyAttemptKey:o.policyAttemptKey as string}:{})};
   });
   if(usedSlots.size!==slots.length)return fail();const seen=new Set<string>(),usedOps=new Set<string>(),maxByAttempt=new Map<string,number>();
   const edges=bounded(root.edges,140).map(raw=>{const e=closed(raw,['attemptKey','operationKey']);if(typeof e.attemptKey!=='string'||!key(e.attemptKey)||typeof e.operationKey!=='string'||!key(e.operationKey))return fail();const signature=e.attemptKey+':'+e.operationKey;if(seen.has(signature))return fail();seen.add(signature);const a=requests.attempts.find(a=>a.key===e.attemptKey),o=operations.find(o=>o.key===e.operationKey),c=requests.candidates.find(c=>c.key===a?.candidateKey);if(!a||!o||!c||o.ingressBytes>c.ingressBytes||o.egressBytes>c.egressBytes||(c.authClass==='ANON'&&o.processingAttempts!==0))return fail();usedOps.add(o.key);maxByAttempt.set(a.key,Math.max(maxByAttempt.get(a.key)??0,o.processingAttempts));return {attemptKey:a.key,operationKey:o.key};});
@@ -71,6 +73,7 @@ export class RunLedger {
  private readonly active=new WeakSet<ActiveRun>();
  private readonly controlled=new WeakSet<ControlledActiveRun>();
  private readonly bindings=new WeakMap<BoundOperation,{active:ActiveRun;attemptKey:string}>();
+ private readonly matchedBindings=new WeakMap<MatchedBoundOperation,{active:ControlledActiveRun}>();
  private readonly requests=new WeakMap<RequestReservation,{active:ActiveRun;attemptKey:string}>();
  constructor(private readonly pool:Pool){}
  private async transaction<T>(work:(client:PoolClient)=>Promise<T>):Promise<T>{
@@ -107,7 +110,7 @@ export class RunLedger {
    for(const cnd of requests?.candidates??[])await c.query('INSERT INTO phase30_test_execution.request_candidates(run_id,candidate_key,method,path,auth_class,ingress_bytes,egress_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)',[facts.runId,cnd.key,cnd.method,cnd.path,cnd.authClass,cnd.ingressBytes,cnd.egressBytes]);
    for(const a of requests?.attempts??[])await c.query('INSERT INTO phase30_test_execution.request_attempts(run_id,attempt_key,candidate_key) VALUES($1,$2,$3)',[facts.runId,a.key,a.candidateKey]);
 
-   for(const o of bindings?.operations??[]){await c.query('INSERT INTO phase30_test_execution.bound_operations(run_id,operation_key,attachment_id,ingress_bytes,egress_bytes,processing_attempts,slot_count) VALUES($1,$2,$3,$4,$5,$6,$7)',[facts.runId,o.key,o.attachmentId,o.ingressBytes,o.egressBytes,o.processingAttempts,o.slotKeys.length]);for(const slotKey of o.slotKeys)await c.query('INSERT INTO phase30_test_execution.operation_slots(run_id,operation_key,slot_key) VALUES($1,$2,$3)',[facts.runId,o.key,slotKey]);}
+   for(const o of bindings?.operations??[]){await c.query('INSERT INTO phase30_test_execution.bound_operations(run_id,operation_key,attachment_id,ingress_bytes,egress_bytes,processing_attempts,slot_count,policy_key,policy_attempt_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[facts.runId,o.key,o.attachmentId,o.ingressBytes,o.egressBytes,o.processingAttempts,o.slotKeys.length,o.policyKey??null,o.policyAttemptKey??null]);for(const slotKey of o.slotKeys)await c.query('INSERT INTO phase30_test_execution.operation_slots(run_id,operation_key,slot_key) VALUES($1,$2,$3)',[facts.runId,o.key,slotKey]);}
    for(const e of bindings?.edges??[])await c.query('INSERT INTO phase30_test_execution.operation_edges(run_id,attempt_key,operation_key) VALUES($1,$2,$3)',[facts.runId,e.attemptKey,e.operationKey]);
    await c.query('UPDATE phase30_test_execution.runs SET preparation_sealed=true WHERE run_id=$1',[facts.runId]);
 
@@ -175,6 +178,39 @@ export class RunLedger {
   const handle=Object.freeze({runId:active.runId,attemptKey,operationKey,...result});this.bindings.set(handle,{active,attemptKey});return handle;
  }
 
+ /** Local provenance membership only; not fresh expiry, ACL or provider authority. */
+ requireMatchedBoundOperation(handle:BoundOperation):MatchedBoundOperation{
+  const facts=this.matchedBindings.get(handle as MatchedBoundOperation);if(!facts)return fail();this.requireControlled(facts.active);return handle as MatchedBoundOperation;
+ }
+ /** Bind one matched policy's finite instance set under the original coarse
+  * request reservation. Caller must already establish normal auth/exact matching.
+  * Every supplied instance must be compatible, not merely the selected winner. */
+ async bindMatchedPolicy(request:RequestReservation,matched:{policyKey:string;instanceKeys:readonly string[]}):Promise<MatchedBoundOperation>{
+  const facts=this.requests.get(request);this.requests.delete(request);
+  try{
+   if(!facts)return fail();const active=this.requireControlled(facts.active),attemptKey=facts.attemptKey;
+   const m=closed(matched,['policyKey','instanceKeys']);if(typeof m.policyKey!=='string'||!key(m.policyKey))return fail();const policyKey=m.policyKey;
+   const instanceKeys=bounded(m.instanceKeys).map(v=>{if(typeof v!=='string'||!key(v))return fail();return v;}).sort();if(new Set(instanceKeys).size!==instanceKeys.length)return fail();
+   const result=await this.transaction(async c=>{
+    if(!(await c.query("SELECT run_id FROM phase30_test_execution.runs WHERE run_id=$1 AND activation_id=$2 AND boot_id=$3 AND state='ACTIVE' AND preparation_sealed AND not_before<=clock_timestamp() AND expires_at>clock_timestamp() FOR UPDATE",[active.runId,active.activationId,active.bootId])).rows[0])return fail();
+    if(!(await c.query("SELECT attempt_key FROM phase30_test_execution.request_attempts WHERE run_id=$1 AND attempt_key=$2 AND state='RESERVED' AND boot_id=$3 FOR UPDATE",[active.runId,attemptKey,active.bootId])).rows[0])return fail();
+    const raw=(await c.query("SELECT c.candidate_key,c.method,c.path,c.auth_class,c.ingress_bytes,c.egress_bytes FROM phase30_test_execution.request_candidates c JOIN phase30_test_execution.request_attempts a USING(run_id,candidate_key) WHERE a.run_id=$1 AND a.attempt_key=$2",[active.runId,attemptKey])).rows[0];
+    if(!raw||raw.candidate_key!==request.candidateKey||!key(raw.candidate_key)||!['GET','HEAD','POST','PUT','PATCH','DELETE'].includes(raw.method)||typeof raw.path!=='string'||raw.path.length>160||!/^\/api\/v1\/attachments(?:\/[a-f0-9-]{36}(?:\/(?:content|preview|finalize|metadata))?)?$/.test(raw.path)||!['AUTH','ANON'].includes(raw.auth_class))return fail();
+    const ingress=Number(raw.ingress_bytes),egress=Number(raw.egress_bytes);if(!Number.isSafeInteger(ingress)||ingress<0||!Number.isSafeInteger(egress)||egress<0||(raw.auth_class==='ANON'&&ingress!==0))return fail();
+    const candidate=Object.freeze({key:raw.candidate_key,method:raw.method,path:raw.path,authClass:raw.auth_class,ingressBytes:ingress,egressBytes:egress}) as Readonly<RequestCandidate>;
+    const rows=(await c.query("SELECT o.operation_key,o.attachment_id,o.slot_count,o.state,o.policy_key,o.policy_attempt_key FROM phase30_test_execution.bound_operations o JOIN phase30_test_execution.operation_edges e USING(run_id,operation_key) JOIN phase30_test_execution.request_attempts a ON a.run_id=e.run_id AND a.attempt_key=e.attempt_key JOIN phase30_test_execution.request_candidates c ON c.run_id=a.run_id AND c.candidate_key=a.candidate_key WHERE o.run_id=$1 AND e.attempt_key=$2 AND o.operation_key=ANY($3::text[]) AND o.ingress_bytes<=c.ingress_bytes AND o.egress_bytes<=c.egress_bytes AND (c.auth_class<>'ANON' OR o.processing_attempts=0) ORDER BY o.operation_key COLLATE \"C\" FOR UPDATE OF o",[active.runId,attemptKey,instanceKeys])).rows;
+    const seen=new Set<string>();
+    for(const o of rows){if(!instanceKeys.includes(o.operation_key)||seen.has(o.operation_key)||o.policy_key!==policyKey||typeof o.policy_attempt_key!=='string'||!key(o.policy_attempt_key)||!uuid(o.attachment_id)||!Number.isSafeInteger(o.slot_count)||o.slot_count<0||o.slot_count>256||!['AVAILABLE','BOUND'].includes(o.state))return fail();seen.add(o.operation_key);}
+    if(rows.length!==instanceKeys.length)return fail();const operation=rows.find(o=>o.state==='AVAILABLE');if(!operation)return fail();const operationKey=String(operation.operation_key);
+    const slots=(await c.query("SELECT s.slot_key,s.operation_key,s.role,s.id,s.attachment_id FROM phase30_test_execution.operation_slots m JOIN phase30_test_execution.slots s USING(run_id,slot_key) WHERE m.run_id=$1 AND m.operation_key=$2 ORDER BY s.slot_key COLLATE \"C\" FOR UPDATE OF s",[active.runId,operationKey])).rows;if(slots.length!==operation.slot_count)return fail();
+    let changed=await c.query("UPDATE phase30_test_execution.request_attempts SET state='BOUND',bound_operation_key=$3 WHERE run_id=$1 AND attempt_key=$2 AND state='RESERVED' RETURNING attempt_key",[active.runId,attemptKey,operationKey]);if(changed.rowCount!==1)return fail();
+    changed=await c.query("UPDATE phase30_test_execution.bound_operations SET state='BOUND',bound_attempt_key=$3 WHERE run_id=$1 AND operation_key=$2 AND state='AVAILABLE' RETURNING operation_key",[active.runId,operationKey,attemptKey]);if(changed.rowCount!==1)return fail();
+    const result:RunSlot[]=[];for(const s of slots){if(typeof s.slot_key!=='string'||!key(s.slot_key)||s.operation_key!==operationKey||s.attachment_id!==operation.attachment_id||!SLOT_ROLES.includes(s.role)||!uuid(s.id))return fail();changed=await c.query("UPDATE phase30_test_execution.slots SET state='BURNED' WHERE run_id=$1 AND slot_key=$2 AND state='AVAILABLE' RETURNING id",[active.runId,s.slot_key]);if(changed.rowCount!==1)return fail();result.push(Object.freeze({key:s.slot_key,operationKey,role:s.role,id:s.id,attachmentId:s.attachment_id}));}
+    return {operationKey,attachmentId:String(operation.attachment_id),slots:Object.freeze(result),policyKey,policyAttemptKey:String(operation.policy_attempt_key),candidateKey:candidate.key,candidate};
+   });
+   const handle=Object.freeze({runId:active.runId,attemptKey,...result});this.bindings.set(handle,{active,attemptKey});this.matchedBindings.set(handle,{active});return handle;
+  }catch{return fail();}
+ }
  async reserve(active:ActiveRun,input:Reservation):Promise<ReadonlyArray<Readonly<RunSlot>>>{
   if(!this.active.has(active)||!key(input.operationKey)||!Array.isArray(input.slots)||input.slots.length>256
    ||new Set(input.slots.map(s=>s.key)).size!==input.slots.length||input.slots.some(s=>!key(s.key)||!SLOT_ROLES.includes(s.role))||!input.charges)return fail();
