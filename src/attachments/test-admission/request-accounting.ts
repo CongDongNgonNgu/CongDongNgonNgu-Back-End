@@ -64,7 +64,7 @@ export class RequestAccounting {
   constructor(
     private readonly ledger: Pick<
       RunLedger,
-      "requireControlled" | "reserveRequest"
+      "requireControlled" | "reserveRequest" | "requireRequestCandidate"
     >,
     private readonly active: ControlledActiveRun,
     plan: CoarseRequestPlan,
@@ -122,6 +122,15 @@ export class RequestAccounting {
       }
     }
   };
+  /** Local committed receipt facts only; does not consume the request handle. */
+  peekCandidate(
+    req: Request,
+  ): Readonly<import("./run-ledger").RequestCandidate> | undefined {
+    const handle = this.handles.get(req),
+      response = this.responses.get(req);
+    if (!handle || !response || closed(req, response)) return undefined;
+    return this.ledger.requireRequestCandidate(handle);
+  }
   take(req: Request): RequestReservation | undefined {
     const handle = this.handles.get(req),
       response = this.responses.get(req);

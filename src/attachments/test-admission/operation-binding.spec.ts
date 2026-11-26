@@ -49,8 +49,18 @@ const plan = () => ({
 function db() {
   const query = jest.fn(async (sql: string, _values?: unknown[]) => ({
     rowCount: 1,
-    rows:
-      sql.includes("SELECT run_id FROM") || sql.includes("SET state='ACTIVE'")
+    rows: sql.includes("FROM phase30_test_execution.request_candidates")
+      ? [
+          {
+            candidate_key: "candidate",
+            method: "PUT",
+            path: "/api/v1/attachments/" + id(5) + "/content",
+            auth_class: "AUTH",
+            ingress_bytes: "200",
+            egress_bytes: "0",
+          },
+        ]
+      : sql.includes("SELECT run_id FROM") || sql.includes("SET state='ACTIVE'")
         ? [{ run_id: id(1) }]
         : sql.includes("SELECT attempt_key")
           ? [{ attempt_key: "attempt", candidate_key: "candidate" }]

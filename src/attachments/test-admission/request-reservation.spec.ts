@@ -34,13 +34,24 @@ const plan = () => ({
 function db() {
   const query = jest.fn(async (sql: string, _values?: unknown[]) => ({
     rowCount: 1,
-    rows: sql.includes("UPDATE phase30_test_execution.runs SET state=")
-      ? [{ run_id: id(1) }]
-      : sql.includes("SELECT run_id FROM")
+    rows: sql.includes("FROM phase30_test_execution.request_candidates")
+      ? [
+          {
+            candidate_key: "read",
+            method: "HEAD",
+            path: "/api/v1/attachments/" + id(4) + "/content",
+            auth_class: "AUTH",
+            ingress_bytes: "0",
+            egress_bytes: "200",
+          },
+        ]
+      : sql.includes("UPDATE phase30_test_execution.runs SET state=")
         ? [{ run_id: id(1) }]
-        : sql.includes("SELECT attempt_key")
-          ? [{ attempt_key: "attempt-a", candidate_key: "read" }]
-          : [],
+        : sql.includes("SELECT run_id FROM")
+          ? [{ run_id: id(1) }]
+          : sql.includes("SELECT attempt_key")
+            ? [{ attempt_key: "attempt-a", candidate_key: "read" }]
+            : [],
   }));
   return {
     query,
@@ -139,11 +150,22 @@ describe("durable coarse request reservation only", () => {
       if (sql === "COMMIT") throw Error("private commit uncertain");
       return {
         rowCount: 1,
-        rows: sql.includes("SELECT run_id FROM")
-          ? [{ run_id: id(1) }]
-          : sql.includes("SELECT attempt_key")
-            ? [{ attempt_key: "attempt-a", candidate_key: "read" }]
-            : [],
+        rows: sql.includes("FROM phase30_test_execution.request_candidates")
+          ? [
+              {
+                candidate_key: "read",
+                method: "HEAD",
+                path: "/api/v1/attachments/" + id(4) + "/content",
+                auth_class: "AUTH",
+                ingress_bytes: "0",
+                egress_bytes: "200",
+              },
+            ]
+          : sql.includes("SELECT run_id FROM")
+            ? [{ run_id: id(1) }]
+            : sql.includes("SELECT attempt_key")
+              ? [{ attempt_key: "attempt-a", candidate_key: "read" }]
+              : [],
       };
     });
     p.connect.mockClear();
