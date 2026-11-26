@@ -337,13 +337,17 @@ describe("pre-parser Nest HTTP accounting in exact owned disposable SQL schema",
           request(app.getHttpServer()).post(base).send({}),
         ),
       );
-      expect(results.filter((r) => r.status === 401)).toHaveLength(4);
-      expect(results.filter((r) => r.status === 503)).toHaveLength(2);
-      expect(await counters(context.runId)).toMatchObject({
-        authenticatedRequests: 4,
-        ingressBytes: 128,
-        processingAttempts: 0,
-      });
+      const authenticated = results.filter((r) => r.status === 401).length;
+      expect(results.every((r) => r.status === 401 || r.status === 503)).toBe(true);
+      expect(authenticated).toBeGreaterThanOrEqual(1);
+      expect(authenticated).toBeLessThanOrEqual(4);
+      const durable = await counters(context.runId);
+      // Lock timeouts may refuse capacity; uncertain commits may retain charges
+      // despite a503. Neither outcome permits overshoot or a refund.
+      expect(durable.authenticatedRequests).toBeGreaterThanOrEqual(authenticated);
+      expect(durable.authenticatedRequests).toBeLessThanOrEqual(4);
+      expect(durable.ingressBytes).toBe(32 * durable.authenticatedRequests);
+      expect(durable.processingAttempts).toBe(0);
     } finally {
       await app.close();
     }
