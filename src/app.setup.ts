@@ -4,7 +4,12 @@ import { ConfigService } from "@nestjs/config";
 import type { RuntimeConfig } from "./config/configuration";
 import { ApiExceptionFilter } from "./common/http/api-exception.filter";
 
-export function configureApp(app: INestApplication): void {
+import type { RequestHandler } from 'express';
+export interface AppSetupOptions {
+  /** Trusted bootstrap injection before init/listen; accounting grants no product capability. */
+  attachmentRequestAccounting?: RequestHandler;
+}
+export function configureApp(app: INestApplication, options: AppSetupOptions = {}): void {
   const config = app.get(ConfigService<RuntimeConfig, true>);
   const origins = config.get("app.corsOrigins", { infer: true });
   const environment = config.get("app.environment", { infer: true });
@@ -35,5 +40,8 @@ export function configureApp(app: INestApplication): void {
     }
     next();
   });
+  // app.use runs before Nest installs body parsers during init/listen. Module
+  // route middleware is too late for conservative pre-parser accounting.
+  if (options.attachmentRequestAccounting) app.use(options.attachmentRequestAccounting);
   configureSwagger(app);
 }
