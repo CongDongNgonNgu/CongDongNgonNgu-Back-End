@@ -39,3 +39,72 @@ describe('inert TEST execution ledger', () => {
     expect(order).toEqual(['a-','a.','a_']);
   });
 });
+
+function deadlinePool(commitDelay = 0) {
+  const query = jest.fn(async (sql: string) => {
+      if (sql === "COMMIT" && commitDelay)
+        jest.advanceTimersByTime(commitDelay);
+      let rows: unknown[] = [];
+      if (sql.includes("SELECT run_id")) rows = [{ run_id: runId }];
+      if (sql.includes("SELECT attempt_key,candidate_key"))
+        rows = [{ attempt_key: "attempt", candidate_key: "candidate" }];
+      if (sql.includes("SELECT c.candidate_key"))
+        rows = [
+          {
+            candidate_key: "candidate",
+            method: "POST",
+            path: "/api/v1/attachments",
+            auth_class: "AUTH",
+            ingress_bytes: "102400",
+            egress_bytes: "0",
+          },
+        ];
+      if (sql.includes("observed_at"))
+        rows = [{ expires_at: new Date(2000), observed_at: new Date(1000) }];
+      return { rowCount: 1, rows };
+    }),
+    release = jest.fn();
+  return { query, connect: jest.fn(async () => ({ query, release })) };
+}
+describe("committed receipt monotonic body expiry", () => {
+  afterEach(() => jest.useRealTimers());
+  it("subtracts commit delay, ignores wall-clock changes and never changes receipt/candidate shape", async () => {
+    jest.useFakeTimers();
+    const p = deadlinePool(200),
+      ledger = new RunLedger(p as unknown as Pool),
+      active = await ledger.activate(runId, activationId, bootId),
+      h = await ledger.reserveRequest(active, "candidate");
+    expect(ledger.requireRequestBodyRemaining(h)).toBe(799);
+    jest.setSystemTime(99999999);
+    expect(ledger.requireRequestBodyRemaining(h)).toBe(799);
+    jest.advanceTimersByTime(799);
+    expect(ledger.requireRequestBodyRemaining(h)).toBe(0);
+    expect(Object.keys(h).sort()).toEqual([
+      "attemptKey",
+      "candidateKey",
+      "runId",
+    ]);
+    expect(ledger.requireRequestCandidate(h)).not.toHaveProperty("deadline");
+  });
+  it("rejects copies/foreign/consumed receipts and a COMMIT which outlives original expiry", async () => {
+    jest.useFakeTimers();
+    const p = deadlinePool(),
+      ledger = new RunLedger(p as unknown as Pool),
+      a = await ledger.activate(runId, activationId, bootId),
+      h = await ledger.reserveRequest(a, "candidate");
+    expect(() => ledger.requireRequestBodyRemaining({ ...h })).toThrow(
+      "TEST_ADMISSION_LEDGER",
+    );
+    expect(() =>
+      new RunLedger(p as unknown as Pool).requireRequestBodyRemaining(h),
+    ).toThrow();
+    await expect(ledger.bindOperation(h, "missing")).rejects.toThrow();
+    expect(() => ledger.requireRequestBodyRemaining(h)).toThrow();
+    const slow = deadlinePool(1100),
+      other = new RunLedger(slow as unknown as Pool),
+      b = await other.activate(runId, activationId, bootId);
+    await expect(other.reserveRequest(b, "candidate")).rejects.toThrow(
+      "TEST_ADMISSION_LEDGER",
+    );
+  });
+});

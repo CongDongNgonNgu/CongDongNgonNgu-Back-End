@@ -74,7 +74,7 @@ export class RunLedger {
  private readonly controlled=new WeakSet<ControlledActiveRun>();
  private readonly bindings=new WeakMap<BoundOperation,{active:ActiveRun;attemptKey:string}>();
  private readonly matchedBindings=new WeakMap<MatchedBoundOperation,{active:ControlledActiveRun}>();
- private readonly requests=new WeakMap<RequestReservation,{active:ActiveRun;attemptKey:string;candidate:Readonly<RequestCandidate>}>();
+ private readonly requests=new WeakMap<RequestReservation,{active:ActiveRun;attemptKey:string;candidate:Readonly<RequestCandidate>;bodyDeadline:number}>();
  constructor(private readonly pool:Pool){}
  private async transaction<T>(work:(client:PoolClient)=>Promise<T>):Promise<T>{
   let client:PoolClient|undefined;
@@ -143,6 +143,8 @@ export class RunLedger {
   const value=Object.freeze({runId,activationId,bootId});this.active.add(value);return value;
  }
 
+ /** Original committed receipt lifetime only; monotonic, nonrenewable, and not fresh run/ACL/provider authority. */
+ requireRequestBodyRemaining(request:RequestReservation):number{const facts=this.requests.get(request);if(!facts)return fail();return Math.max(0,facts.bodyDeadline-performance.now());}
  /** Local committed provenance only, not fresh expiry, ACL or provider authority.
   * Binding consumes the original request and immediately invalidates this view. */
  requireRequestCandidate(request:RequestReservation):Readonly<RequestCandidate>{
@@ -153,6 +155,7 @@ export class RunLedger {
   * Local committed accounting/provenance only; no full runtime/bootstrap authority. */
  async reserveRequest(active:ActiveRun,candidateKey:string):Promise<RequestReservation>{
   if(!this.active.has(active)||!key(candidateKey))return fail();
+  const started=performance.now();
   const attempt=await this.transaction(async c=>{
    const run=(await c.query("SELECT run_id FROM phase30_test_execution.runs WHERE run_id=$1 AND activation_id=$2 AND boot_id=$3 AND state='ACTIVE' AND preparation_sealed AND request_count>0 AND not_before<=clock_timestamp() AND expires_at>clock_timestamp() FOR UPDATE",[active.runId,active.activationId,active.bootId])).rows[0];if(!run)return fail();
    const row=(await c.query("SELECT attempt_key,candidate_key FROM phase30_test_execution.request_attempts WHERE run_id=$1 AND candidate_key=$2 AND state='AVAILABLE' ORDER BY attempt_key COLLATE \"C\" LIMIT 1 FOR UPDATE",[active.runId,candidateKey])).rows[0];if(!row||typeof row.attempt_key!=='string'||!key(row.attempt_key)||row.candidate_key!==candidateKey)return fail();
@@ -162,9 +165,15 @@ export class RunLedger {
     const bytes=(value:unknown):number=>{if((typeof value!=='string'||!/^\d+$/.test(value))&&(typeof value!=='number'||!Number.isSafeInteger(value)))return fail();const n=Number(value);if(!Number.isSafeInteger(n)||n<0)return fail();return n;};
     const parsed=requestPreparation({candidates:[{key:raw.candidate_key,method:raw.method,path:raw.path,authClass:raw.auth_class,ingressBytes:bytes(raw.ingress_bytes),egressBytes:bytes(raw.egress_bytes)}],attempts:[{key:'candidate-fact',candidateKey:raw.candidate_key}]},{...RUN_LIMITS});
     const candidate=Object.freeze({...parsed.candidates[0]});
-    return {attemptKey:String(row.attempt_key),candidateKey:String(row.candidate_key),candidate};
+    const timing=(await c.query("SELECT expires_at,clock_timestamp() AS observed_at FROM phase30_test_execution.runs WHERE run_id=$1 AND activation_id=$2 AND boot_id=$3 AND state='ACTIVE' AND preparation_sealed",[active.runId,active.activationId,active.bootId])).rows[0];
+    if(!timing||!(timing.expires_at instanceof Date)||!(timing.observed_at instanceof Date))return fail();
+    // pg Date decoding truncates microseconds; subtract one millisecond rather than round expiry up.
+    const remaining=Math.floor(timing.expires_at.getTime()-timing.observed_at.getTime())-1;
+    if(!Number.isSafeInteger(remaining)||remaining<=0||remaining>600000)return fail();
+    return {attemptKey:String(row.attempt_key),candidateKey:String(row.candidate_key),candidate,bodyDeadline:started+remaining};
   });
-  const handle=Object.freeze({runId:active.runId,attemptKey:attempt.attemptKey,candidateKey:attempt.candidateKey});this.requests.set(handle,{active,attemptKey:attempt.attemptKey,candidate:attempt.candidate});return handle;
+  if(performance.now()>=attempt.bodyDeadline)return fail();
+  const handle=Object.freeze({runId:active.runId,attemptKey:attempt.attemptKey,candidateKey:attempt.candidateKey});this.requests.set(handle,{active,attemptKey:attempt.attemptKey,candidate:attempt.candidate,bodyDeadline:attempt.bodyDeadline});return handle;
  }
 
 

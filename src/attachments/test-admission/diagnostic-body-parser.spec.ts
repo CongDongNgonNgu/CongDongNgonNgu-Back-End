@@ -11,6 +11,7 @@ function app(ingress = CAP) {
     reached = jest.fn();
   server.use(
     createDiagnosticBodyParser({
+      peekBodyRemaining: () => 30000,
       peekCandidate: (req) =>
         Object.freeze({
           key: "coarse",
@@ -50,17 +51,25 @@ function direct(
           egressBytes: 0,
         }) as RequestCandidate,
     ),
+    peekBodyRemaining = jest.fn(() => 100),
     destroy = jest.fn(),
     next = jest.fn();
-  const req = {
+  const req = Object.assign(new EventEmitter(), {
     method,
     originalUrl: path,
     url: path,
     headers,
     rawHeaders,
     aborted: false,
-    socket: { end: destroy },
-  };
+    socket: {
+      end: (...args: unknown[]) => {
+        destroy();
+        const callback = args[0];
+        if (typeof callback === "function") callback();
+      },
+    },
+    destroy: jest.fn(),
+  });
   Object.defineProperty(req, "body", {
     get() {
       throw Error("body inspected");
@@ -90,13 +99,14 @@ function direct(
   });
   return {
     peekCandidate,
+    peekBodyRemaining,
     destroy,
     next,
     req: req as unknown as Request,
     res: response as unknown as Response,
     response,
     run: () =>
-      createDiagnosticBodyParser({ peekCandidate })(
+      createDiagnosticBodyParser({ peekCandidate, peekBodyRemaining })(
         req as unknown as Request,
         response as unknown as Response,
         next,
@@ -327,4 +337,103 @@ it("keeps namespace aliases fail-closed and rejection cache controls private", (
   );
   expect(f.response.vary).toHaveBeenCalledWith("Authorization");
   expect(f.response.vary).toHaveBeenCalledWith("Cookie");
+});
+
+describe("private body intake deadline", () => {
+  afterEach(() => jest.useRealTimers());
+  it("bounds raw handoff and cancels input without reading data or observing the receipt again", () => {
+    jest.useFakeTimers();
+    const f = direct({ "content-length": "2" }, "PUT", item + "/content", 2);
+    f.run();
+    expect(f.next).toHaveBeenCalledTimes(1);
+    expect(f.req.listenerCount("data")).toBe(0);
+    f.peekCandidate.mockImplementation(() => {
+      throw Error("receipt taken");
+    });
+    jest.advanceTimersByTime(100);
+    expect(f.response.status).toHaveBeenCalledWith(408);
+    expect(f.req.destroy).toHaveBeenCalledTimes(1);
+    expect(f.next).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+  it.each(["end", "error", "aborted", "close"])(
+    "cleans raw timer after input %s",
+    (event) => {
+      jest.useFakeTimers();
+      const f = direct({ "content-length": "2" }, "PUT", item + "/content", 2);
+      f.run();
+      f.req.emit(event);
+      expect(jest.getTimerCount()).toBe(0);
+      jest.advanceTimersByTime(100);
+      expect(f.response.status).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("nonrenewable intake callback races", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+  it("anchors before private remaining lookup so call latency cannot extend intake", () => {
+    jest.useFakeTimers();
+    const f = direct({ "content-length": "2" }, "PUT", item + "/content", 2);
+    f.peekBodyRemaining.mockImplementation(() => {
+      jest.advanceTimersByTime(50);
+      return 100;
+    });
+    f.run();
+    jest.advanceTimersByTime(50);
+    expect(f.response.status).toHaveBeenCalledWith(408);
+  });
+  it("ignores a JSON callback after timeout, and refuses late completion before timers dispatch", () => {
+    for (const fireTimer of [true, false]) {
+      jest.useFakeTimers();
+      let callback: ((error?: unknown) => void) | undefined;
+      jest
+        .spyOn(express, "json")
+        .mockImplementation(() => (_req, _res, next) => {
+          callback = next;
+        });
+      const f = direct({
+        "content-length": "2",
+        "content-type": "application/json",
+      });
+      f.run();
+      if (fireTimer) jest.advanceTimersByTime(100);
+      else jest.spyOn(performance, "now").mockReturnValue(100);
+      callback!();
+      expect(f.response.status).toHaveBeenCalledTimes(1);
+      expect(f.response.status).toHaveBeenCalledWith(408);
+      expect(f.next).not.toHaveBeenCalled();
+      jest.restoreAllMocks();
+      jest.useRealTimers();
+    }
+  });
+  it("caps even a long remaining run at30seconds", () => {
+    jest.useFakeTimers();
+    const f = direct({ "content-length": "2" }, "PUT", item + "/content", 2);
+    f.peekBodyRemaining.mockReturnValue(600000);
+    f.run();
+    jest.advanceTimersByTime(29999);
+    expect(f.response.status).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(f.response.status).toHaveBeenCalledWith(408);
+  });
+});
+
+it("rejects already elapsed private lookup synchronously before raw handoff", () => {
+  jest.useFakeTimers();
+  try {
+    const f = direct({ "content-length": "2" }, "PUT", item + "/content", 2);
+    f.peekBodyRemaining.mockImplementation(() => {
+      jest.advanceTimersByTime(101);
+      return 100;
+    });
+    f.run();
+    expect(f.response.status).toHaveBeenCalledWith(408);
+    expect(f.next).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
 });

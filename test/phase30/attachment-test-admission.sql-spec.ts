@@ -325,4 +325,26 @@ describe('inert execution ledger in disposable owned PostgreSQL schema',()=>{
   const pending=ledger.activateControlled(t).then(()=>true,()=>false);try{await db.pool.query('SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM $1::timestamptz-clock_timestamp()))+0.05)',[t.expiresAt]);}finally{await c.query('ROLLBACK');c.release();}expect(await pending).toBe(false);expect(await controls.inspectExact(t)).toMatchObject({state:'RECEIPT_STORED',runState:'PREPARED',consumedAt:null});
  },30000);
 
+ it('anchors private body expiry before lock waits and confirmed COMMIT latency',async()=>{
+  let waiting!:()=>void;const reached=new Promise<void>(r=>waiting=r);let armed=false;
+  const owner=new RunLedger({connect:async()=>{const c=await db.pool.connect();return{query:async(sql:string,values?:unknown[])=>{
+   if(armed&&sql.includes('SELECT run_id FROM phase30_test_execution.runs')&&sql.includes('FOR UPDATE'))waiting();
+   const result=await c.query(sql.replace(/phase30_test_execution/g,db.schema),values);
+   if(armed&&sql==='COMMIT')await new Promise(r=>setTimeout(r,250));return result;
+  },release:()=>c.release()};}} as unknown as Pool);
+  const p=coarsePlan();await owner.prepare(p);const active=await owner.activate(p.runId,p.activationId,randomUUID());
+  const blocker=await db.pool.connect();await blocker.query('BEGIN');await blocker.query('SELECT run_id FROM '+table('runs')+' WHERE run_id=$1 FOR UPDATE',[p.runId]);armed=true;
+  const pending=owner.reserveRequest(active,'public-head');
+  try{await reached;await new Promise(r=>setTimeout(r,250));}finally{await blocker.query('ROLLBACK');blocker.release();}
+  const receipt=await pending;const remaining=owner.requireRequestBodyRemaining(receipt);
+  const dbRemaining=Number((await db.pool.query('SELECT EXTRACT(epoch FROM expires_at-clock_timestamp())*1000 remaining FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0].remaining);
+  expect(remaining).toBeGreaterThan(0);expect(dbRemaining-remaining).toBeGreaterThan(150);
+  await new Promise(r=>setTimeout(r,30));expect(owner.requireRequestBodyRemaining(receipt)).toBeLessThan(remaining);
+  expect(()=>owner.requireRequestBodyRemaining({...receipt})).toThrow('TEST_ADMISSION_LEDGER');
+  expect(()=>ledger.requireRequestBodyRemaining(receipt)).toThrow('TEST_ADMISSION_LEDGER');
+  await expect(owner.bindOperation(receipt,'nonexistent')).rejects.toThrow('TEST_ADMISSION_LEDGER');
+  expect(()=>owner.requireRequestBodyRemaining(receipt)).toThrow('TEST_ADMISSION_LEDGER');
+  expect((await db.pool.query('SELECT counters FROM '+table('runs')+' WHERE run_id=$1',[p.runId])).rows[0].counters.authenticatedRequests).toBe(1);
+ },30000);
+
 });

@@ -26,6 +26,7 @@ function fixture() {
         egressBytes: 100,
       }),
     ),
+    requireRequestBodyRemaining: jest.fn(() => 1000),
     requireControlled: jest.fn(() => active),
     reserveRequest: jest.fn(async () => handle),
   };
@@ -306,4 +307,16 @@ describe("explicit controlled pre-parser accounting only", () => {
     const next = await dispatch(f, req, r.res);
     expect(next).toHaveBeenCalledTimes(1);
   });
+});
+
+it("reads remaining body time only through the original private untaken receipt", async () => {
+  const f = fixture(),
+    req = request(),
+    r = response();
+  expect(f.accounting.peekBodyRemaining(req)).toBeUndefined();
+  await dispatch(f, req, r.res);
+  expect(f.accounting.peekBodyRemaining(req)).toBe(1000);
+  expect(f.ledger.requireRequestBodyRemaining).toHaveBeenCalledWith(f.handle);
+  f.accounting.take(req);
+  expect(f.accounting.peekBodyRemaining(req)).toBeUndefined();
 });
