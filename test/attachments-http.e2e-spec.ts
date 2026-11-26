@@ -1,3 +1,4 @@
+import {ATTACHMENT_REQUEST_POLICY} from '../src/attachments/http/attachment-request-policy.port';
 import {AppModule} from '../src/app.module';
 import {Test} from '@nestjs/testing';import type {INestApplication} from '@nestjs/common';import type {Response} from 'express';import {Readable} from 'node:stream';import {randomUUID} from 'node:crypto';import request from 'supertest';
 import {AttachmentController,ATTACHMENT_HTTP_APPLICATION} from '../src/attachments/http/attachment.controller';
@@ -24,4 +25,17 @@ describe('registered attachment module remains disabled by default',()=>{
  it('requires metadata authentication while anonymous content remains disabled',async()=>{await request(app.getHttpServer()).get('/api/v1/attachments/'+randomUUID()).expect(401);await request(app.getHttpServer()).get('/api/v1/attachments/'+randomUUID()+'/content').expect(503).expect(({body})=>expect(body.error.code).toBe('ATTACHMENTS_UNAVAILABLE'));});
  it('retains authentication before writes even while disabled',async()=>{await request(app.getHttpServer()).post('/api/v1/attachments').send({}).expect(401);});
  it('allows only the existing origins to preflight a single-range read',async()=>{await request(app.getHttpServer()).options('/api/v1/attachments/'+randomUUID()+'/content').set('Origin','http://localhost:5173').set('Access-Control-Request-Method','GET').set('Access-Control-Request-Headers','range').expect(204).expect(({headers})=>expect(headers['access-control-allow-headers'].toLowerCase().split(',').map((v:string)=>v.trim())).toContain('range'));});
+});
+
+// Synthetic application/binder boundary: native guard ordering and option forwarding,
+// not actual ledger, ACL or provider acceptance (covered separately).
+describe('optional attachment policy seam after native guards',()=>{
+ let app:INestApplication,token:string;const id=randomUUID(),path='/api/v1/attachments/'+id;
+ const bind=jest.fn(async()=>({constraint:'AUTHENTICATED_PUBLIC_COMMUNITY' as const}));
+ const api={read:jest.fn(async()=>({status:200,headers:{'Content-Length':'0'},body:Readable.from([])})),metadata:jest.fn(async()=>({id}))};
+ beforeAll(async()=>{const m=await Test.createTestingModule({imports:[AppConfigModule,AuthModule],controllers:[AttachmentController],providers:[{provide:ATTACHMENT_HTTP_APPLICATION,useValue:api},{provide:ATTACHMENT_REQUEST_POLICY,useValue:{bind}}]}).compile();app=m.createNestApplication();configureApp(app);await app.init();const user=await app.get<IdentityRepository>(IDENTITY_REPOSITORY).createUser({email:randomUUID()+'@phase30.invalid',displayName:'Synthetic seam',passwordHash:null,status:'ACTIVE',emailVerifiedAt:new Date()});token=(await app.get(SessionService).issue(user,{append:()=>{}} as unknown as Response)).accessToken;});
+ afterAll(async()=>app.close());beforeEach(()=>jest.clearAllMocks());
+ it('runs invalid credentials and query rejection before binding',async()=>{await request(app.getHttpServer()).get(path+'/content').set('Authorization','Bearer invalid').expect(401);await request(app.getHttpServer()).get(path).expect(401);await request(app.getHttpServer()).get(path+'/content?unexpected=1').set('Authorization','Bearer '+token).expect(400);expect(bind).not.toHaveBeenCalled();expect(api.read).not.toHaveBeenCalled();expect(api.metadata).not.toHaveBeenCalled();});
+ it('passes the current-public constraint to the normal read application',async()=>{await request(app.getHttpServer()).get(path+'/content').set('Authorization','Bearer '+token).set('Range','bytes=0-0').expect(200);expect(bind).toHaveBeenCalledWith(expect.objectContaining({user:expect.any(Object)}),{kind:'READ',attachmentId:id,method:'GET',variant:'normalized',range:'bytes=0-0'});expect((api.read.mock.calls as unknown as unknown[][])[0][3]).toMatchObject({constraint:'AUTHENTICATED_PUBLIC_COMMUNITY',range:'bytes=0-0'});});
+ it('retains normal application denial after a matched negative policy',async()=>{bind.mockResolvedValueOnce({constraint:'CURRENT_PARENT' as never});api.read.mockRejectedValueOnce(new AttachmentAuthorizationError());await request(app.getHttpServer()).get(path+'/content').expect(404);expect(bind).toHaveBeenCalledTimes(1);expect(api.read).toHaveBeenCalledTimes(1);});
 });

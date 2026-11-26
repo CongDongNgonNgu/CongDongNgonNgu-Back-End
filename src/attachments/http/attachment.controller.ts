@@ -1,7 +1,7 @@
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {ATTACHMENT_LIMITS} from '../attachment-policy';
 import {AttachmentValidationError} from '../validation/validation-error';
-import {Body,Controller,Delete,Get,Head,Header,HttpCode,Inject,Param,ParseUUIDPipe,Patch,Post,Put,Query,Req,Res,UseGuards} from '@nestjs/common';
+import {Body,Controller,Delete,Get,Head,Header,HttpCode,Inject,Optional,Param,ParseUUIDPipe,Patch,Post,Put,Query,Req,Res,UseGuards} from '@nestjs/common';
 import {ConfigService} from '@nestjs/config';
 import {createHmac} from 'node:crypto';
 import {pipeline} from 'node:stream/promises';
@@ -14,6 +14,7 @@ import {attachmentHttpError} from './attachment-errors';
 import type {AttachmentReadService} from '../service/attachment-read-service';
 import type {AttachmentUploadService} from '../service/attachment-upload-service';
 import type {AttachmentFinalizeService} from '../service/attachment-finalize-service';
+import {ATTACHMENT_REQUEST_POLICY,type AttachmentRequestPolicy} from './attachment-request-policy.port';
 export const ATTACHMENT_HTTP_APPLICATION='ATTACHMENT_HTTP_APPLICATION';
 export interface AttachmentHttpApplication extends Pick<AttachmentReadService,'metadata'|'patchMetadata'|'delete'|'read'> {
  initiate(refresh:()=>Promise<string|null>,input:unknown):Promise<unknown>;
@@ -31,7 +32,7 @@ const uuid=()=>new ParseUUIDPipe({version:'4'});
 @ApiResponse({ status: 429, description: 'Attachment rate or quota limit exceeded', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('attachments')
 export class AttachmentController {
- constructor(@Inject(ATTACHMENT_HTTP_APPLICATION)private readonly application:AttachmentHttpApplication,private readonly sessions:SessionService,private readonly config:ConfigService){}
+ constructor(@Inject(ATTACHMENT_HTTP_APPLICATION)private readonly application:AttachmentHttpApplication,private readonly sessions:SessionService,private readonly config:ConfigService,@Optional() @Inject(ATTACHMENT_REQUEST_POLICY)private readonly requestPolicy?:AttachmentRequestPolicy){}
  private query(value:Record<string,unknown>):void{if(Object.keys(value).length)throw new AttachmentValidationError('ATTACHMENT_INVALID_REQUEST');}
  private identity(request:AuthenticatedRequest):()=>Promise<string|null>{
   const principal=request.user,authorization=request.headers.authorization;
@@ -70,7 +71,7 @@ export class AttachmentController {
   @ApiParam({ name: "id", required: true, schema: { type: 'string', format: 'uuid' } })
   @ApiResponse({ status: 200, description: 'Successful response', schema: { $ref: '#/components/schemas/ApiSuccess' } })
   @Get(':id') @UseGuards(AccessTokenGuard) @Header('Cache-Control','private, no-store')
- async metadata(@Req()req:AuthenticatedRequest,@Param('id',uuid())id:string,@Query()query:Record<string,unknown>){try{this.query(query);return success(await this.application.metadata(this.identity(req),id,req.user?undefined:this.ip(req)));}catch(e){throw attachmentHttpError(e);}}
+ async metadata(@Req()req:AuthenticatedRequest,@Param('id',uuid())id:string,@Query()query:Record<string,unknown>){try{this.query(query);await this.requestPolicy?.bind(req,{kind:'METADATA',attachmentId:id});return success(await this.application.metadata(this.identity(req),id,req.user?undefined:this.ip(req)));}catch(e){throw attachmentHttpError(e);}}
  @ApiOperation({ summary: "Metadata Patch - Attachments" })
   @ApiBearerAuth('bearer')
   @ApiResponse({ status: 401, description: 'Valid application access token required', schema: { $ref: '#/components/schemas/ApiError' } })
@@ -146,7 +147,7 @@ export class AttachmentController {
   @Get(':id/preview') @UseGuards(OptionalAccessTokenGuard)
  getPreview(@Req()req:AuthenticatedRequest,@Res()res:Response,@Param('id',uuid())id:string,@Query()q:Record<string,unknown>){return this.bytes(req,res,id,'GET','thumbnail',q);}
  private async bytes(req:AuthenticatedRequest,res:Response,id:string,method:'GET'|'HEAD',variant:'normalized'|'thumbnail',query:Record<string,unknown>){
-  const transfer=this.transfer(req,res);try{this.query(query);const result=await this.application.read(this.identity(req),id,method,{variant,range:req.headers.range,trustedIpHash:req.user?undefined:this.ip(req),signal:transfer.signal});res.status(result.status);for(const [key,value]of Object.entries(result.headers)){if(key.toLowerCase()==='vary')res.vary(value);else res.setHeader(key,value);}if(method==='HEAD'){result.body?.destroy();res.end();}else if(result.body)await pipeline(result.body,res,{signal:transfer.signal});else throw new Error('Attachment stream missing');}
+  const transfer=this.transfer(req,res);try{this.query(query);const admission=await this.requestPolicy?.bind(req,{kind:'READ',attachmentId:id,method,variant,range:req.headers.range});const result=await this.application.read(this.identity(req),id,method,{variant,...(admission?.constraint?{constraint:admission.constraint}:{}),range:req.headers.range,trustedIpHash:req.user?undefined:this.ip(req),signal:transfer.signal});res.status(result.status);for(const [key,value]of Object.entries(result.headers)){if(key.toLowerCase()==='vary')res.vary(value);else res.setHeader(key,value);}if(method==='HEAD'){result.body?.destroy();res.end();}else if(result.body)await pipeline(result.body,res,{signal:transfer.signal});else throw new Error('Attachment stream missing');}
   catch(error){if(res.headersSent){res.destroy();return;}throw attachmentHttpError(error);}finally{transfer.release();}
  }
 }
