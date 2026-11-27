@@ -1,8 +1,9 @@
+import type {PlannedPutSupervisionIdentity} from '../storage/put-supervision-proof';
 import type {PoolClient} from 'pg';
 import {AttachmentObjectLedger,type AttachmentPutClaim} from '../attachment-object-ledger';
 import {AttachmentStorageError,type AttachmentStorage,type SupervisableAttachmentStorage,type AttachmentPutSupervision} from '../storage/attachment-storage.port';
-import {createPutLocalClosure,type PutLocalClosure,type PutUnsentCertificate} from '../storage/put-supervision-proof';
-interface Entry {claim:AttachmentPutClaim;handle:AttachmentPutSupervision;committed:boolean;dispatched:boolean;positive:boolean;abandoned:boolean;retirement?:PutRetirement;}
+import {supervisionIdentity,createPutLocalClosure,type PutLocalClosure,type PutUnsentCertificate} from '../storage/put-supervision-proof';
+interface Entry {claim:AttachmentPutClaim;handle:AttachmentPutSupervision;committed:boolean;commitAttempted:boolean;dispatched:boolean;positive:boolean;abandoned:boolean;retirement?:PutRetirement;}
 const sameClaim=(a:AttachmentPutClaim,b:AttachmentPutClaim)=>a.attachmentId===b.attachmentId&&a.objectId===b.objectId&&a.claimId===b.claimId&&a.attachmentVersion===b.attachmentVersion&&a.leaseOwner===b.leaseOwner&&a.objectVersion===b.objectVersion&&a.supervisionId===b.supervisionId&&a.manifest.sizeBytes===b.manifest.sizeBytes&&a.manifest.sha256===b.manifest.sha256&&Object.entries(a.manifest.locator).every(([key,value])=>b.manifest.locator[key as keyof typeof b.manifest.locator]===value);
 export interface PutRetirement {claim:AttachmentPutClaim;certificate:PutUnsentCertificate;closure:PutLocalClosure;}
 /** Request-local captured handles. No lookup/replacement by locator is allowed.
@@ -16,13 +17,17 @@ export class AttachmentPutSession {
   if(typeof storage.supervisePut!=='function'||typeof storage.putSupervised!=='function')throw new AttachmentStorageError('UNAVAILABLE');
   return storage;
  }
- async bind(client:PoolClient,claim:AttachmentPutClaim):Promise<AttachmentPutClaim>{
+ async bind(client:PoolClient,claim:AttachmentPutClaim,plannedSupervisionId?:PlannedPutSupervisionIdentity):Promise<AttachmentPutClaim>{
   if(this.entries.has(claim.objectId))throw new AttachmentStorageError('CONFLICT');
-  const handle=this.supervised().supervisePut(claim.manifest.locator);
-  try{const bound=await this.objects.bindSupervision(client,claim,handle);this.entries.set(bound.objectId,{claim:bound,handle,committed:false,dispatched:false,positive:false,abandoned:false});return bound;}
+  const handle=this.supervised().supervisePut(claim.manifest.locator,plannedSupervisionId);
+  try{if(plannedSupervisionId!==undefined&&handle.id!==plannedSupervisionId.id)throw new AttachmentStorageError('CONFLICT');const bound=await this.objects.bindSupervision(client,claim,handle);this.entries.set(bound.objectId,{claim:bound,handle,committed:false,commitAttempted:false,dispatched:false,positive:false,abandoned:false});return bound;}
   catch(error){handle.release();throw error;}
  }
- committed():void {for(const entry of this.entries.values())entry.committed=true;}
+ /** Call immediately before issuing actual COMMIT; unknown acknowledgement retains the original authority. */
+ markCommitAttempt():void {for(const entry of this.entries.values()){if(supervisionIdentity(entry.handle,entry.claim.manifest.locator)!==entry.claim.supervisionId)throw new AttachmentStorageError('CONFLICT');entry.commitAttempted=true;}}
+ originalHandle(claim:AttachmentPutClaim):AttachmentPutSupervision{const e=this.entries.get(claim.objectId);if(!e||!sameClaim(e.claim,claim))throw new AttachmentStorageError('CONFLICT');return e.handle;}
+ cleanupAcknowledged(claim:AttachmentPutClaim):void{const e=this.entries.get(claim.objectId);if(!e||!sameClaim(e.claim,claim))throw new AttachmentStorageError('CONFLICT');e.abandoned=true;}
+ committed():void {for(const entry of this.entries.values()){entry.committed=true;entry.commitAttempted=true;}}
  async put(claim:AttachmentPutClaim,input:Parameters<AttachmentStorage['putTemporary']>[0]){
   const entry=this.entries.get(claim.objectId);
   if(!entry?.committed||!sameClaim(entry.claim,claim)||entry.dispatched||entry.retirement)throw new AttachmentStorageError('CONFLICT');
@@ -48,11 +53,11 @@ export class AttachmentPutSession {
   return proofs;
  }
  abandoned(claim:AttachmentPutClaim):void {const entry=this.entries.get(claim.objectId);if(!entry?.retirement||entry.claim!==claim)throw new AttachmentStorageError('CONFLICT');entry.abandoned=true;}
- get hasUnresolved():boolean{return [...this.entries.values()].some(e=>e.committed&&!e.positive&&!e.abandoned);}
+ get hasUnresolved():boolean{return [...this.entries.values()].some(e=>e.commitAttempted&&!e.positive&&!e.abandoned);}
  /** Trusted callback attests that the service's local producers are already
   * closed. It must only enqueue observation; no provider wait or public input. */
  handoffUnresolved(receive:(claim:AttachmentPutClaim,handle:AttachmentPutSupervision)=>void):void{
   for(const entry of this.entries.values())if(entry.committed&&!entry.positive&&!entry.abandoned)receive(entry.claim,entry.handle);
  }
- releaseResolved():void{for(const entry of this.entries.values())if(!entry.committed||entry.positive||entry.abandoned)entry.handle.release();}
+ releaseResolved():void{for(const entry of this.entries.values())if(!entry.commitAttempted||entry.positive||entry.abandoned)entry.handle.release();}
 }

@@ -1,4 +1,8 @@
 import {
+  validateSourceCleanupDeclarations,
+  type SourceCleanupDeclaration,
+} from "./source-cleanup-declarations";
+import {
   validatePinnedLiteral,
   validateEnvelopeValue,
   type ActivationInputs,
@@ -33,6 +37,7 @@ export interface PinnedDeclarations {
   readonly allocations: AllocationReferences;
   readonly objectIdentities: readonly ObjectIdentityTuple[];
   readonly catalogue: RequestCatalogue;
+  readonly internalCleanup?: readonly SourceCleanupDeclaration[];
 }
 const fields = [
   "schema",
@@ -45,7 +50,9 @@ const fields = [
 const fail = (): never => {
   throw Error("TEST_ADMISSION_DECLARATIONS");
 };
-function root(value: unknown): Record<(typeof fields)[number], unknown> {
+function root(
+  value: unknown,
+): Record<(typeof fields)[number] | "internalCleanup", unknown> {
   if (
     !value ||
     typeof value !== "object" ||
@@ -55,11 +62,12 @@ function root(value: unknown): Record<(typeof fields)[number], unknown> {
     return fail();
   const keys = Reflect.ownKeys(value);
   if (
-    keys.length !== fields.length ||
+    (keys.length !== fields.length && keys.length !== fields.length + 1) ||
     keys.some(
       (key) =>
         typeof key !== "string" ||
-        !fields.includes(key as (typeof fields)[number]),
+        (!fields.includes(key as (typeof fields)[number]) &&
+          key !== "internalCleanup"),
     )
   )
     return fail();
@@ -74,7 +82,13 @@ function root(value: unknown): Record<(typeof fields)[number], unknown> {
     result[key] = descriptor.value;
   }
   if (result.schema !== 1) return fail();
-  return result;
+  const internal = Object.getOwnPropertyDescriptor(value, "internalCleanup");
+  if (internal && (!internal.enumerable || !("value" in internal)))
+    return fail();
+  return {
+    ...result,
+    internalCleanup: internal === undefined ? [] : internal.value,
+  };
 }
 /** Pure declarations for complete planned source/derivative identities.
  * All sections come from one identity-checked literal.
@@ -98,6 +112,11 @@ export function validatePinnedDeclarations(
       inventory,
       envelope,
     );
+    const internalCleanup = validateSourceCleanupDeclarations(
+      raw.internalCleanup,
+      inventory,
+      operations,
+    );
     const refs = operations.map((operation) => ({
       operationKey: operation.key,
       attachmentId: operation.attachmentId,
@@ -107,13 +126,38 @@ export function validatePinnedDeclarations(
       raw.allocationSlots,
       inventory,
       envelope,
-      refs,
+      [
+        ...refs,
+        ...internalCleanup.map((e) => ({
+          operationKey: e.key,
+          attachmentId: e.attachmentId,
+          slotKeys: [e.jobSlotKey],
+        })),
+      ],
     );
     const objectIdentities = validateObjectIdentities(
       raw.objectIdentities,
       inventory,
       allocations,
     );
+    for (const entry of internalCleanup) {
+      const object = objectIdentities.find(
+          (o) =>
+            o.variant === "source" &&
+            o.operationKey === entry.sourceOperationKey &&
+            o.attachmentId === entry.attachmentId,
+        ),
+        slot = allocations.slots.find((s) => s.key === entry.jobSlotKey);
+      if (
+        !object ||
+        object.objectId !== entry.objectId ||
+        !slot ||
+        slot.role !== "CLEANUP_JOB" ||
+        slot.operationKey !== entry.key ||
+        slot.attachmentId !== entry.attachmentId
+      )
+        return fail();
+    }
     const byKey = new Map(
       operations.map((operation) => [operation.key, operation]),
     );
@@ -153,6 +197,7 @@ export function validatePinnedDeclarations(
       allocations,
       objectIdentities,
       catalogue,
+      ...(internalCleanup.length ? { internalCleanup } : {}),
     });
   } catch {
     return fail();

@@ -67,7 +67,7 @@ export class AttachmentLifecycleLedger {
   if(actor!==undefined&&!binding&&(row.first_bound_at||row.expired))throw opaqueAttachmentAuthorizationError();
   return {row,binding};
  }
- private async tombstone(client:PoolClient,row:Row,binding:Binding|undefined,reason:'REMOVED'|'EXPIRED'|'INTERRUPTED'){
+ private async tombstone(client:PoolClient,row:Row,binding:Binding|undefined,reason:'REMOVED'|'EXPIRED'|'INTERRUPTED',deferSourceObject?:string){
   if(row.state==='DELETED')return {state:'DELETED' as const};
   // Keep an intake lease as durable ownership until its actual producer stops.
   await client.query(`UPDATE attachments SET state='DELETED',deleted_at=clock_timestamp(),pending_slot_held=false,lease_owner=CASE WHEN upload_slot_held THEN lease_owner ELSE NULL END,lease_expires_at=CASE WHEN upload_slot_held THEN lease_expires_at ELSE NULL END,version=version+1 WHERE id=$1`,[row.id]);
@@ -77,7 +77,8 @@ export class AttachmentLifecycleLedger {
    else if(binding.scope==='DIRECT_MESSAGE')await client.query('UPDATE direct_conversations SET change_version=change_version+1 WHERE id=$1',[binding.scope_id]);
    else await client.query('UPDATE community_posts SET updated_at=clock_timestamp(),edited_at=clock_timestamp() WHERE id=$1',[binding.community_post_id]);
   }
-  await scheduleTerminalCleanup(client,row.id,reason);
+  if(deferSourceObject!==undefined){uuid(deferSourceObject);const objects=(await client.query<{id:string}>("SELECT id FROM attachment_objects WHERE attachment_id=$1 AND status<>'DELETED' ORDER BY id FOR UPDATE",[row.id])).rows;if(objects.length>1||objects.some(o=>o.id!==deferSourceObject))return conflict();await client.query("UPDATE attachment_objects SET status='DELETE_PENDING',object_version=object_version+1 WHERE attachment_id=$1 AND status NOT IN ('DELETED','DELETE_PENDING')",[row.id]);}
+  else await scheduleTerminalCleanup(client,row.id,reason);
   if(row.pending_slot_held)await this.quotas.changeCapacity(client,row.uploader_id,{pendingDelta:-1});
   return {state:'DELETED' as const};
  }
@@ -95,7 +96,7 @@ export class AttachmentLifecycleLedger {
   catch(error){if(error instanceof AttachmentLifecycleError)throw opaqueAttachmentAuthorizationError();throw error;}
  }
  async expireDraft(client:PoolClient,id:string):Promise<{state:'DELETED'}>{const {row,binding}=await this.locked(client,id);if(binding||row.first_bound_at||!row.expired)return conflict();return this.tombstone(client,row,binding,'EXPIRED');}
- async interruptUpload(client:PoolClient,id:string,leaseOwner:string):Promise<{state:'DELETED'}>{uuid(leaseOwner);const {row,binding}=await this.locked(client,id);if(row.state!=='UPLOADING'||row.lease_owner!==leaseOwner||!row.upload_slot_held)return conflict();return this.tombstone(client,row,binding,'INTERRUPTED');}
+ async interruptUpload(client:PoolClient,id:string,leaseOwner:string,deferSourceObject?:string):Promise<{state:'DELETED'}>{uuid(leaseOwner);const {row,binding}=await this.locked(client,id);if(row.state!=='UPLOADING'||row.lease_owner!==leaseOwner||!row.upload_slot_held)return conflict();return this.tombstone(client,row,binding,'INTERRUPTED',deferSourceObject);}
  /** Internal receipt after the actual replay body/spool transport has stopped.
   * Current user eligibility is irrelevant to releasing retained resource debt.
   * Exact ownership is required; stale owners cannot settle a newer intake. */
@@ -143,7 +144,7 @@ export class AttachmentLifecycleLedger {
   * late results after revoke/delete. This grants no user metadata or byte access;
   * the caller must freshly authorize every subsequent public state transition. */
  async abandonUnsent(client:PoolClient,claim:AttachmentPutClaim,certificate:PutUnsentCertificate,closure:PutLocalClosure):Promise<void>{await this.locked(client,claim.attachmentId);await new AttachmentObjectLedger().abandonUnsent(client,claim,certificate,closure);}
- async recordPutResult(client:PoolClient,claim:AttachmentPutClaim,observed:AttachmentStoredObject):Promise<{acceptedForNextStep:boolean}>{await this.locked(client,claim.attachmentId);return new AttachmentObjectLedger().recordPutResult(client,claim,observed);}
+ async recordPutResult(client:PoolClient,claim:AttachmentPutClaim,observed:AttachmentStoredObject,cleanup?:import('../attachment-object-ledger').ControlledCleanupJob):Promise<{acceptedForNextStep:boolean}>{await this.locked(client,claim.attachmentId);return new AttachmentObjectLedger().recordPutResult(client,claim,observed,cleanup);}
  async claimCleanup(client:PoolClient,id:AttachmentCleanupIdentity,owner:string):Promise<AttachmentCleanupClaim>{await this.locked(client,id.attachmentId);return new AttachmentCleanupLedger().claim(client,id,owner);}
  async finishCleanup(client:PoolClient,claim:AttachmentCleanupClaim):Promise<void>{
   await this.locked(client,claim.attachmentId);

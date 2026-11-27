@@ -1,11 +1,16 @@
 import {randomUUID} from 'node:crypto';
 import type {AttachmentPutClaim} from '../attachment-object-ledger';
-import {AttachmentStorageError,type AttachmentObjectLocator,type AttachmentPutSupervision} from './attachment-storage.port';
+import {AttachmentStorageError,type AttachmentObjectLocator,type AttachmentPutSupervision,type AttachmentStoredObject} from './attachment-storage.port';
+declare const plannedBrand:unique symbol;
+export interface PlannedPutSupervisionIdentity {readonly [plannedBrand]:true;readonly id:string;}
+const plannedIdentities=new WeakMap<PlannedPutSupervisionIdentity,{id:string;used:boolean}>();
+/** Trusted controlled allocator calls once per consumed role. This receipt is not a PUT/ACL grant. */
+export function createPlannedPutSupervisionIdentity(id:string):PlannedPutSupervisionIdentity{if(typeof id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id))throw new AttachmentStorageError('CONFLICT');const receipt=Object.freeze({id}) as PlannedPutSupervisionIdentity;plannedIdentities.set(receipt,{id,used:false});return receipt;}
 declare const unsentBrand:unique symbol;declare const closureBrand:unique symbol;
 export interface PutUnsentCertificate {readonly [unsentBrand]:true;}
 export interface PutLocalClosure {readonly [closureBrand]:true;}
 type State='ISSUED'|'STARTED'|'SETTLED'|'RETIRED';
-interface Facts {id:string;locator:AttachmentObjectLocator;state:State;released:boolean;}
+interface Facts {id:string;locator:AttachmentObjectLocator;state:State;released:boolean;receipt?:AttachmentStoredObject;}
 const handles=new WeakMap<AttachmentPutSupervision,Facts>();
 const certificates=new WeakMap<PutUnsentCertificate,{id:string;locator:AttachmentObjectLocator}>();
 const closures=new WeakMap<PutLocalClosure,{claim:AttachmentPutClaim;id:string}>();
@@ -15,15 +20,17 @@ function sameClaim(a:AttachmentPutClaim,b:AttachmentPutClaim):boolean{return a.a
 /** Adapter-internal issuer. Only its captured start closure may mark an actual
  * transport send STARTED, synchronously before dispatch. No provider knowledge,
  * domain permission, public DTO or reconstructed process state grants authority. */
-export function createPutSupervisionAuthority(locator:AttachmentObjectLocator,onRelease:()=>void=()=>undefined){
- const facts:Facts={id:randomUUID(),locator:{...locator},state:'ISSUED',released:false};let settle!:()=>void;
+export function createPutSupervisionAuthority(locator:AttachmentObjectLocator,onRelease:()=>void=()=>undefined,planned?:PlannedPutSupervisionIdentity){
+ let plannedId:string|undefined;
+ if(planned!==undefined){const allocation=plannedIdentities.get(planned);if(!allocation||allocation.used)return fail();allocation.used=true;plannedId=allocation.id;}
+ const facts:Facts={id:plannedId??randomUUID(),locator:{...locator},state:'ISSUED',released:false};let settle!:()=>void;
  const actual=new Promise<void>(resolve=>{settle=resolve;});
  const handle:AttachmentPutSupervision=Object.freeze({id:facts.id,
   waitForActualSendSettlement:()=>facts.released?Promise.reject(new AttachmentStorageError('UNAVAILABLE')):actual,
   release:()=>{if(!facts.released){facts.released=true;onRelease();}},
   retireUnsent:()=>{if(facts.released||facts.state!=='ISSUED')return fail();facts.state='RETIRED';const certificate=Object.freeze({}) as PutUnsentCertificate;certificates.set(certificate,{id:facts.id,locator:{...facts.locator}});return certificate;},
  });handles.set(handle,facts);
- return {handle,get state(){return facts.state;},get released(){return facts.released;},start:()=>{if(facts.released||facts.state!=='ISSUED')return fail();facts.state='STARTED';},settle:()=>{if(facts.state!=='STARTED')return fail();facts.state='SETTLED';settle();}};
+ return {handle,recordReceipt:(receipt:AttachmentStoredObject)=>{if(facts.released||facts.state!=='STARTED'||!sameLocator(receipt.locator,facts.locator)||!Number.isSafeInteger(receipt.sizeBytes)||receipt.sizeBytes<1||!/^[a-f0-9]{64}$/.test(receipt.sha256)||!/^"[\x21\x23-\x7e]{1,254}"$/.test(receipt.version))return fail();facts.receipt=structuredClone(receipt);},get state(){return facts.state;},get released(){return facts.released;},start:()=>{if(facts.released||facts.state!=='ISSUED')return fail();facts.state='STARTED';},settle:()=>{if(facts.state!=='STARTED')return fail();facts.state='SETTLED';settle();}};
 }
 /** Internal supervisor must terminalize and await ALL actual local continuations
  * before its callback resolves. Adapter retirement is a separate proof. A failed
@@ -46,3 +53,11 @@ export function originalPutSettlement(handle:AttachmentPutSupervision,locator:At
  const facts=handles.get(handle);if(!facts||facts.released||!['STARTED','SETTLED'].includes(facts.state)||!sameLocator(facts.locator,locator))return fail();
  return {id:facts.id,actual:handle.waitForActualSendSettlement()};
 }
+
+/** Exact original handle and completed local producer closure, never elapsed time. */
+export function verifyPutLocalClosure(claim:AttachmentPutClaim,handle:AttachmentPutSupervision,closure:PutLocalClosure):boolean{const h=handles.get(handle),c=closures.get(closure);return !!h&&!h.released&&!!c&&h.id===c.id&&sameLocator(h.locator,claim.manifest.locator)&&sameClaim(c.claim,claim);}
+
+export function originalPutState(handle:AttachmentPutSupervision):'ISSUED'|'STARTED'|'SETTLED'|'RETIRED'{const f=handles.get(handle);if(!f||f.released)return fail();return f.state;}
+
+/** Only verified adapter-produced receipt, never manufactured from settlement alone. */
+export function originalPutReceipt(handle:AttachmentPutSupervision):AttachmentStoredObject|undefined{const f=handles.get(handle);if(!f||f.released)return fail();return f.receipt?structuredClone(f.receipt):undefined;}

@@ -1,3 +1,5 @@
+import type{ControlledSourceUploadContext}from'../test-admission/controlled-source-upload';
+import {ATTACHMENT_UPLOAD_POLICY,type AttachmentUploadPolicy}from'./attachment-upload-policy.port';
 import {AttachmentInitiationUnavailable} from '../initiation/attachment-initiation-repository';
 import type {ControlledInitiationContext} from '../initiation/controlled-initiation.port';
 import {ATTACHMENT_INITIATION_POLICY,type AttachmentInitiationPolicy} from './attachment-initiation-policy.port';
@@ -21,7 +23,7 @@ import {ATTACHMENT_REQUEST_POLICY,type AttachmentRequestPolicy} from './attachme
 export const ATTACHMENT_HTTP_APPLICATION='ATTACHMENT_HTTP_APPLICATION';
 export interface AttachmentHttpApplication extends Pick<AttachmentReadService,'metadata'|'patchMetadata'|'delete'|'read'> {
  initiate(refresh:()=>Promise<string|null>,input:unknown,context?:ControlledInitiationContext):Promise<unknown>;
- upload(input:Parameters<AttachmentUploadService['upload']>[0]):ReturnType<AttachmentUploadService['upload']>;
+ upload(input:Parameters<AttachmentUploadService['upload']>[0],context?:ControlledSourceUploadContext):ReturnType<AttachmentUploadService['upload']>;
  finalize(input:Parameters<AttachmentFinalizeService['finalize']>[0]):ReturnType<AttachmentFinalizeService['finalize']>;
 }
 const uuid=()=>new ParseUUIDPipe({version:'4'});
@@ -35,7 +37,7 @@ const uuid=()=>new ParseUUIDPipe({version:'4'});
 @ApiResponse({ status: 429, description: 'Attachment rate or quota limit exceeded', schema: { $ref: '#/components/schemas/ApiError' } })
 @Controller('attachments')
 export class AttachmentController {
- constructor(@Inject(ATTACHMENT_HTTP_APPLICATION)private readonly application:AttachmentHttpApplication,private readonly sessions:SessionService,private readonly config:ConfigService,@Optional() @Inject(ATTACHMENT_REQUEST_POLICY)private readonly requestPolicy?:AttachmentRequestPolicy,@Optional() @Inject(ATTACHMENT_INITIATION_POLICY)private readonly initiationPolicy?:AttachmentInitiationPolicy){}
+ constructor(@Inject(ATTACHMENT_HTTP_APPLICATION)private readonly application:AttachmentHttpApplication,private readonly sessions:SessionService,private readonly config:ConfigService,@Optional() @Inject(ATTACHMENT_REQUEST_POLICY)private readonly requestPolicy?:AttachmentRequestPolicy,@Optional() @Inject(ATTACHMENT_INITIATION_POLICY)private readonly initiationPolicy?:AttachmentInitiationPolicy,@Optional() @Inject(ATTACHMENT_UPLOAD_POLICY)private readonly uploadPolicy?:AttachmentUploadPolicy){}
  private query(value:Record<string,unknown>):void{if(Object.keys(value).length)throw new AttachmentValidationError('ATTACHMENT_INVALID_REQUEST');}
  private identity(request:AuthenticatedRequest):()=>Promise<string|null>{
   const principal=request.user,authorization=request.headers.authorization;
@@ -106,7 +108,7 @@ export class AttachmentController {
   @ApiBody({ required: true, description: 'Raw bytes matching the draft declaration, subject to capability and source-byte limits', schema: { type: 'string', format: 'binary' } })
   @Put(':id/content') @UseGuards(AccessTokenGuard) @HttpCode(200) @Header('Cache-Control','private, no-store')
  async upload(@Req()req:AuthenticatedRequest,@Res({passthrough:true})response:Response,@Param('id',uuid())id:string,@Query()query:Record<string,unknown>){
-  const transfer=this.transfer(req,response);try{this.query(query);this.sessions.assertCsrfForCookie(req);const length=req.headers['content-length'],type=req.headers['content-type'];if(typeof length!=='string'||!/^\d{1,16}$/.test(length)||!Number.isSafeInteger(Number(length))||Number(length)<1||typeof type!=='string')throw new AttachmentValidationError('ATTACHMENT_INVALID_REQUEST');if(Number(length)>ATTACHMENT_LIMITS.imageBytes)throw new AttachmentValidationError('ATTACHMENT_LIMIT_EXCEEDED');return success(await this.application.upload({...this.protectedIdentity(req),attachmentId:id,contentType:type,contentLength:Number(length),body:req,signal:transfer.signal}));}catch(e){throw attachmentHttpError(e);}finally{transfer.release();}
+  const transfer=this.transfer(req,response);try{this.query(query);this.sessions.assertCsrfForCookie(req);const length=req.headers['content-length'],type=req.headers['content-type'];if(typeof length!=='string'||!/^\d{1,16}$/.test(length)||!Number.isSafeInteger(Number(length))||Number(length)<1||typeof type!=='string')throw new AttachmentValidationError('ATTACHMENT_INVALID_REQUEST');if(Number(length)>ATTACHMENT_LIMITS.imageBytes)throw new AttachmentValidationError('ATTACHMENT_LIMIT_EXCEEDED');const input={...this.protectedIdentity(req),attachmentId:id,contentType:type,contentLength:Number(length),body:req,signal:transfer.signal};if(this.uploadPolicy){const context=await this.uploadPolicy.bind(req,id,response);if(!context)throw new AttachmentInitiationUnavailable();return success(await this.application.upload(input,context));}return success(await this.application.upload(input));}catch(e){throw attachmentHttpError(e);}finally{transfer.release();}
  }
  @ApiOperation({ summary: "Finalize - Attachments" })
   @ApiBearerAuth('bearer')

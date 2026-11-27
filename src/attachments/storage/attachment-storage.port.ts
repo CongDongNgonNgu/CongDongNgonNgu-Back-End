@@ -1,3 +1,4 @@
+import type {PlannedPutSupervisionIdentity} from './put-supervision-proof';
 import type { Readable } from 'node:stream';
 
 /** Internal server port: these locators/versions are never public API DTOs or access grants. */
@@ -39,6 +40,6 @@ export interface AttachmentPutSupervision {
   release():void;
 }
 export interface SupervisableAttachmentStorage extends AttachmentStorage {
-  supervisePut(locator:AttachmentObjectLocator):AttachmentPutSupervision;
+  supervisePut(locator:AttachmentObjectLocator,plannedId?:PlannedPutSupervisionIdentity):AttachmentPutSupervision;
   putSupervised(handle:AttachmentPutSupervision,input:Parameters<AttachmentStorage['putTemporary']>[0]):Promise<AttachmentStoredObject>;
 }

@@ -8,7 +8,7 @@ const claim={attachmentId:'a',objectId:'o',claimId:'c',attachmentVersion:2,objec
 function fixture(){
  const authorities=new Map<AttachmentPutSupervision,ReturnType<typeof createPutSupervisionAuthority>>();
  const storage={putTemporary:jest.fn(async()=>{throw Error('legacy must never run');}),supervisePut:jest.fn(locator=>{const a=createPutSupervisionAuthority(locator);authorities.set(a.handle,a);return a.handle;}),putSupervised:jest.fn(async(handle,input)=>{const a=authorities.get(handle)!;a.start();a.settle();return {...claim.manifest,version:'"etag"'};})} as unknown as AttachmentStorage;
- const objects={bindSupervision:jest.fn(async(_client,_claim,_handle)=>({...claim,objectVersion:3}))} as unknown as AttachmentObjectLedger;
+ const objects={bindSupervision:jest.fn(async(_client,_claim,_handle)=>({...claim,objectVersion:3,supervisionId:_handle.id}))} as unknown as AttachmentObjectLedger;
  return {storage,objects,authorities,session:new AttachmentPutSession(storage,objects)};
 }
 describe('captured supervised physical writes',()=>{
@@ -43,3 +43,7 @@ describe('captured supervised physical writes',()=>{
   const f=fixture();await f.session.bind({} as PoolClient,claim);expect(await f.session.retireUnused(async()=>{})).toEqual([]);f.session.releaseResolved();expect([...f.authorities.values()][0].released).toBe(true);
  });
 });
+
+it('retains original ISSUED supervision after COMMIT was attempted without acknowledgement and forbids dispatch',async()=>{const f=fixture(),bound=await f.session.bind({} as PoolClient,claim);f.session.markCommitAttempt();f.session.releaseResolved();expect(f.session.hasUnresolved).toBe(true);expect([...f.authorities.values()][0].released).toBe(false);await expect(f.session.put(bound,{...claim.manifest,body:Readable.from([Buffer.from('a')])})).rejects.toThrow();expect(await f.session.retireUnused(async()=>{})).toEqual([]);expect([...f.authorities.values()][0].state).toBe('ISSUED');});
+
+it('refuses the COMMIT-attempt hook if the original supervision already started or retired',async()=>{for(const state of ['STARTED','RETIRED']){const f=fixture();await f.session.bind({} as PoolClient,claim);const authority=[...f.authorities.values()][0];if(state==='STARTED')authority.start();else authority.handle.retireUnsent();expect(()=>f.session.markCommitAttempt()).toThrow('ATTACHMENT_STORAGE_CONFLICT');}});
