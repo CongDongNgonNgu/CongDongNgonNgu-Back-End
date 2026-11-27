@@ -104,6 +104,29 @@ export class InitiationPolicyBinding implements AttachmentInitiationPolicy {
         expected.authClass !== "AUTH"
       )
         return fail();
+      if (operation.kind !== "INITIATE") return fail();
+      const creator =
+        operation.creatorAttemptKey ??
+        (operation.attemptKeys.length === 1
+          ? operation.attemptKeys[0]
+          : undefined);
+      if (
+        !creator ||
+        !operation.attemptKeys.includes(creator) ||
+        policy.instances.length !== operation.attemptKeys.length ||
+        new Set(policy.instances.map((i) => i.policyAttemptKey)).size !==
+          policy.instances.length ||
+        policy.instances[0]?.policyAttemptKey !== creator ||
+        policy.instances.some(
+          (i) =>
+            !operation.attemptKeys.includes(i.policyAttemptKey) ||
+            i.initiationMode !==
+              (i.policyAttemptKey === creator
+                ? "CREATE_ALLOWED"
+                : "REPLAY_ONLY"),
+        )
+      )
+        return fail();
       const handle = await this.ledger.bindMatchedPolicy(receipt, {
         policyKey: policy.policyKey,
         instanceKeys: policy.instances.map((i) => i.instanceKey),
@@ -139,6 +162,15 @@ export class InitiationPolicyBinding implements AttachmentInitiationPolicy {
         handle,
         { actorId, sessionId, fingerprint: parsed.fingerprint },
         cancellation.signal,
+        {
+          policyKey: policy.policyKey,
+          policyAttemptKey: handle.policyAttemptKey,
+          creatorAttemptKey: creator,
+          mode:
+            handle.policyAttemptKey === creator
+              ? "CREATE_ALLOWED"
+              : "REPLAY_ONLY",
+        },
       );
     } catch {
       release();

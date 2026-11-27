@@ -1,3 +1,6 @@
+import { validatePinnedDeclarations } from "./pinned-declarations";
+import { createPinnedPlanOptions } from "../../../test/phase30/pinned-plan-fixture";
+import type { InitiationAttemptPlan } from "../initiation/controlled-initiation.port";
 import { EventEmitter } from "node:events";
 import type { Response } from "express";
 import type { AuthenticatedRequest } from "../../auth/guards/access-token.guard";
@@ -9,11 +12,16 @@ import { lowerPinnedRequestPlan } from "./request-plan-lowering";
 import { InitiationPolicyBinding } from "./initiation-policy-binding";
 import type { MatchedBoundOperation } from "./run-ledger";
 import type { ControlledInitiationContext } from "../initiation/controlled-initiation.port";
-function fixture() {
-  const declarations = createPinnedPlanFixture(
-      Date.parse("2026-11-25T00:02:00Z"),
-    ).declarations,
-    lowered = lowerPinnedRequestPlan(declarations),
+function fixture(replay = false) {
+  const raw = createPinnedPlanRoot();
+  if (replay) {
+    raw.operations[0].attemptKeys = ["zzz-creator", "aaa-replay"];
+    raw.operations[0].creatorAttemptKey = "zzz-creator";
+  }
+  const declarations = replay
+    ? validatePinnedDeclarations(createPinnedPlanOptions(raw))!
+    : createPinnedPlanFixture(Date.parse("2026-11-25T00:02:00Z")).declarations;
+  const lowered = lowerPinnedRequestPlan(declarations),
     policy = lowered.policies.find((p) => p.policyKey === "init")!,
     candidate = lowered.prepared.requests!.candidates.find(
       (c) => c.key === policy.candidateKey,
@@ -35,13 +43,13 @@ function fixture() {
     },
     handle = {
       ...receipt,
-      operationKey: policy.instances[0].instanceKey,
+      operationKey: policy.instances[replay ? 1 : 0].instanceKey,
       policyKey: policy.policyKey,
-      policyAttemptKey: policy.instances[0].policyAttemptKey,
+      policyAttemptKey: policy.instances[replay ? 1 : 0].policyAttemptKey,
       attachmentId: operation.attachmentId,
       candidate,
       slots: lowered.prepared.slots.filter(
-        (s) => s.operationKey === policy.instances[0].instanceKey,
+        (s) => s.operationKey === policy.instances[replay ? 1 : 0].instanceKey,
       ),
     } as MatchedBoundOperation,
     context = Object.freeze({}) as ControlledInitiationContext;
@@ -54,10 +62,13 @@ function fixture() {
           _h: MatchedBoundOperation,
           _f: { actorId: string; sessionId: string; fingerprint: string },
           _s: AbortSignal,
+          _plan?: InitiationAttemptPlan,
         ) => context,
       ),
     };
   return {
+    declarations,
+    lowered,
     req,
     response: new EventEmitter() as Response,
     input,
@@ -88,6 +99,7 @@ describe("native exact INITIATE policy correlation only", () => {
         fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
       expect.any(AbortSignal),
+      expect.objectContaining({ mode: "CREATE_ALLOWED" }),
     );
     await expect(f.binder.bind(f.req, f.input, f.response)).rejects.toThrow();
     expect(f.ledger.bindMatchedPolicy).toHaveBeenCalledTimes(1);
@@ -153,4 +165,53 @@ it("rejects an already completed response before taking its request receipt", as
   Object.defineProperty(f.response, "writableEnded", { value: true });
   await expect(f.binder.bind(f.req, f.input, f.response)).rejects.toThrow();
   expect(f.accounting.take).not.toHaveBeenCalled();
+});
+
+it("passes replay mode only from original pinned creator/attempt mapping into the private issuer", async () => {
+  const f = fixture(true);
+  await expect(f.binder.bind(f.req, f.input, f.response)).resolves.toBe(
+    f.context,
+  );
+  expect(f.ledger.issueMatchedInitiationContext).toHaveBeenCalledWith(
+    f.handle,
+    expect.any(Object),
+    expect.any(AbortSignal),
+    {
+      policyKey: "init",
+      policyAttemptKey: "aaa-replay",
+      creatorAttemptKey: "zzz-creator",
+      mode: "REPLAY_ONLY",
+    },
+  );
+});
+
+it("rejects corrupted trusted initiation mapping before any binding and snapshots valid mode facts", async () => {
+  for (const mode of ["wrong-mode", "creator-order", "missing"]) {
+    const f = fixture(true),
+      policies = f.lowered.policies.map((p) =>
+        p.policyKey !== "init"
+          ? p
+          : {
+              ...p,
+              instances:
+                mode === "wrong-mode"
+                  ? p.instances.map((i, n) =>
+                      n === 1
+                        ? { ...i, initiationMode: "CREATE_ALLOWED" as const }
+                        : i,
+                    )
+                  : mode === "creator-order"
+                    ? [...p.instances].reverse()
+                    : p.instances.slice(0, 1),
+            },
+      ),
+      binder = new InitiationPolicyBinding(
+        f.declarations,
+        { ...f.lowered, policies },
+        f.accounting,
+        f.ledger,
+      );
+    await expect(binder.bind(f.req, f.input, f.response)).rejects.toThrow();
+    expect(f.ledger.bindMatchedPolicy).not.toHaveBeenCalled();
+  }
 });

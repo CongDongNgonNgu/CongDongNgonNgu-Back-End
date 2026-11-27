@@ -17,6 +17,7 @@ export interface LoweredPolicy {
   readonly instances: readonly {
     readonly instanceKey: string;
     readonly policyAttemptKey: string;
+    readonly initiationMode?: "CREATE_ALLOWED" | "REPLAY_ONLY";
   }[];
 }
 export interface LoweredRequestPlan {
@@ -66,10 +67,19 @@ export function lowerPinnedRequestPlan(
         seenPolicies.has(policy.key) ||
         policy.attemptKeys.length < 1 ||
         policy.attemptKeys.length > 140 ||
-        (policy.slotKeys.length > 0 && policy.attemptKeys.length !== 1)
+        (policy.slotKeys.length > 0 &&
+          policy.attemptKeys.length !== 1 &&
+          !(
+            policy.kind === "INITIATE" && policy.creatorAttemptKey !== undefined
+          ))
       )
         return fail();
       if (policy.kind === "INITIATE") {
+        if (
+          policy.creatorAttemptKey !== undefined &&
+          !policy.attemptKeys.includes(policy.creatorAttemptKey)
+        )
+          return fail();
         const slot =
           policy.slotKeys.length === 1
             ? sourceSlots.get(policy.slotKeys[0])
@@ -89,42 +99,63 @@ export function lowerPinnedRequestPlan(
       );
       if (groups.length !== 1) return fail();
       const candidateKey = groups[0].candidateKey;
-      const instances = [...policy.attemptKeys]
-        .sort(compare)
-        .map((policyAttemptKey) => {
-          if (operations.length >= 140) return fail();
-          const instanceKey =
-            "policy-i" + String(operations.length).padStart(3, "0");
-          const slotKeys = [...policy.slotKeys].sort(compare);
-          for (const slotKey of slotKeys) {
-            const s = sourceSlots.get(slotKey);
-            if (
-              !s ||
-              transferred.has(slotKey) ||
-              s.operationKey !== policy.key ||
-              s.attachmentId !== policy.attachmentId
-            )
-              return fail();
-            transferred.add(slotKey);
-            slots.push({ ...s, operationKey: instanceKey });
-          }
-          operations.push({
-            key: instanceKey,
-            policyKey: policy.key,
-            policyAttemptKey,
-            attachmentId: policy.attachmentId,
-            ingressBytes: policy.charges.ingressBytes,
-            egressBytes:
-              policy.charges[
-                policy.principal.kind === "ANON"
-                  ? "anonymousEgressBytes"
-                  : "authenticatedEgressBytes"
-              ],
-            processingAttempts: policy.charges.processingAttempts,
-            slotKeys,
-          });
-          return Object.freeze({ instanceKey, policyAttemptKey });
+      const creator =
+        policy.kind === "INITIATE"
+          ? (policy.creatorAttemptKey ?? policy.attemptKeys[0])
+          : undefined;
+      const ordered = [...policy.attemptKeys].sort(compare);
+      if (creator !== undefined)
+        ordered.sort((a, b) =>
+          a === creator ? -1 : b === creator ? 1 : compare(a, b),
+        );
+      const instances = ordered.map((policyAttemptKey) => {
+        if (operations.length >= 140) return fail();
+        const instanceKey =
+          "policy-i" + String(operations.length).padStart(3, "0");
+        const slotKeys =
+          policy.kind === "INITIATE" && policyAttemptKey !== creator
+            ? []
+            : [...policy.slotKeys].sort(compare);
+        for (const slotKey of slotKeys) {
+          const s = sourceSlots.get(slotKey);
+          if (
+            !s ||
+            transferred.has(slotKey) ||
+            s.operationKey !== policy.key ||
+            s.attachmentId !== policy.attachmentId
+          )
+            return fail();
+          transferred.add(slotKey);
+          slots.push({ ...s, operationKey: instanceKey });
+        }
+        operations.push({
+          key: instanceKey,
+          policyKey: policy.key,
+          policyAttemptKey,
+          attachmentId: policy.attachmentId,
+          ingressBytes: policy.charges.ingressBytes,
+          egressBytes:
+            policy.charges[
+              policy.principal.kind === "ANON"
+                ? "anonymousEgressBytes"
+                : "authenticatedEgressBytes"
+            ],
+          processingAttempts: policy.charges.processingAttempts,
+          slotKeys,
         });
+        return Object.freeze({
+          instanceKey,
+          policyAttemptKey,
+          ...(policy.kind === "INITIATE"
+            ? {
+                initiationMode:
+                  policyAttemptKey === creator
+                    ? ("CREATE_ALLOWED" as const)
+                    : ("REPLAY_ONLY" as const),
+              }
+            : {}),
+        });
+      });
       policies.push(
         Object.freeze({
           policyKey: policy.key,

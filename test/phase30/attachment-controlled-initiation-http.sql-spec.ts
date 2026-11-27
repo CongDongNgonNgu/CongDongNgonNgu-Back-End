@@ -91,7 +91,7 @@ describe("native guarded controlled INITIATE into exact planned SQL identity", (
     ).rows[0].id;
   }, 180000);
   afterAll(async () => db.close());
-  async function fixture(ordinary = false) {
+  async function fixture(ordinary = false, retry = false) {
     const identity = new InMemoryIdentityRepository(),
       pool = scoped(),
       ledger = new RunLedger(pool),
@@ -204,6 +204,11 @@ describe("native guarded controlled INITIATE into exact planned SQL identity", (
       );
       const root = JSON.parse(raw) as ReturnType<typeof createPinnedPlanRoot>,
         body = root.inventory.attachments[0].initiation;
+      if (retry) {
+        const init = root.operations.find((o) => o.kind === "INITIATE")!;
+        init.attemptKeys = ["zzz-create", "aaa-replay"];
+        init.creatorAttemptKey = "zzz-create";
+      }
       body.scope.languageId = language;
       root.inventory.actors[0] = {
         id: user.id,
@@ -294,6 +299,7 @@ describe("native guarded controlled INITIATE into exact planned SQL identity", (
       });
       return {
         app,
+        runId: p.runId,
         user,
         identity,
         sessions,
@@ -431,6 +437,78 @@ describe("native guarded controlled INITIATE into exact planned SQL identity", (
       const state = await f.state();
       expect(state.operations).toEqual([{ state: "BOUND" }]);
       expect(state.attachments).toEqual([]);
+    } finally {
+      await f.app.close();
+    }
+  }, 30000);
+  it("replays a completed same-run native INITIATE with the same ID and no second product reservation", async () => {
+    const f = await fixture(false, true);
+    const productCounters = async () =>
+      (
+        await db.pool.query(
+          "SELECT kind,action,used FROM attachment_quota_counters WHERE (kind='ACTOR' AND subject=$1 AND action IN ('bytes','initiate')) OR (kind='DEPLOYMENT' AND subject='congdongngonngu-test' AND action IN ('bytes','metadata')) ORDER BY kind,action,window_start",
+          [f.user.id],
+        )
+      ).rows;
+    const readCalls = async () =>
+      Number(
+        (
+          await db.pool.query(
+            "SELECT COALESCE(sum(used),0)::text n FROM attachment_quota_counters WHERE kind='ACTOR' AND subject=$1 AND action='read'",
+            [f.user.id],
+          )
+        ).rows[0].n,
+      );
+    try {
+      const initial = await productCounters();
+      const send = () =>
+        request(f.app.getHttpServer())
+          .post(base)
+          .set("Authorization", "Bearer " + f.credentials.accessToken)
+          .send(f.body);
+      const first = await send().expect(201);
+      expect(first.body.data.id).toBe(f.plannedId);
+      const before = await productCounters(),
+        readsBefore = await readCalls();
+      const second = await send().expect(201);
+      expect(second.body.data.id).toBe(f.plannedId);
+      expect(await productCounters()).toEqual(before);
+      expect(before.filter((r) => r.action === "initiate")).toEqual([
+        { kind: "ACTOR", action: "initiate", used: "1" },
+      ]);
+      expect(
+        Number(
+          before.find((r) => r.kind === "DEPLOYMENT" && r.action === "metadata")
+            ?.used ?? 0,
+        ) -
+          Number(
+            initial.find(
+              (r) => r.kind === "DEPLOYMENT" && r.action === "metadata",
+            )?.used ?? 0,
+          ),
+      ).toBe(1);
+      expect(await readCalls()).toBe(readsBefore + 1);
+      const state = await f.state();
+      expect(state.attachments).toEqual([{ id: f.plannedId }]);
+      expect(state.operations).toEqual([
+        { state: "BOUND" },
+        { state: "BOUND" },
+      ]);
+      expect(state.run).toMatchObject({
+        authenticatedRequests: 2,
+        ingressBytes: 204800,
+      });
+      const slots = (
+        await db.pool.query(
+          "SELECT id,state FROM " +
+            table("slots") +
+            " WHERE run_id=$1 AND role='ATTACHMENT'",
+          [f.runId],
+        )
+      ).rows;
+      expect(slots).toEqual([{ id: f.plannedId, state: "BURNED" }]);
+      expect(f.issue).toHaveBeenCalledTimes(2);
+      expect(f.authenticate.mock.calls.length).toBeGreaterThanOrEqual(6);
     } finally {
       await f.app.close();
     }

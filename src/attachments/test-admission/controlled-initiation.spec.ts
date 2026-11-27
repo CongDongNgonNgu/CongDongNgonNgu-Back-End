@@ -8,7 +8,7 @@ const continuationFacts = {
   actorId: facts.actorId,
   fingerprint: facts.fingerprint,
 };
-async function fixture() {
+async function fixture(replay = false) {
   const sql: string[] = [];
   const query = jest.fn(async (q: string) => {
     sql.push(q);
@@ -51,11 +51,13 @@ async function fixture() {
             policy_key: "init",
             policy_attempt_key: "init-attempt",
             attachment_id: id(5),
-            slot_count: 1,
+            slot_count: replay ? 0 : 1,
             state: "AVAILABLE",
           },
         ],
       };
+    if (q.includes("SELECT s.slot_key") && replay)
+      return { rowCount: 0, rows: [] };
     if (q.includes("SELECT s.slot_key"))
       return {
         rowCount: 1,
@@ -368,4 +370,50 @@ describe("rate writes require original controlled lifetime", () => {
     expect(domain).not.toHaveBeenCalled();
     expect(f.sql.filter((q) => q === "COMMIT")).toHaveLength(0);
   });
+});
+
+it("accepts slot-free replay only with exact trusted policy/attempt/creator plan, and exposes immutable private mode", async () => {
+  const f = await fixture(true),
+    ctx = f.ledger.issueMatchedInitiationContext(
+      f.handle,
+      facts,
+      new AbortController().signal,
+      {
+        policyKey: "init",
+        policyAttemptKey: "init-attempt",
+        creatorAttemptKey: "creator",
+        mode: "REPLAY_ONLY",
+      },
+    ),
+    rate = jest.fn(async () => {});
+  await expect(
+    f.ledger.continueInitiation(ctx, continuationFacts, rate, async (_c, a) => {
+      expect(a.mode).toBe("REPLAY_ONLY");
+      expect(() => a.takeAttachment()).toThrow("TEST_ADMISSION_LEDGER");
+      return a.attachmentId;
+    }),
+  ).resolves.toBe(id(5));
+  expect(rate).toHaveBeenCalledWith(f.client, "REPLAY_ONLY");
+});
+it("rejects zero-slot inference, contradictory creator mode and foreign policy plan", async () => {
+  for (const mode of ["missing", "creator", "foreign"]) {
+    const f = await fixture(true);
+    expect(() =>
+      f.ledger.issueMatchedInitiationContext(
+        f.handle,
+        facts,
+        new AbortController().signal,
+        mode === "missing"
+          ? undefined
+          : {
+              policyKey: mode === "foreign" ? "other" : "init",
+              policyAttemptKey: "init-attempt",
+              creatorAttemptKey:
+                mode === "creator" ? "init-attempt" : "creator",
+              mode: "REPLAY_ONLY",
+            },
+      ),
+    ).toThrow("TEST_ADMISSION_LEDGER");
+    expect(f.pool.connect).not.toHaveBeenCalled();
+  }
 });
