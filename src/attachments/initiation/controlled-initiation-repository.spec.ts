@@ -3,6 +3,7 @@ import { AttachmentInitiationRepository } from "./attachment-initiation-reposito
 import type {
   ControlledInitiationContext,
   ControlledInitiationPort,
+  ControlledInitiationProjection,
 } from "./controlled-initiation.port";
 import {
   AttachmentQuotaLedger,
@@ -174,3 +175,98 @@ it.each(["missing", "ADMITTED", "CREATED"])(
     expect(quotas.consumeInitiation).not.toHaveBeenCalled();
   },
 );
+
+it("requires controlled projected entry and forwards required closed recipe to the same continuation", async () => {
+  const recipe = {
+    refresh: async () => {},
+    rate: async () => {},
+    select: async () => ({ projected: true }),
+  };
+  await expect(
+    fixture().repo.initiateProjected(
+      actor,
+      input(),
+      {} as ControlledInitiationContext,
+      recipe,
+    ),
+  ).rejects.toMatchObject({ code: "ATTACHMENTS_UNAVAILABLE" });
+  const continuation = jest.fn(async () => ({ projected: true })),
+    f = fixture({
+      continueInitiation: continuation,
+    } as unknown as ControlledInitiationPort),
+    context = {} as ControlledInitiationContext;
+  await expect(
+    f.repo.initiateProjected(actor, input(), context, recipe),
+  ).resolves.toEqual({ projected: true });
+  expect(continuation).toHaveBeenCalledWith(
+    context,
+    expect.any(Object),
+    expect.any(Function),
+    expect.any(Function),
+    expect.objectContaining({
+      refresh: expect.any(Function),
+      rate: expect.any(Function),
+      select: expect.any(Function),
+    }),
+  );
+  expect(f.connect).not.toHaveBeenCalled();
+});
+
+it("snapshots original projection callbacks before any pending continuation and rejects getter recipes", async () => {
+  let resume!: () => void;
+  const pending = new Promise<void>((r) => (resume = r));
+  const original = {
+    refresh: jest.fn(async () => {}),
+    rate: jest.fn(async () => {}),
+    select: jest.fn(async () => ({ original: true })),
+  };
+  const captured = { ...original };
+  const continuation = jest.fn(async (...args: unknown[]) => {
+    await pending;
+    const recipe = args[4] as ControlledInitiationProjection<{
+      original: boolean;
+    }>;
+    await recipe.refresh();
+    await recipe.rate({} as PoolClient, "planned");
+    return recipe.select({} as PoolClient, "planned");
+  });
+  const f = fixture({
+      continueInitiation: continuation,
+    } as unknown as ControlledInitiationPort),
+    result = f.repo.initiateProjected(
+      actor,
+      input(),
+      {} as ControlledInitiationContext,
+      original,
+    );
+  original.refresh = jest.fn(async () => {
+    throw Error("mutated refresh");
+  });
+  original.rate = jest.fn(async () => {
+    throw Error("mutated rate");
+  });
+  original.select = jest.fn(async () => ({ original: false }));
+  resume();
+  await expect(result).resolves.toEqual({ original: true });
+  expect(captured.refresh).toHaveBeenCalledTimes(1);
+  expect(captured.rate).toHaveBeenCalledTimes(1);
+  expect(captured.select).toHaveBeenCalledTimes(1);
+  expect(original.refresh).not.toHaveBeenCalled();
+  const getter = jest.fn(() => captured.refresh),
+    bad = Object.defineProperty({ ...captured }, "refresh", {
+      enumerable: true,
+      get: getter,
+    });
+  const g = fixture({
+    continueInitiation: jest.fn(async () => ({})),
+  } as unknown as ControlledInitiationPort);
+  await expect(
+    g.repo.initiateProjected(
+      actor,
+      input(),
+      {} as ControlledInitiationContext,
+      bad,
+    ),
+  ).rejects.toMatchObject({ code: "ATTACHMENTS_UNAVAILABLE" });
+  expect(getter).not.toHaveBeenCalled();
+});

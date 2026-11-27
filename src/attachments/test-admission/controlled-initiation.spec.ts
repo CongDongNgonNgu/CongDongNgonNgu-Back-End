@@ -417,3 +417,192 @@ it("rejects zero-slot inference, contradictory creator mode and foreign policy p
     expect(f.pool.connect).not.toHaveBeenCalled();
   }
 });
+
+it("retains consumed private facts through four gated transactions and returns only final projection", async () => {
+  const f = await fixture(),
+    ctx = f.ledger.issueMatchedInitiationContext(
+      f.handle,
+      facts,
+      new AbortController().signal,
+    ),
+    order: string[] = [],
+    refresh = jest.fn(async () => {
+      expect(f.sql.filter((q) => q === "COMMIT")).toHaveLength(2);
+      order.push("refresh");
+    }),
+    rate = jest.fn(async (c: PoolClient, id: string) => {
+      expect(c).toBe(f.client);
+      expect(id).toBe(f.handle.attachmentId);
+      order.push("read-rate");
+    }),
+    select = jest.fn(async (c: PoolClient, id: string) => {
+      expect(c).toBe(f.client);
+      expect(id).toBe(f.handle.attachmentId);
+      order.push("select");
+      return { projected: true };
+    });
+  await expect(
+    f.ledger.continueInitiation(
+      ctx,
+      continuationFacts,
+      async () => {},
+      async () => ({ internal: "never DTO" }),
+      { refresh, rate, select },
+    ),
+  ).resolves.toEqual({ projected: true });
+  expect(order).toEqual(["refresh", "read-rate", "select"]);
+  expect(f.sql.filter((q) => q === "COMMIT")).toHaveLength(4);
+});
+
+describe("post-initiation projection lifetime", () => {
+  it.each([2, 3])(
+    "does no next product stage if lifetime expires after COMMIT%s",
+    async (expireAt) => {
+      const f = await fixture(),
+        ctx = f.ledger.issueMatchedInitiationContext(
+          f.handle,
+          facts,
+          new AbortController().signal,
+        ),
+        real = f.query.getMockImplementation()!;
+      let commits = 0;
+      f.query.mockImplementation(async (q) => {
+        if (q === "COMMIT") commits++;
+        if (q.includes("AS observed_at") && commits >= expireAt)
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                not_before: new Date(0),
+                expires_at: new Date(600000),
+                observed_at: new Date(600000),
+              },
+            ],
+          };
+        return real(q);
+      });
+      const projection = {
+        refresh: jest.fn(async () => {}),
+        rate: jest.fn(async () => {}),
+        select: jest.fn(async () => ({ private: true })),
+      };
+      await expect(
+        f.ledger.continueInitiation(
+          ctx,
+          continuationFacts,
+          async () => {},
+          async () => 1,
+          projection,
+        ),
+      ).rejects.toThrow("TEST_ADMISSION_LEDGER");
+      expect(projection.rate).toHaveBeenCalledTimes(expireAt === 2 ? 0 : 1);
+      expect(projection.select).not.toHaveBeenCalled();
+      expect(commits).toBe(expireAt);
+    },
+  );
+  it("stops before refresh/read SQL after domain COMMIT cancellation, and never returns a DTO after uncertain final COMMIT", async () => {
+    for (const stage of [2, 4]) {
+      const f = await fixture(),
+        abort = new AbortController(),
+        ctx = f.ledger.issueMatchedInitiationContext(
+          f.handle,
+          facts,
+          abort.signal,
+        ),
+        real = f.query.getMockImplementation()!;
+      let commits = 0;
+      f.query.mockImplementation(async (q) => {
+        const value = await real(q);
+        if (q === "COMMIT" && ++commits === stage) {
+          if (stage === 2) abort.abort();
+          else throw Error("PRIVATE_FINAL_COMMIT");
+        }
+        return value;
+      });
+      const projection = {
+        refresh: jest.fn(async () => {}),
+        rate: jest.fn(async () => {}),
+        select: jest.fn(async () => ({ private: true })),
+      };
+      await expect(
+        f.ledger.continueInitiation(
+          ctx,
+          continuationFacts,
+          async () => {},
+          async () => 1,
+          projection,
+        ),
+      ).rejects.toThrow("TEST_ADMISSION_LEDGER");
+      expect(projection.refresh).toHaveBeenCalledTimes(stage === 2 ? 0 : 1);
+      expect(projection.rate).toHaveBeenCalledTimes(stage === 2 ? 0 : 1);
+      expect(commits).toBe(stage);
+    }
+  });
+  it("consumes original context before rejecting accessor/extra/missing recipe records without SQL", async () => {
+    for (const mode of ["accessor", "extra", "missing"]) {
+      const f = await fixture(),
+        ctx = f.ledger.issueMatchedInitiationContext(
+          f.handle,
+          facts,
+          new AbortController().signal,
+        ),
+        getter = jest.fn(() => async () => {});
+      let p: unknown = {
+        refresh: async () => {},
+        rate: async () => {},
+        select: async () => 1,
+      };
+      if (mode === "accessor")
+        p = Object.defineProperty(p, "rate", { enumerable: true, get: getter });
+      if (mode === "extra") p = { ...(p as object), unknown: true };
+      if (mode === "missing")
+        p = { refresh: async () => {}, rate: async () => {} };
+      await expect(
+        f.ledger.continueInitiation(
+          ctx,
+          continuationFacts,
+          async () => {},
+          async () => 1,
+          p as never,
+        ),
+      ).rejects.toThrow("TEST_ADMISSION_LEDGER");
+      expect(f.pool.connect).not.toHaveBeenCalled();
+      expect(getter).not.toHaveBeenCalled();
+      await expect(
+        f.ledger.continueInitiation(
+          ctx,
+          continuationFacts,
+          async () => {},
+          async () => 1,
+        ),
+      ).rejects.toThrow();
+    }
+  });
+  it("does no read-rate or select work when native projection refresh rejects", async () => {
+    const f = await fixture(),
+      ctx = f.ledger.issueMatchedInitiationContext(
+        f.handle,
+        facts,
+        new AbortController().signal,
+      ),
+      projection = {
+        refresh: async () => {
+          throw Error("PRIVATE_SESSION");
+        },
+        rate: jest.fn(async () => {}),
+        select: jest.fn(async () => 1),
+      };
+    await expect(
+      f.ledger.continueInitiation(
+        ctx,
+        continuationFacts,
+        async () => {},
+        async () => 1,
+        projection,
+      ),
+    ).rejects.toThrow("TEST_ADMISSION_LEDGER");
+    expect(projection.rate).not.toHaveBeenCalled();
+    expect(projection.select).not.toHaveBeenCalled();
+    expect(f.sql.filter((q) => q === "COMMIT")).toHaveLength(2);
+  });
+});

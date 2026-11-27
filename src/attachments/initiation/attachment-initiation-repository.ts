@@ -1,5 +1,6 @@
 import type {
   ControlledInitiationContext,
+  ControlledInitiationProjection,
   ControlledInitiationPort,
   ControlledInitiationAccess,
   InitiationMode,
@@ -84,6 +85,52 @@ export class AttachmentInitiationRepository {
       throw new AttachmentDraftConflict("ATTACHMENT_INITIATION_CONFLICT");
     return row;
   }
+  async initiateProjected<R>(
+    actor: string,
+    input: unknown,
+    context: ControlledInitiationContext,
+    projection: ControlledInitiationProjection<R>,
+  ): Promise<R> {
+    if (!this.controlled || !context || !projection)
+      throw new AttachmentInitiationUnavailable();
+    let snapshot: ControlledInitiationProjection<R>;
+    try {
+      if (
+        typeof projection !== "object" ||
+        Array.isArray(projection) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(projection))
+      )
+        throw new AttachmentInitiationUnavailable();
+      const names = ["refresh", "rate", "select"],
+        keys = Reflect.ownKeys(projection);
+      if (
+        keys.length !== 3 ||
+        keys.some((k) => typeof k !== "string" || !names.includes(k))
+      )
+        throw new AttachmentInitiationUnavailable();
+      const descriptors = names.map((name) =>
+        Object.getOwnPropertyDescriptor(projection, name),
+      );
+      if (
+        descriptors.some(
+          (d) =>
+            !d ||
+            !d.enumerable ||
+            !("value" in d) ||
+            typeof d.value !== "function",
+        )
+      )
+        throw new AttachmentInitiationUnavailable();
+      snapshot = Object.freeze({
+        refresh: descriptors[0]!.value,
+        rate: descriptors[1]!.value,
+        select: descriptors[2]!.value,
+      }) as ControlledInitiationProjection<R>;
+    } catch {
+      throw new AttachmentInitiationUnavailable();
+    }
+    return this.execute(actor, input, context, snapshot);
+  }
   async initiate(
     actorValue: string,
     inputValue: unknown,
@@ -91,6 +138,28 @@ export class AttachmentInitiationRepository {
   ): Promise<AttachmentDraftStatus | BoundInitiationReplay> {
     if (this.controlled ? !context : arguments.length >= 3)
       throw new AttachmentInitiationUnavailable();
+    return this.execute(actorValue, inputValue, context);
+  }
+  private execute<R>(
+    actorValue: string,
+    inputValue: unknown,
+    context: ControlledInitiationContext,
+    projection: ControlledInitiationProjection<R>,
+  ): Promise<R>;
+  private execute(
+    actorValue: string,
+    inputValue: unknown,
+    context?: ControlledInitiationContext,
+  ): Promise<AttachmentDraftStatus | BoundInitiationReplay>;
+  private async execute<R>(
+    actorValue: string,
+    inputValue: unknown,
+    context?: ControlledInitiationContext,
+    projection?: ControlledInitiationProjection<R>,
+  ): Promise<AttachmentDraftStatus | BoundInitiationReplay | R> {
+    const projectionRefresh = projection?.refresh,
+      projectionRate = projection?.rate,
+      projectionSelect = projection?.select;
     const actor = initiationUuid(actorValue),
       input = parseInitiation(inputValue);
     if (
@@ -275,6 +344,20 @@ export class AttachmentInitiationRepository {
       }
     };
     try {
+      if (projection) {
+        const recipe: ControlledInitiationProjection<R> = {
+          refresh: () => projectionRefresh!(),
+          rate: (client, id) => protect(() => projectionRate!(client, id)),
+          select: (client, id) => protect(() => projectionSelect!(client, id)),
+        };
+        return await this.controlled.continueInitiation(
+          context!,
+          { actorId: actor, fingerprint: input.fingerprint },
+          (client, mode) => protect(() => rate(client, mode)),
+          (client, access) => protect(() => domain(client, access)),
+          recipe,
+        );
+      }
       return await this.controlled.continueInitiation(
         context!,
         { actorId: actor, fingerprint: input.fingerprint },

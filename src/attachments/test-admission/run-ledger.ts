@@ -1,4 +1,4 @@
-import type {ControlledInitiationContext,ControlledInitiationAccess,InitiationAttemptPlan,InitiationMode} from '../initiation/controlled-initiation.port';
+import type {ControlledInitiationContext,ControlledInitiationAccess,ControlledInitiationProjection,InitiationAttemptPlan,InitiationMode} from '../initiation/controlled-initiation.port';
 import {parseControlTuple,type ControlTuple} from './activation-control';
 import type {Pool, PoolClient} from 'pg';
 import {RUN_LIMITS,SLOT_ROLES} from './run-ledger-schema';
@@ -279,7 +279,7 @@ export class RunLedger {
  }
  /** Trusted repository callbacks only, never request callbacks or external I/O.
   * Each independent transaction locks the original ledger rows before product writes. */
- async continueInitiation<T>(
+ continueInitiation<T, R>(
    context: ControlledInitiationContext,
    input: { actorId: string; fingerprint: string },
    rate: (client: PoolClient, mode: InitiationMode) => Promise<void>,
@@ -287,7 +287,27 @@ export class RunLedger {
      client: PoolClient,
      access: ControlledInitiationAccess,
    ) => Promise<T>,
- ): Promise<T> {
+   projection: ControlledInitiationProjection<R>,
+ ): Promise<R>;
+ continueInitiation<T>(
+   context: ControlledInitiationContext,
+   input: { actorId: string; fingerprint: string },
+   rate: (client: PoolClient, mode: InitiationMode) => Promise<void>,
+   domain: (
+     client: PoolClient,
+     access: ControlledInitiationAccess,
+   ) => Promise<T>,
+ ): Promise<T>;
+ async continueInitiation<T, R>(
+   context: ControlledInitiationContext,
+   input: { actorId: string; fingerprint: string },
+   rate: (client: PoolClient, mode: InitiationMode) => Promise<void>,
+   domain: (
+     client: PoolClient,
+     access: ControlledInitiationAccess,
+   ) => Promise<T>,
+   projectionInput?: ControlledInitiationProjection<R>,
+ ): Promise<T | R> {
    const facts = this.initiationContexts.get(context);
    this.initiationContexts.delete(context);
    if (!facts || facts.signal.aborted) return fail();
@@ -299,6 +319,21 @@ export class RunLedger {
      typeof domain !== "function"
    )
      return fail();
+   let projection: ControlledInitiationProjection<R> | undefined;
+   if (arguments.length >= 5) {
+     const p = closed(projectionInput, ["refresh", "rate", "select"]);
+     if (
+       typeof p.refresh !== "function" ||
+       typeof p.rate !== "function" ||
+       typeof p.select !== "function"
+     )
+       return fail();
+     projection = Object.freeze({
+       refresh: p.refresh,
+       rate: p.rate,
+       select: p.select,
+     }) as ControlledInitiationProjection<R>;
+   }
    const h = this.requireMatchedBoundOperation(facts.handle),
      active = this.matchedBindings.get(h)!.active;
    const locked = async (client: PoolClient) => {
@@ -398,7 +433,27 @@ export class RunLedger {
      return result;
    });
    if (facts.signal.aborted) return fail();
-   return continued;
+   if (!projection) return continued;
+   try {
+     await projection.refresh();
+   } catch {
+     return fail();
+   }
+   if (facts.signal.aborted) return fail();
+   await this.transaction(async (client) => {
+     const check = await locked(client);
+     await projection!.rate(client, h.attachmentId);
+     await check();
+   });
+   if (facts.signal.aborted) return fail();
+   const result = await this.transaction(async (client) => {
+     const check = await locked(client);
+     const value = await projection!.select(client, h.attachmentId);
+     await check();
+     return value;
+   });
+   if (facts.signal.aborted) return fail();
+   return result;
  }
  /** One local identity claim from the original already-burned matched slots.
   * No fresh SQL expiry, ACL, policy-kind, producer or provider authority. No refund. */
