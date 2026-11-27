@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {createPutSupervisionAuthority,verifyUnsentProof,createPutLocalClosure} from './put-supervision-proof';
+import {createPutSupervisionAuthority,verifyUnsentProof,createPutLocalClosure,createPlannedPutSupervisionIdentity} from './put-supervision-proof';
 import type {AttachmentPutClaim} from '../attachment-object-ledger';
 const locator={attachmentId:randomUUID(),attemptId:randomUUID(),objectId:randomUUID(),kind:'source' as const};
 const claim:AttachmentPutClaim={attachmentId:locator.attachmentId,objectId:locator.objectId,claimId:randomUUID(),attachmentVersion:1,leaseOwner:randomUUID(),objectVersion:1,manifest:{locator,sizeBytes:1,sha256:'a'.repeat(64)}};
@@ -31,3 +31,7 @@ describe('sealed original-entry unsent authority',()=>{
   const a=createPutSupervisionAuthority(locator),copied=structuredClone(claim);const closure=await createPutLocalClosure(copied,a.handle,async()=>undefined);copied.claimId=randomUUID();const cert=a.handle.retireUnsent();expect(verifyUnsentProof(claim,a.handle.id,cert,closure)).toBe(true);expect(verifyUnsentProof(copied,a.handle.id,cert,closure)).toBe(false);
  });
 });
+
+it('creates the original adapter authority with a planned UUID while rejecting a shaped replacement',()=>{const planned=randomUUID(),a=createPutSupervisionAuthority(locator,()=>{},createPlannedPutSupervisionIdentity(planned));expect(a.handle.id).toBe(planned);expect(()=>createPlannedPutSupervisionIdentity('bad')).toThrow();expect(()=>require('./put-supervision-proof').supervisionIdentity({...a.handle},locator)).toThrow();a.start();a.settle();expect(require('./put-supervision-proof').originalPutSettlement(a.handle,locator).id).toBe(planned);});
+
+it('consumes one planned identity across independent original factories and rejects copied receipts',()=>{const receipt=createPlannedPutSupervisionIdentity(randomUUID());createPutSupervisionAuthority(locator,()=>{},receipt);expect(()=>createPutSupervisionAuthority({...locator,objectId:randomUUID()},()=>{},receipt)).toThrow();const other=createPlannedPutSupervisionIdentity(randomUUID());expect(()=>createPutSupervisionAuthority(locator,()=>{},{...other})).toThrow();});

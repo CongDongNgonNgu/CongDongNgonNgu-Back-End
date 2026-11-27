@@ -48,7 +48,7 @@ export class AttachmentUploadLedger {
   uuid(fence.leaseOwner);
   if(row.state!=='UPLOADING'||!row.lease_valid||row.lease_owner!==fence.leaseOwner||!Number.isSafeInteger(fence.attachmentVersion)||Number(row.version)!==fence.attachmentVersion||Number(row.expected_bytes)!==fence.expectedBytes)conflict();
  }
- async beginUpload(client:PoolClient,actor:string,attachmentId:string):Promise<AttachmentUploadFence>{
+ async beginUpload(client:PoolClient,actor:string,attachmentId:string,plannedOwner?:string):Promise<AttachmentUploadFence>{
   const row=await this.locked(client,actor,attachmentId);
   // Expiry alone cannot establish that the previous raw intake has stopped.
   // Failed/expired producers must interrupt and settle before a new initiation.
@@ -57,7 +57,7 @@ export class AttachmentUploadLedger {
   if((await client.query("SELECT 1 FROM attachment_objects WHERE attachment_id=$1 AND status<>'DELETED' LIMIT 1",[attachmentId])).rowCount)return conflict();
   if(row.upload_slot_held||row.pending_slot_held)return conflict();
   if(row.state==='TEMPORARY')await this.quotas.changeCapacity(client,actor,{uploadDelta:1});
-  const leaseOwner=randomUUID();
+  if(plannedOwner!==undefined)uuid(plannedOwner);const leaseOwner=plannedOwner??randomUUID();
   const next=(await client.query<{version:string}>(`UPDATE attachments SET state='UPLOADING',upload_slot_held=true,version=version+1,lease_owner=$2,lease_expires_at=clock_timestamp()+$3*interval '1 millisecond',updated_at=clock_timestamp() WHERE id=$1 RETURNING version`,[attachmentId,leaseOwner,L.uploadLeaseMs])).rows[0];
   return {attachmentId,attachmentVersion:Number(next.version),leaseOwner,expectedBytes:Number(row.expected_bytes)};
  }
@@ -74,13 +74,13 @@ export class AttachmentUploadLedger {
   await client.query(`INSERT INTO attachment_upload_replay_leases(attachment_id,owner,expires_at) VALUES($1,$2,clock_timestamp()+$3*interval '1 millisecond')`,[row.id,owner,L.uploadLeaseMs]);
   return {attachmentId:row.id,owner,expectedBytes:Number(row.expected_bytes)};
  }
- async prepareSource(client:PoolClient,actor:string,fence:AttachmentUploadFence,received:AttachmentReceivedBytes):Promise<AttachmentPutClaim>{
+ async prepareSource(client:PoolClient,actor:string,fence:AttachmentUploadFence,received:AttachmentReceivedBytes,planned?:{objectId:string;attemptId:string;claimId:string}):Promise<AttachmentPutClaim>{
   const row=await this.locked(client,actor,fence.attachmentId);this.fence(row,fence);
   if(!Number.isSafeInteger(received.sizeBytes)||received.sizeBytes!==Number(row.expected_bytes)||!/^[a-f0-9]{64}$/.test(received.sha256))throw new AttachmentUploadStateError('INTEGRITY');
   if((await client.query("SELECT 1 FROM attachment_objects WHERE attachment_id=$1 AND status<>'DELETED' LIMIT 1",[row.id])).rowCount)return conflict();
-  const objectId=randomUUID(),attemptId=randomUUID();
+  if(planned)[planned.objectId,planned.attemptId,planned.claimId].forEach(uuid);const objectId=planned?.objectId??randomUUID(),attemptId=planned?.attemptId??randomUUID();
   await client.query(`INSERT INTO attachment_objects(id,attachment_id,attempt_id,variant,sha256,byte_count,content_type) VALUES($1,$2,$3,'source',$4,$5,'application/octet-stream')`,[objectId,row.id,attemptId,received.sha256,received.sizeBytes]);
-  return this.objects.claimPut(client,row.id,objectId,fence,randomUUID());
+  return this.objects.claimPut(client,row.id,objectId,fence,planned?.claimId??randomUUID());
  }
  async markPending(client:PoolClient,actor:string,fence:AttachmentUploadFence,objectId:string):Promise<{state:'PENDING'}>{
   const row=await this.locked(client,actor,fence.attachmentId);uuid(objectId);

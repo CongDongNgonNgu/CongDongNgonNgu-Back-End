@@ -25,8 +25,10 @@ CREATE TABLE phase30_test_execution.runs (
  operation_count integer NOT NULL DEFAULT 0 CHECK(operation_count BETWEEN 0 AND 140),
  edge_count integer NOT NULL DEFAULT 0 CHECK(edge_count BETWEEN 0 AND 140),
  operation_slot_count integer NOT NULL DEFAULT 0 CHECK(operation_slot_count BETWEEN 0 AND 256),
- CHECK((operation_count=0 AND edge_count=0 AND operation_slot_count=0) OR
-  (operation_count>0 AND request_count>0 AND edge_count>0 AND operation_slot_count=slot_count)),
+ internal_cleanup_count integer NOT NULL DEFAULT 0 CHECK(internal_cleanup_count BETWEEN 0 AND 4),
+ internal_slot_count integer NOT NULL DEFAULT 0 CHECK(internal_slot_count BETWEEN 0 AND 4),
+ CHECK((operation_count=0 AND edge_count=0 AND operation_slot_count=0 AND internal_cleanup_count=0 AND internal_slot_count=0) OR
+  (operation_count>0 AND request_count>0 AND edge_count>0 AND operation_slot_count+internal_slot_count=slot_count AND internal_slot_count=internal_cleanup_count)),
  CHECK((candidate_count=0)=(request_count=0)),
  limits jsonb NOT NULL, counters jsonb NOT NULL DEFAULT '${zero}'::jsonb,
  recovery_debt boolean NOT NULL DEFAULT false,
@@ -99,6 +101,19 @@ CREATE TABLE phase30_test_execution.operation_slots (
  FOREIGN KEY(run_id,operation_key) REFERENCES phase30_test_execution.bound_operations(run_id,operation_key),
  FOREIGN KEY(run_id,slot_key) REFERENCES phase30_test_execution.slots(run_id,slot_key)
 );
+CREATE TABLE phase30_test_execution.internal_cleanup_entries (
+ run_id uuid NOT NULL, entry_key text NOT NULL CHECK(entry_key ~ '^[a-z0-9][a-z0-9._-]{0,79}$'),
+ source_operation_key text NOT NULL, attachment_id uuid NOT NULL, object_id uuid NOT NULL, attempt_id uuid NOT NULL,
+ claim_id uuid NOT NULL, supervision_id uuid NOT NULL, sha256 text NOT NULL CHECK(sha256 ~ '^[a-f0-9]{64}$'),
+ byte_count bigint NOT NULL CHECK(byte_count BETWEEN 1 AND 4194304), job_slot_key text NOT NULL,
+ state text NOT NULL DEFAULT 'AVAILABLE' CHECK(state IN ('AVAILABLE','BOUND')),
+ proof_kind text CHECK(proof_kind IN ('UNSENT','SETTLED')), lease_owner uuid, attachment_version bigint, object_version bigint, allocated_at timestamptz,
+ PRIMARY KEY(run_id,entry_key), UNIQUE(run_id,source_operation_key), UNIQUE(run_id,object_id), UNIQUE(run_id,job_slot_key),
+ FOREIGN KEY(run_id,source_operation_key) REFERENCES phase30_test_execution.bound_operations(run_id,operation_key),
+ FOREIGN KEY(run_id,job_slot_key) REFERENCES phase30_test_execution.slots(run_id,slot_key),
+ CHECK((state='AVAILABLE' AND proof_kind IS NULL AND lease_owner IS NULL AND attachment_version IS NULL AND object_version IS NULL AND allocated_at IS NULL) OR
+ (state='BOUND' AND proof_kind IS NOT NULL AND lease_owner IS NOT NULL AND attachment_version IS NOT NULL AND object_version IS NOT NULL AND attachment_version>=0 AND object_version>=1 AND allocated_at IS NOT NULL))
+);
 CREATE FUNCTION phase30_test_execution.request_totals(target uuid, reserved_only boolean) RETURNS jsonb
 LANGUAGE sql VOLATILE SET search_path=pg_catalog AS $$
  SELECT jsonb_build_object('authenticatedRequests',count(*) FILTER(WHERE c.auth_class='AUTH'),'anonymousRequests',count(*) FILTER(WHERE c.auth_class='ANON'),
@@ -131,8 +146,8 @@ BEGIN
   NEW.issued_at:=now_at;
   IF NEW.state<>'PREPARED' OR NEW.preparation_sealed OR NEW.counters<>'${zero}'::jsonb OR NEW.recovery_debt THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
  ELSE
-  IF ROW(NEW.run_id,NEW.activation_id,NEW.manifest_sha256,NEW.source_sha,NEW.service_id,NEW.issued_at,NEW.not_before,NEW.expires_at,NEW.limits,NEW.slot_count,NEW.candidate_count,NEW.request_count,NEW.operation_count,NEW.edge_count,NEW.operation_slot_count,NEW.activation_control_required)
-   IS DISTINCT FROM ROW(OLD.run_id,OLD.activation_id,OLD.manifest_sha256,OLD.source_sha,OLD.service_id,OLD.issued_at,OLD.not_before,OLD.expires_at,OLD.limits,OLD.slot_count,OLD.candidate_count,OLD.request_count,OLD.operation_count,OLD.edge_count,OLD.operation_slot_count,OLD.activation_control_required)
+  IF ROW(NEW.run_id,NEW.activation_id,NEW.manifest_sha256,NEW.source_sha,NEW.service_id,NEW.issued_at,NEW.not_before,NEW.expires_at,NEW.limits,NEW.slot_count,NEW.candidate_count,NEW.request_count,NEW.operation_count,NEW.edge_count,NEW.operation_slot_count,NEW.activation_control_required,NEW.internal_cleanup_count,NEW.internal_slot_count)
+   IS DISTINCT FROM ROW(OLD.run_id,OLD.activation_id,OLD.manifest_sha256,OLD.source_sha,OLD.service_id,OLD.issued_at,OLD.not_before,OLD.expires_at,OLD.limits,OLD.slot_count,OLD.candidate_count,OLD.request_count,OLD.operation_count,OLD.edge_count,OLD.operation_slot_count,OLD.activation_control_required,OLD.internal_cleanup_count,OLD.internal_slot_count)
    OR (OLD.recovery_debt AND NOT NEW.recovery_debt) THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
   FOR k IN SELECT jsonb_object_keys(maximum) LOOP
    IF (NEW.counters->>k)::numeric<(OLD.counters->>k)::numeric THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
@@ -149,6 +164,8 @@ BEGIN
    IF (SELECT count(*) FROM phase30_test_execution.bound_operations WHERE run_id=NEW.run_id)<>NEW.operation_count
     OR (SELECT count(*) FROM phase30_test_execution.operation_edges WHERE run_id=NEW.run_id)<>NEW.edge_count
     OR (SELECT count(*) FROM phase30_test_execution.operation_slots WHERE run_id=NEW.run_id)<>NEW.operation_slot_count
+    OR (SELECT count(*) FROM phase30_test_execution.internal_cleanup_entries WHERE run_id=NEW.run_id)<>NEW.internal_cleanup_count
+    OR EXISTS(SELECT 1 FROM phase30_test_execution.internal_cleanup_entries i JOIN phase30_test_execution.operation_slots m ON m.run_id=i.run_id AND m.slot_key=i.job_slot_key WHERE i.run_id=NEW.run_id)
     OR EXISTS(SELECT 1 FROM phase30_test_execution.bound_operations o WHERE o.run_id=NEW.run_id AND
      ((SELECT count(*) FROM phase30_test_execution.operation_slots m WHERE m.run_id=o.run_id AND m.operation_key=o.operation_key)<>o.slot_count
       OR NOT EXISTS(SELECT 1 FROM phase30_test_execution.operation_edges e WHERE e.run_id=o.run_id AND e.operation_key=o.operation_key)))
@@ -193,7 +210,7 @@ CREATE TRIGGER guard_run BEFORE INSERT OR UPDATE OR DELETE ON phase30_test_execu
  FOR EACH ROW EXECUTE FUNCTION phase30_test_execution.guard_run();
 CREATE FUNCTION phase30_test_execution.guard_slot() RETURNS trigger
 LANGUAGE plpgsql SET search_path=pg_catalog AS $$
-DECLARE parent phase30_test_execution.runs%ROWTYPE; now_at timestamptz:=clock_timestamp();
+DECLARE parent phase30_test_execution.runs%ROWTYPE; now_at timestamptz:=clock_timestamp(); internal_burn boolean;
 BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
  SELECT * INTO parent FROM phase30_test_execution.runs WHERE run_id=NEW.run_id FOR UPDATE;
@@ -203,17 +220,19 @@ BEGIN
   IF parent.state<>'PREPARED' OR parent.preparation_sealed OR now_at>=parent.expires_at OR NEW.state<>'AVAILABLE' OR NEW.reserved_at IS NOT NULL
    OR (SELECT count(*) FROM phase30_test_execution.slots WHERE run_id=NEW.run_id)>=parent.slot_count THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
  ELSE
+  SELECT EXISTS(SELECT 1 FROM phase30_test_execution.internal_cleanup_entries i JOIN phase30_test_execution.bound_operations o ON o.run_id=i.run_id AND o.operation_key=i.source_operation_key JOIN phase30_test_execution.request_attempts a ON a.run_id=o.run_id AND a.attempt_key=o.bound_attempt_key
+   WHERE i.run_id=NEW.run_id AND i.job_slot_key=NEW.slot_key AND i.entry_key=NEW.operation_key AND i.attachment_id=NEW.attachment_id AND i.state='BOUND' AND i.proof_kind IN ('UNSENT','SETTLED') AND i.allocated_at IS NOT NULL AND o.state='BOUND' AND a.state='BOUND' AND a.bound_operation_key=o.operation_key AND a.boot_id=parent.boot_id AND parent.activation_control_required AND parent.preparation_sealed AND parent.state<>'PREPARED' AND NEW.role='CLEANUP_JOB') INTO internal_burn;
   IF ROW(NEW.run_id,NEW.slot_key,NEW.operation_key,NEW.role,NEW.id,NEW.attachment_id)
    IS DISTINCT FROM ROW(OLD.run_id,OLD.slot_key,OLD.operation_key,OLD.role,OLD.id,OLD.attachment_id)
-   OR NOT (OLD.state='AVAILABLE' AND NEW.state='BURNED') OR parent.state<>'ACTIVE'
-   OR (parent.request_count>0 AND NOT EXISTS(
+   OR NOT (OLD.state='AVAILABLE' AND NEW.state='BURNED') OR (NOT internal_burn AND parent.state<>'ACTIVE')
+   OR (NOT internal_burn AND parent.request_count>0 AND NOT EXISTS(
     SELECT 1 FROM phase30_test_execution.operation_slots m
     JOIN phase30_test_execution.bound_operations o USING(run_id,operation_key)
     JOIN phase30_test_execution.request_attempts a ON a.run_id=o.run_id AND a.attempt_key=o.bound_attempt_key
     WHERE m.run_id=NEW.run_id AND m.slot_key=NEW.slot_key AND o.operation_key=NEW.operation_key
      AND o.attachment_id=NEW.attachment_id AND o.state='BOUND' AND a.state='BOUND'
      AND a.bound_operation_key=o.operation_key AND a.boot_id=parent.boot_id))
-   OR now_at<parent.not_before OR now_at>=parent.expires_at THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
+   OR (NOT internal_burn AND (now_at<parent.not_before OR now_at>=parent.expires_at)) THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
   NEW.reserved_at:=now_at;
  END IF;
  RETURN NEW;
@@ -395,4 +414,44 @@ CREATE TRIGGER refuse_truncate BEFORE TRUNCATE ON phase30_test_execution.operati
  FOR EACH STATEMENT EXECUTE FUNCTION phase30_test_execution.refuse_truncate();
 CREATE TRIGGER refuse_truncate BEFORE TRUNCATE ON phase30_test_execution.operation_slots
  FOR EACH STATEMENT EXECUTE FUNCTION phase30_test_execution.refuse_truncate();
+CREATE FUNCTION phase30_test_execution.guard_internal_cleanup() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE parent phase30_test_execution.runs%ROWTYPE; source phase30_test_execution.bound_operations%ROWTYPE;
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
+ SELECT * INTO parent FROM phase30_test_execution.runs WHERE run_id=NEW.run_id FOR UPDATE;
+ IF TG_OP='UPDATE' THEN
+  IF ROW(NEW.run_id,NEW.entry_key,NEW.source_operation_key,NEW.attachment_id,NEW.object_id,NEW.attempt_id,NEW.claim_id,NEW.supervision_id,NEW.sha256,NEW.byte_count,NEW.job_slot_key)
+   IS DISTINCT FROM ROW(OLD.run_id,OLD.entry_key,OLD.source_operation_key,OLD.attachment_id,OLD.object_id,OLD.attempt_id,OLD.claim_id,OLD.supervision_id,OLD.sha256,OLD.byte_count,OLD.job_slot_key)
+   OR OLD.state<>'AVAILABLE' OR NEW.state<>'BOUND' OR NOT parent.activation_control_required OR NOT parent.preparation_sealed OR parent.state='PREPARED'
+   OR NEW.proof_kind IS NULL OR NEW.lease_owner IS NULL OR NEW.attachment_version IS NULL OR NEW.object_version IS NULL OR NEW.attachment_version<0 OR NEW.object_version<1 OR NEW.allocated_at IS NOT NULL
+   OR NOT EXISTS(SELECT 1 FROM phase30_test_execution.bound_operations o JOIN phase30_test_execution.request_attempts a ON a.run_id=o.run_id AND a.attempt_key=o.bound_attempt_key
+    WHERE o.run_id=NEW.run_id AND o.operation_key=NEW.source_operation_key AND o.state='BOUND' AND o.attachment_id=NEW.attachment_id AND a.state='BOUND' AND a.bound_operation_key=o.operation_key AND a.boot_id=parent.boot_id)
+   OR NOT EXISTS(SELECT 1 FROM phase30_test_execution.slots s JOIN phase30_test_execution.operation_slots m USING(run_id,slot_key)
+    WHERE m.run_id=NEW.run_id AND m.operation_key=NEW.source_operation_key AND s.role='UPLOAD_OWNER' AND s.id=NEW.lease_owner AND s.state='BURNED')
+  THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
+  NEW.allocated_at:=clock_timestamp();RETURN NEW;
+ END IF;
+ IF NOT FOUND OR parent.state<>'PREPARED' OR parent.preparation_sealed OR NOT parent.activation_control_required OR clock_timestamp()>=parent.expires_at
+  OR NEW.state<>'AVAILABLE' OR NEW.proof_kind IS NOT NULL OR NEW.lease_owner IS NOT NULL OR NEW.attachment_version IS NOT NULL OR NEW.object_version IS NOT NULL OR NEW.allocated_at IS NOT NULL
+  OR (SELECT count(*) FROM phase30_test_execution.internal_cleanup_entries WHERE run_id=NEW.run_id)>=parent.internal_cleanup_count THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
+ SELECT * INTO source FROM phase30_test_execution.bound_operations WHERE run_id=NEW.run_id AND operation_key=NEW.source_operation_key;
+ IF NOT FOUND OR source.attachment_id<>NEW.attachment_id OR source.processing_attempts<>0 OR source.ingress_bytes<NEW.byte_count OR source.slot_count<>5
+  OR NOT EXISTS(SELECT 1 FROM phase30_test_execution.slots s WHERE s.run_id=NEW.run_id AND s.slot_key=NEW.job_slot_key AND s.operation_key=NEW.entry_key AND s.attachment_id=NEW.attachment_id AND s.role='CLEANUP_JOB' AND s.state='AVAILABLE')
+  OR EXISTS(SELECT 1 FROM phase30_test_execution.operation_slots WHERE run_id=NEW.run_id AND slot_key=NEW.job_slot_key)
+  OR (SELECT count(*) FROM phase30_test_execution.operation_slots m JOIN phase30_test_execution.slots s USING(run_id,slot_key) WHERE m.run_id=NEW.run_id AND m.operation_key=NEW.source_operation_key AND s.attachment_id=NEW.attachment_id AND ((s.role='UPLOAD_OWNER') OR (s.role='SOURCE_OBJECT' AND s.id=NEW.object_id) OR (s.role='SOURCE_ATTEMPT' AND s.id=NEW.attempt_id) OR (s.role='PUT_CLAIM' AND s.id=NEW.claim_id) OR (s.role='PUT_SUPERVISION' AND s.id=NEW.supervision_id)))<>5
+  OR (SELECT count(DISTINCT s.role) FROM phase30_test_execution.operation_slots m JOIN phase30_test_execution.slots s USING(run_id,slot_key) WHERE m.run_id=NEW.run_id AND m.operation_key=NEW.source_operation_key)<>5
+ THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER guard_internal_cleanup BEFORE INSERT OR UPDATE OR DELETE ON phase30_test_execution.internal_cleanup_entries FOR EACH ROW EXECUTE FUNCTION phase30_test_execution.guard_internal_cleanup();
+CREATE TRIGGER refuse_truncate BEFORE TRUNCATE ON phase30_test_execution.internal_cleanup_entries FOR EACH STATEMENT EXECUTE FUNCTION phase30_test_execution.refuse_truncate();
+CREATE FUNCTION phase30_test_execution.check_internal_cleanup_consistency() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+ IF EXISTS(SELECT 1 FROM phase30_test_execution.internal_cleanup_entries i JOIN phase30_test_execution.slots s ON s.run_id=i.run_id AND s.slot_key=i.job_slot_key WHERE i.run_id=NEW.run_id AND ((i.state='AVAILABLE' AND s.state<>'AVAILABLE') OR (i.state='BOUND' AND s.state<>'BURNED'))) THEN RAISE EXCEPTION 'TEST_ADMISSION_LEDGER'; END IF;
+ RETURN NULL;
+END $$;
+CREATE CONSTRAINT TRIGGER check_internal_cleanup_consistency AFTER INSERT OR UPDATE ON phase30_test_execution.internal_cleanup_entries DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION phase30_test_execution.check_internal_cleanup_consistency();
+CREATE CONSTRAINT TRIGGER check_internal_cleanup_consistency AFTER INSERT OR UPDATE ON phase30_test_execution.slots DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION phase30_test_execution.check_internal_cleanup_consistency();
 `;

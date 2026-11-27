@@ -2,6 +2,7 @@ import {supervisionIdentity,verifyUnsentProof,type PutUnsentCertificate,type Put
 import type {AttachmentPutSupervision} from './storage/attachment-storage.port';
 import type {PoolClient} from 'pg';
 import type {AttachmentStoredObject,AttachmentObjectLocator} from './storage/attachment-storage.port';
+export interface ControlledCleanupJob {ensure(client:PoolClient,attachmentId:string,objectId:string,reason:'REJECTED'|'LATE_WRITE'):Promise<void>;}
 export class AttachmentLedgerError extends Error {
  constructor(readonly code:'CLAIM_CONFLICT'|'INTEGRITY'){super('ATTACHMENT_OBJECT_'+code);this.name='AttachmentLedgerError';}
 }
@@ -41,15 +42,15 @@ export class AttachmentObjectLedger {
  private matches(claim:AttachmentPutClaim,o:ObjectRow):boolean{const expected=manifest(o);return expected.sizeBytes===claim.manifest.sizeBytes&&expected.sha256===claim.manifest.sha256&&Object.entries(expected.locator).every(([k,v])=>claim.manifest.locator[k as keyof AttachmentObjectLocator]===v);}
  /** Infrastructure-only retirement, with independent original-entry and actual
   * local-closure proofs. Never releases slots, reservations or ownership. */
- async abandonUnsent(client:PoolClient,claim:AttachmentPutClaim,certificate:PutUnsentCertificate,closure:PutLocalClosure):Promise<void>{
+ async abandonUnsent(client:PoolClient,claim:AttachmentPutClaim,certificate:PutUnsentCertificate,closure:PutLocalClosure,cleanup?:ControlledCleanupJob):Promise<void>{
   const a=(await client.query<{state:string}>('SELECT state FROM attachments WHERE id=$1 FOR UPDATE',[claim.attachmentId])).rows[0];
   const o=(await client.query<ObjectRow>('SELECT * FROM attachment_objects WHERE attachment_id=$1 AND id=$2 FOR UPDATE',[claim.attachmentId,claim.objectId])).rows[0];
   if(!a||!['DELETED','REJECTED'].includes(a.state)||!o||o.put_claim!==claim.claimId||!o.put_supervision_id||o.put_settled_at||o.etag||!this.matches(claim,o)||!verifyUnsentProof(claim,o.put_supervision_id,certificate,closure))return fail('CLAIM_CONFLICT');
   if(o.put_abandoned_at)return;
   await client.query("UPDATE attachment_objects SET put_abandoned_at=clock_timestamp(),put_uncertain=false,status='DELETE_PENDING',object_version=object_version+1 WHERE id=$1",[o.id]);
-  await client.query("INSERT INTO attachment_cleanup_jobs(id,attachment_id,object_id,reason) VALUES(gen_random_uuid(),$1,$2,'REJECTED') ON CONFLICT(object_id) WHERE completed_at IS NULL DO NOTHING",[o.attachment_id,o.id]);
+  if(cleanup)await cleanup.ensure(client,o.attachment_id,o.id,'REJECTED');else await client.query("INSERT INTO attachment_cleanup_jobs(id,attachment_id,object_id,reason) VALUES(gen_random_uuid(),$1,$2,'REJECTED') ON CONFLICT(object_id) WHERE completed_at IS NULL DO NOTHING",[o.attachment_id,o.id]);
  }
- async recordPutResult(client:PoolClient,claim:AttachmentPutClaim,observed:AttachmentStoredObject):Promise<{acceptedForNextStep:boolean}>{
+ async recordPutResult(client:PoolClient,claim:AttachmentPutClaim,observed:AttachmentStoredObject,cleanup?:ControlledCleanupJob):Promise<{acceptedForNextStep:boolean}>{
   const a=(await client.query<{state:string;version:string;lease_owner:string|null;valid:boolean}>(`SELECT state,version,lease_owner,(lease_expires_at>clock_timestamp() AND expires_at>clock_timestamp()) AS valid FROM attachments WHERE id=$1 FOR UPDATE`,[claim.attachmentId])).rows[0];
   const o=(await client.query<ObjectRow>('SELECT * FROM attachment_objects WHERE attachment_id=$1 AND id=$2 FOR UPDATE',[claim.attachmentId,claim.objectId])).rows[0];
   if(!a||!o||o.put_claim!==claim.claimId||o.put_abandoned_at)return fail('CLAIM_CONFLICT');
@@ -59,7 +60,7 @@ export class AttachmentObjectLedger {
   if(o.put_settled_at){if(o.etag!==observed.version)return fail('INTEGRITY');return {acceptedForNextStep:eligible&&o.status==='WRITTEN'};}
   const accept=eligible&&Number(o.object_version)===claim.objectVersion&&o.status==='RESERVED';
   await client.query(`UPDATE attachment_objects SET etag=$2,put_settled_at=clock_timestamp(),put_uncertain=false,status=$3,object_version=object_version+1 WHERE id=$1`,[o.id,observed.version,accept?'WRITTEN':'DELETE_PENDING']);
-  if(!accept)await client.query(`INSERT INTO attachment_cleanup_jobs(id,attachment_id,object_id,reason) VALUES(gen_random_uuid(),$1,$2,'LATE_WRITE') ON CONFLICT(object_id) WHERE completed_at IS NULL DO NOTHING`,[o.attachment_id,o.id]);
+  if(!accept){if(cleanup)await cleanup.ensure(client,o.attachment_id,o.id,'LATE_WRITE');else await client.query(`INSERT INTO attachment_cleanup_jobs(id,attachment_id,object_id,reason) VALUES(gen_random_uuid(),$1,$2,'LATE_WRITE') ON CONFLICT(object_id) WHERE completed_at IS NULL DO NOTHING`,[o.attachment_id,o.id]);}
   return {acceptedForNextStep:accept};
  }
 }

@@ -1,3 +1,4 @@
+import type{ControlledSourceUploadContext}from'./test-admission/controlled-source-upload';
 import type {ControlledInitiationContext} from './initiation/controlled-initiation.port';
 import {Logger,type OnModuleInit,type OnModuleDestroy} from '@nestjs/common';
 import type {ConfigService} from '@nestjs/config';
@@ -68,7 +69,7 @@ export class AttachmentRuntime implements AttachmentHttpApplication,OnModuleInit
  patchMetadata(...args:Parameters<AttachmentReadService['patchMetadata']>){return this.run(()=>this.reads!.patchMetadata(...args));}
  delete(...args:Parameters<AttachmentReadService['delete']>){return this.run(()=>this.reads!.delete(...args));}
  read(...args:Parameters<AttachmentReadService['read']>){return this.run(()=>this.reads!.read(args[0],args[1],args[2],{...args[3],signal:args[3]?.signal?AbortSignal.any([args[3].signal,this.abort.signal]):this.abort.signal}));}
- upload(input:Parameters<AttachmentUploadService['upload']>[0]){return this.run(()=>this.uploads!.upload({...input,signal:input.signal?AbortSignal.any([input.signal,this.abort.signal]):this.abort.signal}));}
+ upload(input:Parameters<AttachmentUploadService['upload']>[0],context?:ControlledSourceUploadContext){if(arguments.length>=2)throw new AttachmentInitiationUnavailable();return this.run(()=>this.uploads!.upload({...input,signal:input.signal?AbortSignal.any([input.signal,this.abort.signal]):this.abort.signal}));}
  finalize(input:Parameters<AttachmentFinalizeService['finalize']>[0]){return this.run(()=>this.finalizer!.finalize({...input,signal:input.signal?AbortSignal.any([input.signal,this.abort.signal]):this.abort.signal}));}
  onModuleDestroy():Promise<void>{if(!this.teardown)this.teardown=this.destroy();return this.teardown;}
  private async destroy():Promise<void>{

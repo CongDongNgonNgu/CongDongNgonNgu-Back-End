@@ -5,6 +5,7 @@ import type {
   BindingOperation,
   BindingEdge,
   RunSlot,
+  InternalSourceCleanup,
 } from "./run-ledger";
 import { RUN_LIMITS } from "./run-ledger-schema";
 import {
@@ -164,6 +165,71 @@ export function lowerPinnedRequestPlan(
         }),
       );
     }
+    const internalCleanup: InternalSourceCleanup[] = [];
+    for (const entry of declarations.internalCleanup ?? []) {
+      const policy = policies.find(
+          (p) => p.policyKey === entry.sourceOperationKey,
+        ),
+        source = declarations.objectIdentities.find(
+          (o) =>
+            o.operationKey === entry.sourceOperationKey &&
+            o.variant === "source" &&
+            o.attachmentId === entry.attachmentId,
+        ),
+        fixture = declarations.inventory.attachments.find(
+          (a) => a.id === entry.attachmentId,
+        ),
+        slot = sourceSlots.get(entry.jobSlotKey);
+      if (
+        !policy ||
+        policy.instances.length !== 1 ||
+        !source ||
+        source.objectId !== entry.objectId ||
+        !fixture ||
+        !slot ||
+        slot.role !== "CLEANUP_JOB" ||
+        slot.operationKey !== entry.key ||
+        slot.attachmentId !== entry.attachmentId ||
+        transferred.has(slot.key)
+      )
+        return fail();
+      const operation = operations.find(
+          (o) => o.key === policy.instances[0].instanceKey,
+        )!,
+        mapped = slots.filter((s) => s.operationKey === operation.key),
+        roles = [
+          "UPLOAD_OWNER",
+          "SOURCE_OBJECT",
+          "SOURCE_ATTEMPT",
+          "PUT_CLAIM",
+          "PUT_SUPERVISION",
+        ];
+      if (
+        mapped.length !== 5 ||
+        roles.some(
+          (role) => mapped.filter((s) => s.role === role).length !== 1,
+        ) ||
+        mapped.find((s) => s.role === "SOURCE_OBJECT")?.id !==
+          source.objectId ||
+        mapped.find((s) => s.role === "SOURCE_ATTEMPT")?.id !==
+          source.attemptId ||
+        mapped.find((s) => s.role === "PUT_CLAIM")?.id !== source.putClaimId ||
+        mapped.find((s) => s.role === "PUT_SUPERVISION")?.id !==
+          source.supervisionId
+      )
+        return fail();
+      transferred.add(slot.key);
+      slots.push({ ...slot });
+      internalCleanup.push({
+        ...entry,
+        sourceOperationKey: operation.key,
+        attemptId: source.attemptId,
+        claimId: source.putClaimId,
+        supervisionId: source.supervisionId,
+        sha256: fixture.sourceSha256,
+        byteCount: fixture.initiation.bytes,
+      });
+    }
     if (
       transferred.size !== sourceSlots.size ||
       coarse.candidates.some((c) =>
@@ -221,6 +287,7 @@ export function lowerPinnedRequestPlan(
         ),
       },
       activationControlRequired: true,
+      ...(internalCleanup.length ? { internalCleanup } : {}),
     };
     return { prepared, coarse, policies: Object.freeze(policies) };
   } catch {

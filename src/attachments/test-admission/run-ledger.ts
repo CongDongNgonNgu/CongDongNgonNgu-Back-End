@@ -1,3 +1,4 @@
+import {ControlledSourceUploads} from './controlled-source-upload';
 import type {ControlledInitiationContext,ControlledInitiationAccess,ControlledInitiationProjection,InitiationAttemptPlan,InitiationMode} from '../initiation/controlled-initiation.port';
 import {parseControlTuple,type ControlTuple} from './activation-control';
 import type {Pool, PoolClient} from 'pg';
@@ -6,8 +7,9 @@ export {RUN_LIMITS} from './run-ledger-schema';
 type Role=typeof SLOT_ROLES[number];
 type Counter=keyof typeof RUN_LIMITS;
 export interface RunSlot {key:string;operationKey:string;role:Role;id:string;attachmentId?:string;}
+export interface InternalSourceCleanup {key:string;sourceOperationKey:string;attachmentId:string;objectId:string;attemptId:string;claimId:string;supervisionId:string;sha256:string;byteCount:number;jobSlotKey:string;}
 export interface PreparedRun {runId:string;activationId:string;manifestSha256:string;sourceSha:string;
- notBefore:string;expiresAt:string;limits:Record<Counter,number>;slots:RunSlot[];requests?:RequestPreparation;bindings?:BindingPreparation;activationControlRequired?:boolean;}
+ notBefore:string;expiresAt:string;limits:Record<Counter,number>;slots:RunSlot[];requests?:RequestPreparation;bindings?:BindingPreparation;activationControlRequired?:boolean;internalCleanup?:InternalSourceCleanup[];}
 export interface RequestCandidate {key:string;method:'GET'|'HEAD'|'POST'|'PUT'|'PATCH'|'DELETE';path:string;authClass:'AUTH'|'ANON';ingressBytes:number;egressBytes:number;}
 export interface RequestAttempt {key:string;candidateKey:string;}
 export interface RequestPreparation {candidates:RequestCandidate[];attempts:RequestAttempt[];}
@@ -67,6 +69,17 @@ function bindingPreparation(value:unknown,requests:RequestPreparation|undefined,
  }catch{return fail();}
 }
 
+function cleanupPreparation(value:unknown,slots:RunSlot[]):InternalSourceCleanup[]{
+ const seen=new Set<string>(),result:InternalSourceCleanup[]=[];
+ for(const raw of bounded(value,4,0)){
+  const r=closed(raw,['key','sourceOperationKey','attachmentId','objectId','attemptId','claimId','supervisionId','sha256','byteCount','jobSlotKey']);
+  if(!['key','sourceOperationKey','jobSlotKey'].every(k=>typeof r[k]==='string'&&key(r[k] as string))||!['attachmentId','objectId','attemptId','claimId','supervisionId'].every(k=>typeof r[k]==='string'&&uuid(r[k] as string))||typeof r.sha256!=='string'||!/^[a-f0-9]{64}$/.test(r.sha256)||!Number.isSafeInteger(r.byteCount)||Number(r.byteCount)<1||Number(r.byteCount)>4194304)return fail();
+  const slot=slots.find(s=>s.key===r.jobSlotKey);if(!slot||slot.role!=='CLEANUP_JOB'||slot.operationKey!==r.key||slot.attachmentId!==r.attachmentId)return fail();
+  for(const k of ['key','sourceOperationKey','objectId','jobSlotKey']){const v=String(r[k]);if(seen.has(v))return fail();seen.add(v);}
+  result.push({...r} as unknown as InternalSourceCleanup);
+ }
+ return result.sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0);
+}
 /** Inert repository: trusted pool injection only; never connects on import or
  * installs DDL. Own short transactions MUST finish before product/domain work.
  * Charges/burns are conservative, never refunded. No settlement or purge API. */
@@ -79,6 +92,8 @@ export class RunLedger {
  private readonly initiationIssued=new WeakSet<MatchedBoundOperation>();
  private readonly initiationContexts=new WeakMap<ControlledInitiationContext,{handle:MatchedBoundOperation;actorId:string;sessionId:string;fingerprint:string;signal:AbortSignal;mode:InitiationMode}>();
  private readonly requests=new WeakMap<RequestReservation,{active:ActiveRun;attemptKey:string;candidate:Readonly<RequestCandidate>;bodyDeadline:number}>();
+ private sourceExecutor?:ControlledSourceUploads;
+ controlledSourceUploads():ControlledSourceUploads{return this.sourceExecutor??=new ControlledSourceUploads(this.pool,handle=>{const h=this.requireMatchedBoundOperation(handle);return {handle:h,active:this.matchedBindings.get(h)!.active};});}
  constructor(private readonly pool:Pool){}
  private async transaction<T>(work:(client:PoolClient)=>Promise<T>):Promise<T>{
   let client:PoolClient|undefined;
@@ -106,16 +121,20 @@ export class RunLedger {
   const requests=requestField?.value===undefined?undefined:requestPreparation(requestField.value,limits);
   const bindingField=Object.getOwnPropertyDescriptor(plan,'bindings');
   if(bindingField&&(!bindingField.enumerable||!('value'in bindingField)))return fail();
-  const bindings=bindingField?.value===undefined?undefined:bindingPreparation(bindingField.value,requests,slots,limits);
+  const internalField=Object.getOwnPropertyDescriptor(plan,'internalCleanup');if(internalField&&(!internalField.enumerable||!('value'in internalField)))return fail();
+  const internalCleanup=internalField===undefined?[]:cleanupPreparation(internalField.value,slots),internalKeys=new Set(internalCleanup.map(e=>e.jobSlotKey)),httpSlots=slots.filter(s=>!internalKeys.has(s.key));
+  const bindings=bindingField?.value===undefined?undefined:bindingPreparation(bindingField.value,requests,httpSlots,limits);
+  for(const e of internalCleanup){const operation=bindings?.operations.find(o=>o.key===e.sourceOperationKey),mapped=httpSlots.filter(s=>s.operationKey===e.sourceOperationKey),roles=['UPLOAD_OWNER','SOURCE_OBJECT','SOURCE_ATTEMPT','PUT_CLAIM','PUT_SUPERVISION'];if(!activationControlRequired||!operation||operation.attachmentId!==e.attachmentId||operation.ingressBytes<e.byteCount||operation.processingAttempts!==0||mapped.length!==5||roles.some(role=>mapped.filter(s=>s.role===role).length!==1)||mapped.find(s=>s.role==='SOURCE_OBJECT')?.id!==e.objectId||mapped.find(s=>s.role==='SOURCE_ATTEMPT')?.id!==e.attemptId||mapped.find(s=>s.role==='PUT_CLAIM')?.id!==e.claimId||mapped.find(s=>s.role==='PUT_SUPERVISION')?.id!==e.supervisionId)return fail();}
   await this.transaction(async c=>{
-   await c.query(`INSERT INTO phase30_test_execution.runs(run_id,activation_id,manifest_sha256,source_sha,service_id,not_before,expires_at,limits,slot_count,candidate_count,request_count,operation_count,edge_count,operation_slot_count,activation_control_required)
-    VALUES($1,$2,$3,$4,'srv-dahnerh594qs73fp3420',$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14)`,[facts.runId,facts.activationId,facts.manifestSha256,facts.sourceSha,facts.notBefore,facts.expiresAt,JSON.stringify(limits),slots.length,requests?.candidates.length??0,requests?.attempts.length??0,bindings?.operations.length??0,bindings?.edges.length??0,bindings?slots.length:0,activationControlRequired]);
+   await c.query(`INSERT INTO phase30_test_execution.runs(run_id,activation_id,manifest_sha256,source_sha,service_id,not_before,expires_at,limits,slot_count,candidate_count,request_count,operation_count,edge_count,operation_slot_count,activation_control_required,internal_cleanup_count,internal_slot_count)
+    VALUES($1,$2,$3,$4,'srv-dahnerh594qs73fp3420',$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,[facts.runId,facts.activationId,facts.manifestSha256,facts.sourceSha,facts.notBefore,facts.expiresAt,JSON.stringify(limits),slots.length,requests?.candidates.length??0,requests?.attempts.length??0,bindings?.operations.length??0,bindings?.edges.length??0,bindings?httpSlots.length:0,activationControlRequired,internalCleanup.length,internalCleanup.length]);
    for(const s of slots.sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0))await c.query(`INSERT INTO phase30_test_execution.slots(run_id,slot_key,operation_key,role,id,attachment_id) VALUES($1,$2,$3,$4,$5,$6)`,[facts.runId,s.key,s.operationKey,s.role,s.id,s.attachmentId??null]);
    for(const cnd of requests?.candidates??[])await c.query('INSERT INTO phase30_test_execution.request_candidates(run_id,candidate_key,method,path,auth_class,ingress_bytes,egress_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)',[facts.runId,cnd.key,cnd.method,cnd.path,cnd.authClass,cnd.ingressBytes,cnd.egressBytes]);
    for(const a of requests?.attempts??[])await c.query('INSERT INTO phase30_test_execution.request_attempts(run_id,attempt_key,candidate_key) VALUES($1,$2,$3)',[facts.runId,a.key,a.candidateKey]);
 
    for(const o of bindings?.operations??[]){await c.query('INSERT INTO phase30_test_execution.bound_operations(run_id,operation_key,attachment_id,ingress_bytes,egress_bytes,processing_attempts,slot_count,policy_key,policy_attempt_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[facts.runId,o.key,o.attachmentId,o.ingressBytes,o.egressBytes,o.processingAttempts,o.slotKeys.length,o.policyKey??null,o.policyAttemptKey??null]);for(const slotKey of o.slotKeys)await c.query('INSERT INTO phase30_test_execution.operation_slots(run_id,operation_key,slot_key) VALUES($1,$2,$3)',[facts.runId,o.key,slotKey]);}
    for(const e of bindings?.edges??[])await c.query('INSERT INTO phase30_test_execution.operation_edges(run_id,attempt_key,operation_key) VALUES($1,$2,$3)',[facts.runId,e.attemptKey,e.operationKey]);
+   for(const e of internalCleanup)await c.query('INSERT INTO phase30_test_execution.internal_cleanup_entries(run_id,entry_key,source_operation_key,attachment_id,object_id,attempt_id,claim_id,supervision_id,sha256,byte_count,job_slot_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[facts.runId,e.key,e.sourceOperationKey,e.attachmentId,e.objectId,e.attemptId,e.claimId,e.supervisionId,e.sha256,e.byteCount,e.jobSlotKey]);
    await c.query('UPDATE phase30_test_execution.runs SET preparation_sealed=true WHERE run_id=$1',[facts.runId]);
 
   });

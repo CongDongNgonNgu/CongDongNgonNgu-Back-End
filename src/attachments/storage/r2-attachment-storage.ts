@@ -1,3 +1,4 @@
+import type {PlannedPutSupervisionIdentity} from './put-supervision-proof';
 import {createPutSupervisionAuthority} from './put-supervision-proof';
 import { createHash } from 'node:crypto';
 import {ATTACHMENT_LIMITS as L} from '../attachment-policy';
@@ -72,12 +73,12 @@ export class R2AttachmentStorage implements AttachmentStorage {
   /** Observe actual SDK request settlement, independently of foreground timeout.
    * Released unresolved sends remain counted, without retaining a locator map.
    * Caller still owns durable claim fencing and file/native producer closure. */
-  supervisePut(locator:AttachmentObjectLocator):AttachmentPutSupervision {
+  supervisePut(locator:AttachmentObjectLocator,plannedId?:PlannedPutSupervisionIdentity):AttachmentPutSupervision {
     const key=attachmentObjectKey(locator);
     if(this.closed||this.supervisionReservations>=L.deploymentMetadata*3)fail('UNAVAILABLE');
     if(this.putSupervisions.has(key))fail('CONFLICT');
     let entry!:PutSupervisionEntry;
-    const authority=createPutSupervisionAuthority(locator,()=>{if(this.putSupervisions.get(key)===entry)this.putSupervisions.delete(key);this.releaseSupervisionReservation(entry);});
+    const authority=createPutSupervisionAuthority(locator,()=>{if(this.putSupervisions.get(key)===entry)this.putSupervisions.delete(key);this.releaseSupervisionReservation(entry);},plannedId);
     entry={authority,used:false,reserved:true};this.handles.set(authority.handle,entry);
     this.putSupervisions.set(key,entry);this.supervisionReservations++;return authority.handle;
   }
@@ -94,7 +95,7 @@ export class R2AttachmentStorage implements AttachmentStorage {
     const client = transport ? undefined : new S3Client({ endpoint: endpoint.origin, region: 'auto', forcePathStyle: true, maxAttempts: 1, requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED', credentials: { accessKeyId: configuration.accessKeyId, secretAccessKey: configuration.secretAccessKey } });
     this.transport = transport || { send: client!.send.bind(client!) as AttachmentStorageTransport['send'], destroy: () => client!.destroy() };
   }
-  private async call<T>(command: Command, signal?: AbortSignal, supervision?:PutSupervisionEntry): Promise<T> {
+  private async call<T>(command: Command, signal?: AbortSignal, supervision?:PutSupervisionEntry,onActualResult?:(result:T)=>void|Promise<void>): Promise<T> {
     if (this.closed) fail('UNAVAILABLE');
     const controller = new AbortController(); this.active.add(controller);
     const abort = () => controller.abort(); const timer = setTimeout(abort, 10000);
@@ -110,7 +111,7 @@ export class R2AttachmentStorage implements AttachmentStorage {
       try{actualStarted=true;dispatched=this.transport.send(command,{abortSignal:controller.signal});}
       catch(error){actualSettled=true;this.actualSendSettled(supervision);throw error;}
       const operation = Promise.resolve(dispatched).then(async result => {
-        this.actualSendSettled(supervision);
+        try{await onActualResult?.(result as T);}finally{this.actualSendSettled(supervision);}
         if (controller.signal.aborted || this.closed) {
           const body = (result as { Body?: unknown } | null)?.Body;
           if (body instanceof Readable) await closeProviderBody(body);
@@ -141,7 +142,7 @@ export class R2AttachmentStorage implements AttachmentStorage {
     guarded.on('error', error => { streamFailure = error; });
     pipeline(input.body, guarded, error => { if (error) streamFailure = error; });
     try {
-      const result = await this.call<PutObjectCommandOutput>(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: guarded, ContentLength: input.sizeBytes, ContentType: 'application/octet-stream', CacheControl: 'private, no-store', IfNoneMatch: '*', Metadata: metadataFor(input.locator, input.sha256) }), input.signal, supervision);
+      const result = await this.call<PutObjectCommandOutput>(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: guarded, ContentLength: input.sizeBytes, ContentType: 'application/octet-stream', CacheControl: 'private, no-store', IfNoneMatch: '*', Metadata: metadataFor(input.locator, input.sha256) }), input.signal, supervision,result=>{if(supervision&&guarded.readableEnded&&!streamFailure){validateVersion(result.ETag);supervision.authority.recordReceipt({locator:{...input.locator},sizeBytes:input.sizeBytes,sha256:input.sha256,version:result.ETag!});}});
       if (streamFailure) throw streamFailure;
       // A transport returning before the stream finishes cannot establish a successful persisted upload.
       if (!guarded.readableEnded) fail('INTEGRITY');
