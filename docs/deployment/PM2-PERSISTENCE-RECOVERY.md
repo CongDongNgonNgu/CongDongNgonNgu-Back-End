@@ -177,3 +177,7 @@ That explicit synthetic action does not relax Production helper behavior or
 authorize manual recovery there. See IMPLEMENTED-SAFETY-HANDOFF.md. Earlier15-check
 PASS remains accepted historical mechanism evidence; changed callers/regressions
 are validated by the current required CI, not by repeating provenance reviews.
+
+## Reviewed baseline retention repair - 2026-11-27
+
+CI run45921430064 failed at staging because original artifact12735767418 expired at2026-11-26T12:59:00Z and its API now returns404. The retained local archive matches the already-reviewed size1550281 and SHA2567dc2bce0d6fa3891dbede35e6928c4ef66ec14a8baf99325ade51fe3f57b7f7f exactly. Its byte-identical repository copy is vendor/ci/backend-reviewed-baseline-9f.zip; this repairs retention, not provenance. Staging verifies size/digest/readback, refuses existing or symlink targets and removes only its own newly-created output on failure. Extraction, independent application hashes, PM2 launch/resurrection/recovery and every other CI gate remain unchanged. No Production, TEST runtime, deployment or provider activation is authorized by this repair.
