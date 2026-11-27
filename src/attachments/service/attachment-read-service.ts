@@ -117,17 +117,38 @@ export class AttachmentReadService {
     input: unknown,
     context?: ControlledInitiationContext,
   ): Promise<AttachmentDraftStatus> {
-    const actor = (await this.actor(refresh, true))!,
-      created = await (arguments.length >= 4
-        ? repository.initiate(actor, input, context)
-        : repository.initiate(actor, input));
+    const actor = (await this.actor(refresh, true))!;
+    const reauthorize = async () => {
+      const current = await this.actor(refresh, true);
+      if (current !== actor) throw new SessionFailure("AUTH_UNAUTHORIZED");
+    };
+    if (arguments.length >= 4) {
+      let refreshFailure: SessionFailure | undefined;
+      try {
+        return await repository.initiateProjected(actor, input, context!, {
+          refresh: async () => {
+            try {
+              await reauthorize();
+            } catch (error) {
+              if (error instanceof SessionFailure) refreshFailure = error;
+              throw error;
+            }
+          },
+          rate: (client) => this.quotas.consumeRead(client, actor),
+          select: (client, id) => selectAttachmentMetadata(client, actor, id),
+        });
+      } catch (error) {
+        if (refreshFailure) throw refreshFailure;
+        throw error;
+      }
+    }
+    const created = await repository.initiate(actor, input);
     // Every replay, including bound history, receives fresh exact-parent metadata
     // authorization. An internal replay reference never becomes an API projection.
     return this.metadata(
       async () => {
-        const current = await this.actor(refresh, true);
-        if (current !== actor) throw new SessionFailure("AUTH_UNAUTHORIZED");
-        return current;
+        await reauthorize();
+        return actor;
       },
       "requiresBoundProjection" in created ? created.attachmentId : created.id,
     );

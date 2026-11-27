@@ -1,3 +1,5 @@
+import { AttachmentQuotaLedger } from "../../src/attachments/attachment-quota-ledger";
+import { selectAttachmentMetadata } from "../../src/attachments/access/attachment-access";
 import { randomUUID, createHash } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
@@ -723,5 +725,181 @@ describe("controlled INITIATE exact identity and fresh SQL continuation", () => 
         )
       ).rows[0].counters,
     ).toMatchObject({ authenticatedRequests: 2, ingressBytes: 204800 });
+  });
+  it("returns metadata only after fresh gated read-rate and projection commits", async () => {
+    const value = input(),
+      f = await ready(value),
+      quota = new AttachmentQuotaLedger();
+    let rates = 0,
+      selections = 0;
+    const result = await f.repo.initiateProjected(actor, value, f.context, {
+      refresh: async () => {},
+      rate: async (c, id) => {
+        expect(id).toBe(f.attachmentId);
+        rates++;
+        await quota.consumeRead(c, actor);
+      },
+      select: async (c, id) => {
+        selections++;
+        return selectAttachmentMetadata(c, actor, id);
+      },
+    });
+    expect(result).toMatchObject({ id: f.attachmentId, state: "TEMPORARY" });
+    expect(rates).toBe(1);
+    expect(selections).toBe(1);
+    expect(
+      (
+        await db.pool.query(
+          "SELECT used FROM attachment_quota_counters WHERE kind='ACTOR' AND subject=$1 AND action='read'",
+          [actor],
+        )
+      ).rows[0].used,
+    ).toBe("1");
+  });
+  it.each([2, 3])(
+    "denies remaining projection stages after original expiry following COMMIT%s",
+    async (stopAfter) => {
+      const value = input();
+      let armed = false,
+        commits = 0,
+        expiry = "";
+      const f = await ready(value, {
+        expiresInMs: 12000,
+        send: async (c, sql, values) => {
+          const result = await c.query(sql, values);
+          if (armed && sql === "COMMIT" && ++commits === stopAfter) {
+            const remaining = Number(
+              (
+                await c.query(
+                  "SELECT EXTRACT(epoch FROM $1::timestamptz-clock_timestamp())*1000 remaining",
+                  [expiry],
+                )
+              ).rows[0].remaining,
+            );
+            await new Promise((r) =>
+              setTimeout(r, Math.max(0, remaining) + 25),
+            );
+          }
+          return result;
+        },
+      });
+      expiry = f.p.expiresAt;
+      armed = true;
+      let rates = 0,
+        selections = 0;
+      const quota = new AttachmentQuotaLedger();
+      await expect(
+        f.repo.initiateProjected(actor, value, f.context, {
+          refresh: async () => {},
+          rate: async (c) => {
+            rates++;
+            await quota.consumeRead(c, actor);
+          },
+          select: async (c, id) => {
+            selections++;
+            return selectAttachmentMetadata(c, actor, id);
+          },
+        }),
+      ).rejects.toThrow();
+      expect(await count(value.clientUploadId)).toBe(1);
+      expect(rates).toBe(stopAfter === 2 ? 0 : 1);
+      expect(selections).toBe(0);
+      const rows = (
+        await db.pool.query(
+          "SELECT used FROM attachment_quota_counters WHERE kind='ACTOR' AND subject=$1 AND action='read'",
+          [actor],
+        )
+      ).rows;
+      expect(rows).toEqual(stopAfter === 2 ? [] : [{ used: "1" }]);
+    },
+    30000,
+  );
+  it("revokes projected continuation after actual domain COMMIT when the native request aborts", async () => {
+    const value = input();
+    let armed = false,
+      commits = 0,
+      abort!: AbortController;
+    const f = await ready(value, {
+      send: async (c, sql, values) => {
+        const result = await c.query(sql, values);
+        if (armed && sql === "COMMIT" && ++commits === 2) abort.abort();
+        return result;
+      },
+    });
+    abort = f.abort;
+    armed = true;
+    let productWork = 0;
+    await expect(
+      f.repo.initiateProjected(actor, value, f.context, {
+        refresh: async () => {},
+        rate: async () => {
+          productWork++;
+        },
+        select: async () => {
+          productWork++;
+          return {};
+        },
+      }),
+    ).rejects.toThrow();
+    expect(productWork).toBe(0);
+    expect(await count(value.clientUploadId)).toBe(1);
+  });
+  it("keeps fresh current metadata ACL and returns no projection after domain authorization is revoked", async () => {
+    const value = input();
+    let armed = false,
+      commits = 0;
+    const f = await ready(value, {
+      send: async (c, sql, values) => {
+        const result = await c.query(sql, values);
+        if (armed && sql === "COMMIT" && ++commits === 2)
+          await db.pool.query(
+            "UPDATE users SET status='DISABLED' WHERE id=$1",
+            [actor],
+          );
+        return result;
+      },
+    });
+    armed = true;
+    const quota = new AttachmentQuotaLedger();
+    await expect(
+      f.repo.initiateProjected(actor, value, f.context, {
+        refresh: async () => {},
+        rate: (c) => quota.consumeRead(c, actor),
+        select: (c, id) => selectAttachmentMetadata(c, actor, id),
+      }),
+    ).rejects.toMatchObject({ code: "ATTACHMENT_UNAVAILABLE" });
+    expect(await count(value.clientUploadId)).toBe(1);
+  });
+  it("returns no success after actual projection COMMIT with lost acknowledgement", async () => {
+    const value = input();
+    let armed = false,
+      commits = 0;
+    const f = await ready(value, {
+      send: async (c, sql, values) => {
+        const result = await c.query(sql, values);
+        if (armed && sql === "COMMIT" && ++commits === 4)
+          throw Error("synthetic lost projection acknowledgement");
+        return result;
+      },
+    });
+    armed = true;
+    const quota = new AttachmentQuotaLedger();
+    await expect(
+      f.repo.initiateProjected(actor, value, f.context, {
+        refresh: async () => {},
+        rate: (c) => quota.consumeRead(c, actor),
+        select: (c, id) => selectAttachmentMetadata(c, actor, id),
+      }),
+    ).rejects.toThrow();
+    expect(commits).toBe(4);
+    expect(await count(value.clientUploadId)).toBe(1);
+    expect(
+      (
+        await db.pool.query(
+          "SELECT used FROM attachment_quota_counters WHERE kind='ACTOR' AND subject=$1 AND action='read'",
+          [actor],
+        )
+      ).rows[0].used,
+    ).toBe("1");
   });
 });

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { Test } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
 import type { Response, RequestHandler } from "express";
@@ -47,16 +47,28 @@ describe("native guarded controlled INITIATE into exact planned SQL identity", (
     base = "/api/v1/attachments";
   let language: string;
   const table = (name: string) => '"' + db.schema + '".' + name;
-  const scoped = () =>
+  const scoped = (
+    send?: (
+      client: PoolClient,
+      sql: string,
+      values?: unknown[],
+    ) => Promise<any>,
+  ) =>
     ({
       connect: async () => {
         const client = await db.pool.connect();
         return {
           query: (sql: string, values?: unknown[]) =>
-            client.query(
-              sql.replace(/phase30_test_execution/g, db.schema),
-              values,
-            ),
+            send
+              ? send(
+                  client,
+                  sql.replace(/phase30_test_execution/g, db.schema),
+                  values,
+                )
+              : client.query(
+                  sql.replace(/phase30_test_execution/g, db.schema),
+                  values,
+                ),
           release: () => client.release(),
         };
       },
@@ -91,9 +103,30 @@ describe("native guarded controlled INITIATE into exact planned SQL identity", (
     ).rows[0].id;
   }, 180000);
   afterAll(async () => db.close());
-  async function fixture(ordinary = false, retry = false) {
+  async function fixture(ordinary = false, retry = false, expireAfter?: 2 | 3) {
+    let armed = false,
+      commits = 0,
+      expiry = "";
     const identity = new InMemoryIdentityRepository(),
-      pool = scoped(),
+      pool = scoped(async (c, sql, values) => {
+        const result = await c.query(sql, values);
+        if (
+          armed &&
+          sql === "COMMIT" &&
+          ++commits === (expireAfter === undefined ? -1 : expireAfter + 2)
+        ) {
+          const remaining = Number(
+            (
+              await c.query(
+                "SELECT EXTRACT(epoch FROM $1::timestamptz-clock_timestamp())*1000 remaining",
+                [expiry],
+              )
+            ).rows[0].remaining,
+          );
+          await new Promise((r) => setTimeout(r, Math.max(0, remaining) + 25));
+        }
+        return result;
+      }),
       ledger = new RunLedger(pool),
       controls = new ActivationControlRepository(pool);
     const config = new ConfigService({
@@ -227,7 +260,9 @@ describe("native guarded controlled INITIATE into exact planned SQL identity", (
         (await db.pool.query("SELECT clock_timestamp() t")).rows[0].t as Date
       ).getTime();
       root.envelope.notBefore = new Date(now - 1000).toISOString();
-      root.envelope.expiresAt = new Date(now + 60000).toISOString();
+      root.envelope.expiresAt = new Date(
+        now + (expireAfter ? 12000 : 60000),
+      ).toISOString();
       const options = createPinnedPlanOptions(root);
       options.nowMs = now;
       options.receipt.observedAt = new Date(now).toISOString();
@@ -297,7 +332,11 @@ describe("native guarded controlled INITIATE into exact planned SQL identity", (
           )
         ).rows,
       });
+      // HTTP commits: reserve1, matched binding2, INITRATE3, DOMAIN4, readRATE5, projection6.
+      expiry = p.expiresAt;
+      armed = true;
       return {
+        committedStages: () => commits,
         app,
         runId: p.runId,
         user,
@@ -513,4 +552,31 @@ describe("native guarded controlled INITIATE into exact planned SQL identity", (
       await f.app.close();
     }
   }, 30000);
+  it.each([2, 3] as const)(
+    "denies native success after original expiry following controlled COMMIT%s",
+    async (stage) => {
+      const f = await fixture(false, false, stage);
+      try {
+        await request(f.app.getHttpServer())
+          .post(base)
+          .set("Authorization", "Bearer " + f.credentials.accessToken)
+          .send(f.body)
+          .expect(503);
+        expect(f.committedStages()).toBe(stage + 2);
+        const state = await f.state();
+        expect(state.attachments).toEqual([{ id: f.plannedId }]);
+        expect(state.operations).toEqual([{ state: "BOUND" }]);
+        const reads = (
+          await db.pool.query(
+            "SELECT used FROM attachment_quota_counters WHERE kind='ACTOR' AND subject=$1 AND action='read'",
+            [f.user.id],
+          )
+        ).rows;
+        expect(reads).toEqual(stage === 2 ? [] : [{ used: "1" }]);
+      } finally {
+        await f.app.close();
+      }
+    },
+    30000,
+  );
 });
