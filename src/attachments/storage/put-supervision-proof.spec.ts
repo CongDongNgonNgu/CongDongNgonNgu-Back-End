@@ -35,3 +35,70 @@ describe('sealed original-entry unsent authority',()=>{
 it('creates the original adapter authority with a planned UUID while rejecting a shaped replacement',()=>{const planned=randomUUID(),a=createPutSupervisionAuthority(locator,()=>{},createPlannedPutSupervisionIdentity(planned));expect(a.handle.id).toBe(planned);expect(()=>createPlannedPutSupervisionIdentity('bad')).toThrow();expect(()=>require('./put-supervision-proof').supervisionIdentity({...a.handle},locator)).toThrow();a.start();a.settle();expect(require('./put-supervision-proof').originalPutSettlement(a.handle,locator).id).toBe(planned);});
 
 it('consumes one planned identity across independent original factories and rejects copied receipts',()=>{const receipt=createPlannedPutSupervisionIdentity(randomUUID());createPutSupervisionAuthority(locator,()=>{},receipt);expect(()=>createPutSupervisionAuthority({...locator,objectId:randomUUID()},()=>{},receipt)).toThrow();const other=createPlannedPutSupervisionIdentity(randomUUID());expect(()=>createPutSupervisionAuthority(locator,()=>{},{...other})).toThrow();});
+
+describe('historical source PUT quiescence', () => {
+  const receipt = {
+    locator,
+    sizeBytes: 1,
+    sha256: 'a'.repeat(64),
+    version: '"etag"',
+  };
+  it('requires actual positive settlement and closure; survives original release without allowing copies', async () => {
+    const { captureSourcePutQuiescence, verifySourcePutQuiescence } =
+      await import('./put-supervision-proof');
+    const a = createPutSupervisionAuthority(locator),
+      exact = { ...claim, supervisionId: a.handle.id };
+    const closure = await createPutLocalClosure(
+      exact,
+      a.handle,
+      async () => {},
+    );
+    expect(() =>
+      captureSourcePutQuiescence(exact, a.handle, closure),
+    ).toThrow();
+    a.start();
+    a.recordReceipt(receipt);
+    a.settle();
+    const fact = captureSourcePutQuiescence(exact, a.handle, closure);
+    a.handle.release();
+    expect(verifySourcePutQuiescence(fact, exact, receipt)).toBe(true);
+    expect(verifySourcePutQuiescence({ ...fact }, exact, receipt)).toBe(false);
+    expect(
+      verifySourcePutQuiescence(fact, { ...exact, objectVersion: 2 }, receipt),
+    ).toBe(false);
+    expect(
+      verifySourcePutQuiescence(fact, exact, {
+        ...receipt,
+        version: '"other"',
+      }),
+    ).toBe(false);
+  });
+  it('rejects negative settlement, foreign handle and failed closure', async () => {
+    const { captureSourcePutQuiescence } =
+      await import('./put-supervision-proof');
+    const a = createPutSupervisionAuthority(locator),
+      exact = { ...claim, supervisionId: a.handle.id };
+    a.start();
+    a.settle();
+    const closure = await createPutLocalClosure(
+      exact,
+      a.handle,
+      async () => {},
+    );
+    expect(() =>
+      captureSourcePutQuiescence(exact, a.handle, closure),
+    ).toThrow();
+    const b = createPutSupervisionAuthority(locator);
+    b.start();
+    b.recordReceipt(receipt);
+    b.settle();
+    expect(() =>
+      captureSourcePutQuiescence(exact, b.handle, closure),
+    ).toThrow();
+    await expect(
+      createPutLocalClosure(exact, b.handle, async () => {
+        throw Error('open');
+      }),
+    ).rejects.toThrow();
+  });
+});

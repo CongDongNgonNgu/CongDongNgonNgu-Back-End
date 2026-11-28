@@ -2,7 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { readdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import type { Response, RequestHandler } from "express";
 import { Test } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
@@ -94,7 +94,15 @@ describe("native controlled source upload with exact planned ownership", () => {
     ).rows[0].id;
   }, 180000);
   afterAll(async () => db.close());
-  async function fixture(ordinary = false) {
+  type Send = (
+    client: PoolClient,
+    sql: string,
+    values?: unknown[],
+  ) => Promise<any>;
+  async function fixture(
+    ordinary = false,
+    proofOptions: { send?: Send; expiresInMs?: number } = {},
+  ) {
     const temporaryRoot = await mkdtemp(
       path.join(tmpdir(), "phase30-source-http-"),
     );
@@ -104,7 +112,16 @@ describe("native controlled source upload with exact planned ownership", () => {
         const c = await db.pool.connect();
         return {
           query: (sql: string, values?: unknown[]) =>
-            c.query(sql.replace(/phase30_test_execution/g, db.schema), values),
+            proofOptions.send
+              ? proofOptions.send(
+                  c,
+                  sql.replace(/phase30_test_execution/g, db.schema),
+                  values,
+                )
+              : c.query(
+                  sql.replace(/phase30_test_execution/g, db.schema),
+                  values,
+                ),
           release: () => c.release(),
         };
       },
@@ -356,7 +373,9 @@ describe("native controlled source upload with exact planned ownership", () => {
         (await db.pool.query("SELECT clock_timestamp() t")).rows[0].t as Date
       ).getTime();
       root.envelope.notBefore = new Date(now - 1000).toISOString();
-      root.envelope.expiresAt = new Date(now + 60000).toISOString();
+      root.envelope.expiresAt = new Date(
+        now + (proofOptions.expiresInMs ?? 60000),
+      ).toISOString();
       const literal = {
           ...root,
           internalCleanup: [
@@ -454,6 +473,10 @@ describe("native controlled source upload with exact planned ownership", () => {
       return {
         app,
         close,
+        expiresAt: p.expiresAt,
+        retry: () => service.retryControlledRetirements(),
+        originalReleased: () =>
+          [...authorities.values()].every((a) => a.released),
         credentials,
         issue,
         authenticate,
@@ -607,4 +630,97 @@ describe("native controlled source upload with exact planned ownership", () => {
       await f.close();
     }
   }, 30000);
+  it.each(["lost-ack", "lost-inspection-ack", "natural-expiry"] as const)(
+    "preserves committed PENDING custody and no DTO after %s, with original-only manual retry",
+    async (mode) => {
+      let pendingWrite = false,
+        pendingCommitSeen = false,
+        inspectionAckLost = false,
+        expiry = "";
+      const f = await fixture(false, {
+        expiresInMs: mode === "natural-expiry" ? 14000 : 60000,
+        send: async (c, sql, values) => {
+          const result = await c.query(sql, values);
+          if (/UPDATE attachments SET state='PENDING'/.test(sql))
+            pendingWrite = true;
+          if (sql === "COMMIT" && pendingWrite && !pendingCommitSeen) {
+            pendingCommitSeen = true;
+            if (mode !== "natural-expiry")
+              throw Error("synthetic lost PENDING acknowledgement");
+            const remaining = Number(
+              (
+                await c.query(
+                  "SELECT EXTRACT(epoch FROM $1::timestamptz-clock_timestamp())*1000 remaining",
+                  [expiry],
+                )
+              ).rows[0].remaining,
+            );
+            await new Promise((r) =>
+              setTimeout(r, Math.max(0, remaining) + 25),
+            );
+          } else if (
+            sql === "COMMIT" &&
+            pendingCommitSeen &&
+            mode === "lost-inspection-ack" &&
+            !inspectionAckLost
+          ) {
+            inspectionAckLost = true;
+            throw Error("synthetic lost custody inspection acknowledgement");
+          }
+          return result;
+        },
+      });
+      expiry = f.expiresAt;
+      try {
+        const response = await request(f.app.getHttpServer())
+          .put(f.url)
+          .set("Authorization", "Bearer " + f.credentials.accessToken)
+          .set("Content-Type", "text/plain")
+          .send("abc")
+          .expect(503);
+        expect(response.body.success).toBe(false);
+        expect(response.body.data).toBeUndefined();
+        expect(pendingCommitSeen).toBe(true);
+        expect(
+          (
+            await db.pool.query(
+              "SELECT state,lease_owner,upload_slot_held,pending_slot_held,source_object_id FROM attachments WHERE id=$1",
+              [f.attachmentId],
+            )
+          ).rows[0],
+        ).toMatchObject({
+          state: "PENDING",
+          lease_owner: null,
+          upload_slot_held: false,
+          pending_slot_held: true,
+          source_object_id: f.source.objectId,
+        });
+        expect((await f.state()).jobs).toEqual([]);
+        expect(await f.retry()).toEqual({ remaining: 0 });
+        expect(inspectionAckLost).toBe(mode === "lost-inspection-ack");
+        expect(f.originalReleased()).toBe(true);
+        expect(await f.retry()).toEqual({ remaining: 0 });
+        expect(f.transport.putSupervised).toHaveBeenCalledTimes(1);
+        const state = await f.state();
+        expect(state.jobs).toEqual([]);
+        expect(state.counters).toMatchObject({
+          authenticatedRequests: 1,
+          ingressBytes: 3,
+        });
+        expect(
+          (
+            await db.pool.query(
+              "SELECT state FROM " +
+                table("internal_cleanup_entries") +
+                " WHERE run_id=$1",
+              [f.runId],
+            )
+          ).rows,
+        ).toEqual([{ state: "AVAILABLE" }]);
+      } finally {
+        await f.close();
+      }
+    },
+    35000,
+  );
 });

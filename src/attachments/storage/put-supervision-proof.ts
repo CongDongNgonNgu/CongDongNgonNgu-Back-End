@@ -61,3 +61,53 @@ export function originalPutState(handle:AttachmentPutSupervision):'ISSUED'|'STAR
 
 /** Only verified adapter-produced receipt, never manufactured from settlement alone. */
 export function originalPutReceipt(handle:AttachmentPutSupervision):AttachmentStoredObject|undefined{const f=handles.get(handle);if(!f||f.released)return fail();return f.receipt?structuredClone(f.receipt):undefined;}
+
+declare const sourceQuiescenceBrand: unique symbol;
+export interface SourcePutQuiescence {
+  readonly [sourceQuiescenceBrand]: true;
+}
+const sourceQuiescence = new WeakMap<
+  SourcePutQuiescence,
+  { claim: AttachmentPutClaim; receipt: AttachmentStoredObject }
+>();
+/** Historical original source-producer closure only; no freshness or provider grant. */
+export function captureSourcePutQuiescence(
+  claim: AttachmentPutClaim,
+  handle: AttachmentPutSupervision,
+  closure: PutLocalClosure,
+): SourcePutQuiescence {
+  const h = handles.get(handle);
+  if (
+    !h ||
+    h.released ||
+    h.state !== 'SETTLED' ||
+    h.id !== claim.supervisionId ||
+    claim.manifest.locator.kind !== 'source' ||
+    !verifyPutLocalClosure(claim, handle, closure) ||
+    !h.receipt ||
+    h.receipt.sha256 !== claim.manifest.sha256 ||
+    h.receipt.sizeBytes !== claim.manifest.sizeBytes
+  )
+    return fail();
+  const fact = Object.freeze({}) as SourcePutQuiescence;
+  const captured=structuredClone(claim),receipt=structuredClone(h.receipt);
+  Object.freeze(captured.manifest.locator);Object.freeze(captured.manifest);Object.freeze(captured);
+  Object.freeze(receipt.locator);Object.freeze(receipt);
+  sourceQuiescence.set(fact, Object.freeze({claim:captured,receipt}));
+  return fact;
+}
+export function verifySourcePutQuiescence(
+  fact: SourcePutQuiescence,
+  claim: AttachmentPutClaim,
+  receipt: AttachmentStoredObject,
+): boolean {
+  const f = sourceQuiescence.get(fact);
+  return (
+    !!f &&
+    sameClaim(f.claim, claim) &&
+    sameLocator(f.receipt.locator, receipt.locator) &&
+    f.receipt.sha256 === receipt.sha256 &&
+    f.receipt.sizeBytes === receipt.sizeBytes &&
+    f.receipt.version === receipt.version
+  );
+}

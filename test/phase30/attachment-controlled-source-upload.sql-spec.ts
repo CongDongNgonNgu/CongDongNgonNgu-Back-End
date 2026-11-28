@@ -1,3 +1,4 @@
+import { AttachmentUploadLedger } from "../../src/attachments/upload/attachment-upload-ledger";
 import { randomUUID, createHash } from "node:crypto";
 import { readdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
@@ -66,6 +67,10 @@ describe("controlled source upload exact identities and request-local cleanup", 
   afterAll(async () => db.close());
   beforeEach(async () => {
     await db.reset();
+    // Phase22 reset clears owned product rows, but intentionally knows nothing
+    // about Phase30 quota counters. Isolate cases; preserve every counter within
+    // each scenario, including the four-source shared-service proof.
+    await db.pool.query("TRUNCATE TABLE " + table("attachment_quota_counters"));
     actor = randomUUID();
     await db.pool.query(
       "INSERT INTO users(id,email,normalized_email,display_name,status,email_verified_at) VALUES($1,$2,$2,'Synthetic controlled upload','ACTIVE',clock_timestamp())",
@@ -91,7 +96,12 @@ describe("controlled source upload exact identities and request-local cleanup", 
   });
   type Send = (c: PoolClient, sql: string, values?: unknown[]) => Promise<any>;
   async function ready(
-    options: { send?: Send; expiresInMs?: number; fingerprint?: string } = {},
+    options: {
+      send?: Send;
+      expiresInMs?: number;
+      fingerprint?: string;
+      sourceCount?: number;
+    } = {},
   ) {
     const draft = await new AttachmentInitiationRepository(
       db.pool,
@@ -162,7 +172,7 @@ describe("controlled source upload exact identities and request-local cleanup", 
       >,
       jobId = randomUUID(),
       sha256 = createHash("sha256").update("abc").digest("hex");
-    const p: PreparedRun = {
+    let p: PreparedRun = {
       runId: randomUUID(),
       activationId: randomUUID(),
       manifestSha256: createHash("sha256").update(randomUUID()).digest("hex"),
@@ -224,6 +234,137 @@ describe("controlled source upload exact identities and request-local cleanup", 
         },
       ],
     };
+
+    const sourcePlans = [
+      {
+        attachmentId,
+        ids,
+        jobId,
+        initiationFingerprint,
+        candidateKey: "upload",
+        policyKey: "upload.policy",
+        instanceKey: "upload.instance",
+      },
+    ];
+    for (let index = 1; index < (options.sourceCount ?? 1); index++) {
+      if (index >= 4)
+        throw Error("source fixture exceeds sealed four-source limit");
+      const extra = await new AttachmentInitiationRepository(
+        db.pool,
+        capabilities,
+      ).initiate(actor, {
+        clientUploadId: randomUUID(),
+        scope: {
+          kind: "COMMUNITY",
+          postType: "DISCUSSION",
+          languageId: language,
+          visibility: "PRIVATE",
+        },
+        filename: "source.txt",
+        mime: "text/plain",
+        bytes: 3,
+      });
+      if (!("id" in extra)) throw Error("unexpected extra bound fixture");
+      const attachmentId = extra.id,
+        suffix = "." + index,
+        instanceKey = "upload.instance" + suffix,
+        policyKey = "upload.policy" + suffix,
+        candidateKey = "upload" + suffix,
+        cleanupKey = "source.cleanup" + suffix,
+        cleanupSlot = "source.cleanup.job" + suffix;
+      const extraSlots = roles.map((role) => ({
+        key: role.toLowerCase() + suffix,
+        operationKey: instanceKey,
+        role,
+        id: randomUUID(),
+        attachmentId,
+      }));
+      const extraIds = Object.fromEntries(
+          extraSlots.map((slot) => [slot.role, slot.id]),
+        ) as typeof ids,
+        jobId = randomUUID();
+      const initiationFingerprint = (
+        await db.pool.query(
+          "SELECT init_fingerprint FROM attachments WHERE id=$1",
+          [attachmentId],
+        )
+      ).rows[0].init_fingerprint;
+      sourcePlans.push({
+        attachmentId,
+        ids: extraIds,
+        jobId,
+        initiationFingerprint,
+        candidateKey,
+        policyKey,
+        instanceKey,
+      });
+      p = {
+        ...p,
+        slots: [
+          ...p.slots,
+          ...extraSlots,
+          {
+            key: cleanupSlot,
+            operationKey: cleanupKey,
+            role: "CLEANUP_JOB",
+            id: jobId,
+            attachmentId,
+          },
+        ],
+        requests: {
+          candidates: [
+            ...p.requests!.candidates,
+            {
+              key: candidateKey,
+              method: "PUT",
+              path: "/api/v1/attachments/" + attachmentId + "/content",
+              authClass: "AUTH",
+              ingressBytes: 3,
+              egressBytes: 0,
+            },
+          ],
+          attempts: [
+            ...p.requests!.attempts,
+            { key: "coarse" + suffix, candidateKey },
+          ],
+        },
+        bindings: {
+          operations: [
+            ...p.bindings!.operations,
+            {
+              key: instanceKey,
+              policyKey,
+              policyAttemptKey: "one",
+              attachmentId,
+              ingressBytes: 3,
+              egressBytes: 0,
+              processingAttempts: 0,
+              slotKeys: extraSlots.map((slot) => slot.key),
+            },
+          ],
+          edges: [
+            ...p.bindings!.edges,
+            { attemptKey: "coarse" + suffix, operationKey: instanceKey },
+          ],
+        },
+        internalCleanup: [
+          ...p.internalCleanup!,
+          {
+            key: cleanupKey,
+            sourceOperationKey: instanceKey,
+            attachmentId,
+            objectId: extraIds.SOURCE_OBJECT,
+            attemptId: extraIds.SOURCE_ATTEMPT,
+            claimId: extraIds.PUT_CLAIM,
+            supervisionId: extraIds.PUT_SUPERVISION,
+            sha256,
+            byteCount: 3,
+            jobSlotKey: cleanupSlot,
+          },
+        ],
+      };
+    }
+
     await ledger.prepare(p);
     const t: ControlTuple = {
       runId: p.runId,
@@ -252,37 +393,33 @@ describe("controlled source upload exact identities and request-local cleanup", 
       originalDisabledCommandObserved: true,
       allFourFlagsFalseObserved: true,
     });
+
     const active = await ledger.activateControlled(t),
-      handle = await ledger.bindMatchedPolicy(
-        await ledger.reserveRequest(active, "upload"),
-        { policyKey: "upload.policy", instanceKeys: ["upload.instance"] },
-      ),
-      abort = new AbortController(),
       executor = ledger.controlledSourceUploads(),
-      context = executor.issue(
-        handle,
-        {
-          actorId: actor,
-          sessionId: randomUUID(),
-          contentType: "text/plain",
-          contentLength: 3,
-          inputSha256: sha256,
-          initiationFingerprint,
-        },
-        abort.signal,
+      sources = [];
+    for (const source of sourcePlans) {
+      const handle = await ledger.bindMatchedPolicy(
+        await ledger.reserveRequest(active, source.candidateKey),
+        { policyKey: source.policyKey, instanceKeys: [source.instanceKey] },
       );
-    return {
-      p,
-      ids,
-      jobId,
-      sha256,
-      attachmentId,
-      ledger,
-      executor,
-      context,
-      abort,
-    };
+      const abort = new AbortController(),
+        context = executor.issue(
+          handle,
+          {
+            actorId: actor,
+            sessionId: randomUUID(),
+            contentType: "text/plain",
+            contentLength: 3,
+            inputSha256: sha256,
+            initiationFingerprint: source.initiationFingerprint,
+          },
+          abort.signal,
+        );
+      sources.push({ ...source, context, abort });
+    }
+    return { p, sha256, ledger, executor, active, sources, ...sources[0] };
   }
+
   function storage(
     put: (
       input: Parameters<AttachmentStorage["putTemporary"]>[0],
@@ -323,7 +460,9 @@ describe("controlled source upload exact identities and request-local cleanup", 
             throw Error("INVALID_ORIGINAL_SUPERVISION");
           authority.start();
           try {
-            return await put(input);
+            const result = await put(input);
+            authority.recordReceipt(result);
+            return result;
           } finally {
             authority.settle();
           }
@@ -862,4 +1001,344 @@ describe("controlled source upload exact identities and request-local cleanup", 
       ).rows,
     ).toEqual([]);
   });
+
+  it.each([
+    "ACK_LOST",
+    "INSPECTION_ACK_LOST",
+    "CLOSED",
+    "CANCEL_AFTER_ACK",
+  ] as const)(
+    "preserves PENDING custody without another job after %s",
+    async (mode) => {
+      let enabled = false,
+        pendingTx = false,
+        pendingLost = false,
+        inspectionLost = false,
+        intercepted = false,
+        f: Awaited<ReturnType<typeof ready>>;
+      f = await ready({
+        send: async (c, sql, values) => {
+          if (enabled && sql.includes("UPDATE attachments SET state='PENDING'"))
+            pendingTx = true;
+          const result = await c.query(sql, values);
+          if (enabled && pendingTx && sql === "COMMIT") {
+            pendingTx = false;
+            intercepted = true;
+            if (mode === "CANCEL_AFTER_ACK") {
+              enabled = false;
+              f.abort.abort();
+              return result;
+            }
+            pendingLost = true;
+            if (mode === "CLOSED")
+              await c.query(
+                "UPDATE " +
+                  table("runs") +
+                  " SET state='CLOSED' WHERE run_id=$1",
+                [f.p.runId],
+              );
+            throw Error("SYNTHETIC_LOST_PENDING_COMMIT_ACK");
+          }
+          if (
+            enabled &&
+            pendingLost &&
+            mode === "INSPECTION_ACK_LOST" &&
+            !inspectionLost &&
+            sql === "COMMIT"
+          ) {
+            inspectionLost = true;
+            enabled = false;
+            throw Error("SYNTHETIC_LOST_PENDING_INSPECTION_ACK");
+          }
+          return result;
+        },
+      });
+      const st = storage(consume),
+        service = new AttachmentUploadService(db.pool, st, capabilities, {
+          temporaryRoot,
+          controlled: f.executor,
+        });
+      enabled = true;
+      await expect(service.upload(input(f), f.context)).rejects.toThrow();
+      expect(intercepted).toBe(true);
+      if (mode === "INSPECTION_ACK_LOST") {
+        expect(inspectionLost).toBe(true);
+        expect(originalPutState(st.supervisePut.mock.results[0].value)).toBe(
+          "SETTLED",
+        );
+      }
+      await expect(service.retryControlledRetirements()).resolves.toEqual({
+        remaining: 0,
+      });
+      expect(() =>
+        originalPutState(st.supervisePut.mock.results[0].value),
+      ).toThrow();
+      expect(st.putSupervised).toHaveBeenCalledTimes(1);
+      expect(
+        (
+          await db.pool.query(
+            "SELECT state,source_object_id,pending_slot_held,upload_slot_held,lease_owner FROM attachments WHERE id=$1",
+            [f.attachmentId],
+          )
+        ).rows[0],
+      ).toMatchObject({
+        state: "PENDING",
+        source_object_id: f.ids.SOURCE_OBJECT,
+        pending_slot_held: true,
+        upload_slot_held: false,
+        lease_owner: null,
+      });
+      expect(
+        (
+          await db.pool.query(
+            "SELECT id FROM attachment_cleanup_jobs WHERE attachment_id=$1",
+            [f.attachmentId],
+          )
+        ).rows,
+      ).toEqual([]);
+      expect(
+        (
+          await db.pool.query(
+            "SELECT state FROM " +
+              table("internal_cleanup_entries") +
+              " WHERE run_id=$1",
+            [f.p.runId],
+          )
+        ).rows,
+      ).toEqual([{ state: "AVAILABLE" }]);
+      expect(
+        (
+          await db.pool.query(
+            "SELECT counters FROM " + table("runs") + " WHERE run_id=$1",
+            [f.p.runId],
+          )
+        ).rows[0].counters,
+      ).toMatchObject({ authenticatedRequests: 1, ingressBytes: 3 });
+      await expect(service.retryControlledRetirements()).resolves.toEqual({
+        remaining: 0,
+      });
+    },
+  );
+  it("refuses custody when the settled source version changes after the original acknowledged snapshot", async () => {
+    let enabled = false,
+      pendingTx = false,
+      changed = false,
+      f: Awaited<ReturnType<typeof ready>>;
+    f = await ready({
+      send: async (c, sql, values) => {
+        if (enabled && sql.includes("UPDATE attachments SET state='PENDING'"))
+          pendingTx = true;
+        const result = await c.query(sql, values);
+        if (enabled && pendingTx && sql === "COMMIT") {
+          enabled = false;
+          await c.query(
+            "UPDATE attachment_objects SET object_version=object_version+1 WHERE id=$1",
+            [f.ids.SOURCE_OBJECT],
+          );
+          changed = true;
+          throw Error("SYNTHETIC_LOST_PENDING_ACK_CHANGED_SOURCE_VERSION");
+        }
+        return result;
+      },
+    });
+    const st = storage(consume),
+      service = new AttachmentUploadService(db.pool, st, capabilities, {
+        temporaryRoot,
+        controlled: f.executor,
+      });
+    enabled = true;
+    await expect(service.upload(input(f), f.context)).rejects.toThrow();
+    expect(changed).toBe(true);
+    await expect(service.retryControlledRetirements()).resolves.toEqual({
+      remaining: 1,
+    });
+    expect(originalPutState(st.supervisePut.mock.results[0].value)).toBe(
+      "SETTLED",
+    );
+    expect(
+      (
+        await db.pool.query("SELECT state FROM attachments WHERE id=$1", [
+          f.attachmentId,
+        ])
+      ).rows[0].state,
+    ).toBe("PENDING");
+    expect(
+      (
+        await db.pool.query(
+          "SELECT id FROM attachment_cleanup_jobs WHERE attachment_id=$1",
+          [f.attachmentId],
+        )
+      ).rows,
+    ).toEqual([]);
+  });
+  it("does not infer committed PENDING custody from a trusted callback return value without the SQL transition", async () => {
+    const f = await ready(),
+      st = storage(consume),
+      uploads = new AttachmentUploadLedger();
+    jest.spyOn(uploads, "markPending").mockResolvedValue({ state: "PENDING" });
+    const service = new AttachmentUploadService(
+      db.pool,
+      st,
+      capabilities,
+      { temporaryRoot, controlled: f.executor },
+      uploads,
+    );
+    await expect(service.upload(input(f), f.context)).rejects.toThrow();
+    expect(
+      (
+        await db.pool.query("SELECT state FROM attachments WHERE id=$1", [
+          f.attachmentId,
+        ])
+      ).rows[0].state,
+    ).toBe("DELETED");
+    expect(
+      (
+        await db.pool.query(
+          "SELECT id FROM attachment_cleanup_jobs WHERE attachment_id=$1",
+          [f.attachmentId],
+        )
+      ).rows,
+    ).toEqual([{ id: f.jobId }]);
+    expect(st.putSupervised).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers all four sources of one sealed run on one service without consuming failure capacity or a fifth identity", async () => {
+    const publicationLost = new Set<string>(),
+      inspectionLost = new Set<string>();
+    let pendingAttachment: string | undefined,
+      inspectionAttachment: string | undefined,
+      enabled = false;
+    let lastSql = "none";
+    const f = await ready({
+      sourceCount: 4,
+      expiresInMs: 120000,
+      send: async (c, sql, values) => {
+        if (enabled && sql.includes("UPDATE attachments SET state='PENDING'"))
+          pendingAttachment = String(values![0]);
+        lastSql = sql.slice(0, 180);
+        const result = await c.query(sql, values);
+        if (enabled && sql === "COMMIT" && pendingAttachment) {
+          const id = pendingAttachment;
+          pendingAttachment = undefined;
+          inspectionAttachment = id;
+          publicationLost.add(id);
+          throw Error("SYNTHETIC_LOST_BATCH_PENDING_ACK");
+        }
+        if (
+          enabled &&
+          sql === "COMMIT" &&
+          inspectionAttachment &&
+          !inspectionLost.has(inspectionAttachment)
+        ) {
+          inspectionLost.add(inspectionAttachment);
+          inspectionAttachment = undefined;
+          throw Error("SYNTHETIC_LOST_BATCH_INSPECTION_ACK");
+        }
+        return result;
+      },
+    });
+    const st = storage(consume),
+      service = new AttachmentUploadService(db.pool, st, capabilities, {
+        temporaryRoot,
+        controlled: f.executor,
+      });
+    enabled = true;
+    for (const source of f.sources) {
+      const selected = { ...f, ...source };
+      let failure: unknown;
+      try {
+        await service.upload(input(selected), source.context);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeDefined();
+      if (!publicationLost.has(source.attachmentId)) {
+        const row = (
+          await db.pool.query(
+            "SELECT state,upload_slot_held,pending_slot_held FROM attachments WHERE id=$1",
+            [source.attachmentId],
+          )
+        ).rows[0];
+        const quota = (
+          await db.pool.query(
+            "SELECT kind,action,used FROM attachment_quota_counters WHERE action IN ('upload','pending','read','initiate') ORDER BY kind,action",
+          )
+        ).rows;
+        throw new AggregateError(
+          [failure],
+          "FOUR_SOURCE_PUBLICATION_NOT_REACHED " +
+            JSON.stringify({
+              ordinal: f.sources.indexOf(source) + 1,
+              lastSql,
+              row,
+              quota,
+              puts: st.putSupervised.mock.calls.length,
+            }),
+        );
+      }
+    }
+    expect(publicationLost.size).toBe(4);
+    expect(inspectionLost.size).toBe(4);
+    expect(st.putSupervised).toHaveBeenCalledTimes(4);
+    for (const result of st.supervisePut.mock.results)
+      expect(originalPutState(result.value)).toBe("SETTLED");
+    await expect(service.retryControlledRetirements()).resolves.toEqual({
+      remaining: 0,
+    });
+    for (const result of st.supervisePut.mock.results)
+      expect(() => originalPutState(result.value)).toThrow();
+    expect(
+      (
+        await db.pool.query(
+          "SELECT state,source_object_id,pending_slot_held,upload_slot_held,lease_owner FROM attachments WHERE id=ANY($1::uuid[])",
+          [f.sources.map((v) => v.attachmentId)],
+        )
+      ).rows,
+    ).toEqual(
+      expect.arrayContaining(
+        f.sources.map((v) =>
+          expect.objectContaining({
+            state: "PENDING",
+            source_object_id: v.ids.SOURCE_OBJECT,
+            pending_slot_held: true,
+            upload_slot_held: false,
+            lease_owner: null,
+          }),
+        ),
+      ),
+    );
+    expect(
+      (
+        await db.pool.query(
+          "SELECT id FROM attachment_cleanup_jobs WHERE attachment_id=ANY($1::uuid[])",
+          [f.sources.map((v) => v.attachmentId)],
+        )
+      ).rows,
+    ).toEqual([]);
+    expect(
+      (
+        await db.pool.query(
+          "SELECT state FROM " +
+            table("internal_cleanup_entries") +
+            " WHERE run_id=$1",
+          [f.p.runId],
+        )
+      ).rows,
+    ).toEqual(Array.from({ length: 4 }, () => ({ state: "AVAILABLE" })));
+    expect(
+      (
+        await db.pool.query(
+          "SELECT counters FROM " + table("runs") + " WHERE run_id=$1",
+          [f.p.runId],
+        )
+      ).rows[0].counters,
+    ).toMatchObject({ authenticatedRequests: 4, ingressBytes: 12 });
+    await expect(
+      f.ledger.reserveRequest(f.active, "upload.fifth"),
+    ).rejects.toThrow();
+    await expect(service.retryControlledRetirements()).resolves.toEqual({
+      remaining: 0,
+    });
+    expect(st.putSupervised).toHaveBeenCalledTimes(4);
+  }, 120000);
 });

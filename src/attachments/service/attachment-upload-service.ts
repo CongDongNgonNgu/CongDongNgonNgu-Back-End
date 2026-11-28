@@ -160,18 +160,22 @@ export class AttachmentUploadService {
     finally{const closed=finished(body,{cleanup:true}).catch(()=>undefined);body.destroy();await closed;}
     // Actual provider results must survive account/group revocation and deletion.
     // This trusted internal transaction grants no read/write user authority.
-    await tx(client=>this.lifecycle.recordPutResult(client,claim,observed,controlled?{ensure:async()=>{throw new AttachmentUploadError('CANCELLED');}}:undefined));
+    const record=(client:UploadClient)=>this.lifecycle.recordPutResult(client,claim,observed,controlled?{ensure:async()=>{throw new AttachmentUploadError('CANCELLED');}}:undefined);
+    if(controlled)await controlled.recordSourceReceipt(record);else await tx(record);
     writes.acknowledged(claim);
     return claim.objectId;
    },{temporaryRoot:this.options.temporaryRoot,signal:request.signal});
+   if(controlled)await controlled.captureQuiescence(async()=>{});
    live();await request.reauthorize();live();
-   return await tx(client=>this.uploads.markPending(client,request.actorId,admitted,objectId));
+   const publish=(client:UploadClient)=>this.uploads.markPending(client,request.actorId,admitted,objectId);
+   return controlled?await controlled.publishPending(publish):await tx(publish);
   }catch(error){
    if(controlled){
     await inputClosed();
     if(fence){
      const claim=controlledClaim,handle=claim?writes.originalHandle(claim):undefined,pending=handle!==undefined&&originalPutState(handle)==='STARTED';
      const entry={retry:async()=>{
+      if(await controlled.reconcilePending()){if(claim)writes.cleanupAcknowledged(claim);writes.releaseResolved();return;}
       await controlled.terminalize(inputClosed,!claim);
       if(claim){await controlled.retire(claim,handle!,inputClosed,observedResult);writes.cleanupAcknowledged(claim);}
       writes.releaseResolved();
