@@ -19,6 +19,9 @@ import {
   createPlannedPutSupervisionIdentity,
   supervisionIdentity,
   createPutLocalClosure,
+  captureSourcePutQuiescence,
+  verifySourcePutQuiescence,
+  type SourcePutQuiescence,
   verifyPutLocalClosure,
   verifyUnsentProof,
   originalPutSettlement,
@@ -42,6 +45,13 @@ export interface SourceUploadAccess {
   readonly sha256: string;
   readonly initiationFingerprint: string;
   assertForward(): void;
+  /** Trusted existing receipt SQL; retains its exact settled version only after acknowledged COMMIT. */
+  recordSourceReceipt<T>(work: (client: PoolClient) => Promise<T>): Promise<T>;
+  /** Called only after the real bounded upload/spool callback has completely closed. */
+  captureQuiescence(closed: () => Promise<void>): Promise<void>;
+  publishPending<T>(work: (client: PoolClient) => Promise<T>): Promise<T>;
+  /** Cleanup-only historical adoption; never renews forward authority or returns a DTO. */
+  reconcilePending(): Promise<boolean>;
   terminalize(
     closed: () => Promise<void>,
     settleWithoutObject: boolean,
@@ -100,7 +110,21 @@ interface Facts {
   signal: AbortSignal;
   ids: SourceUploadAccess["ids"];
 }
+interface SourceCustody {
+  state:
+    | "UPLOAD_ACTIVE"
+    | "QUIESCED_UNPUBLISHED"
+    | "PENDING_MAYBE"
+    | "PENDING_CUSTODY";
+  busy: boolean;
+  fact?: SourcePutQuiescence;
+  settled?: { version: number; receipt: AttachmentStoredObject };
+}
 export class ControlledSourceUploads {
+  private readonly pendingSources = new WeakMap<
+    ControlledActiveRun,
+    Map<string, SourceCustody>
+  >();
   private readonly issued = new WeakSet<MatchedBoundOperation>();
   private readonly contexts = new WeakMap<
     ControlledSourceUploadContext,
@@ -229,6 +253,7 @@ export class ControlledSourceUploads {
       typeof work !== "function"
     )
       return fail();
+    const custody: SourceCustody = { state: "UPLOAD_ACTIVE", busy: false };
     let open = true,
       entry: Record<string, any> | undefined,
       deadline = performance.now() + 30000;
@@ -253,6 +278,8 @@ export class ControlledSourceUploads {
     const stage = async <R>(
       callback: (c: PoolClient, fresh: () => Promise<void>) => Promise<R>,
       beforeCommit?: () => void,
+      afterCommit?: () => void,
+      opaqueCommit = false,
     ): Promise<R> => {
       checkOpen();
       const c = await this.pool.connect();
@@ -349,7 +376,13 @@ export class ControlledSourceUploads {
         await fresh();
         live = false;
         if (beforeCommit) beforeCommit();
-        await c.query("COMMIT");
+        try {
+          await c.query("COMMIT");
+        } catch (error) {
+          if (opaqueCommit) return fail();
+          throw error;
+        }
+        afterCommit?.();
         checkOpen();
         return result;
       } catch (error) {
@@ -358,6 +391,190 @@ export class ControlledSourceUploads {
       } finally {
         live = false;
         c.release();
+      }
+    };
+    const sourceSnapshot = async (c: PoolClient) => {
+      if (!registered) return fail();
+      const o = (
+        await c.query(
+          "SELECT * FROM attachment_objects WHERE attachment_id=$1 AND id=$2 FOR UPDATE",
+          [f.handle.attachmentId, f.ids.objectId],
+        )
+      ).rows[0];
+      const receipt = originalPutReceipt(registered.handle);
+      if (
+        !o ||
+        !receipt ||
+        o.id !== f.ids.objectId ||
+        o.attachment_id !== f.handle.attachmentId ||
+        o.attempt_id !== f.ids.attemptId ||
+        o.variant !== "source" ||
+        o.put_claim !== f.ids.claimId ||
+        o.put_supervision_id !== f.ids.supervisionId ||
+        o.sha256 !== f.inputSha256 ||
+        Number(o.byte_count) !== f.contentLength ||
+        o.etag !== receipt.version ||
+        o.status !== "WRITTEN" ||
+        !o.put_settled_at ||
+        o.put_uncertain !== false ||
+        o.put_abandoned_at !== null ||
+        !Number.isSafeInteger(Number(o.object_version)) ||
+        Number(o.object_version) <= registered.claim.objectVersion
+      )
+        return fail();
+      const captured = structuredClone(receipt);
+      Object.freeze(captured.locator);
+      Object.freeze(captured);
+      return Object.freeze({
+        version: Number(o.object_version),
+        receipt: captured,
+      });
+    };
+    const pendingPredicate = async (c: PoolClient) => {
+      if (
+        !registered ||
+        !custody.fact ||
+        !custody.settled ||
+        !verifySourcePutQuiescence(
+          custody.fact,
+          registered.claim,
+          custody.settled.receipt,
+        )
+      )
+        return fail();
+      const a = (
+        await c.query("SELECT * FROM attachments WHERE id=$1 FOR UPDATE", [
+          f.handle.attachmentId,
+        ])
+      ).rows[0];
+      if (
+        !a ||
+        a.id !== f.handle.attachmentId ||
+        a.init_fingerprint !== f.initiationFingerprint ||
+        a.state !== "PENDING" ||
+        a.source_object_id !== f.ids.objectId ||
+        a.pending_slot_held !== true ||
+        a.upload_slot_held !== false ||
+        a.lease_owner !== null
+      )
+        return fail();
+      const o = (
+          await c.query(
+            "SELECT * FROM attachment_objects WHERE attachment_id=$1 AND id=$2 FOR UPDATE",
+            [f.handle.attachmentId, f.ids.objectId],
+          )
+        ).rows[0],
+        settled = custody.settled;
+      if (
+        !o ||
+        o.id !== f.ids.objectId ||
+        o.attachment_id !== f.handle.attachmentId ||
+        o.attempt_id !== f.ids.attemptId ||
+        o.variant !== "source" ||
+        o.put_claim !== f.ids.claimId ||
+        o.put_supervision_id !== f.ids.supervisionId ||
+        o.sha256 !== f.inputSha256 ||
+        Number(o.byte_count) !== f.contentLength ||
+        o.etag !== settled.receipt.version ||
+        Number(o.object_version) !== settled.version ||
+        o.status !== "WRITTEN" ||
+        !o.put_settled_at ||
+        o.put_uncertain !== false ||
+        o.put_abandoned_at !== null
+      )
+        return fail();
+    };
+    const retainCustody = () => {
+      let sources = this.pendingSources.get(f.active);
+      if (!sources) {
+        sources = new Map();
+        this.pendingSources.set(f.active, sources);
+      }
+      const previous = sources.get(f.ids.objectId);
+      if (
+        (previous && previous !== custody) ||
+        (!previous && sources.size >= 4)
+      )
+        return fail();
+      sources.set(f.ids.objectId, custody);
+    };
+    const reconcilePending = async (): Promise<boolean> => {
+      if (custody.busy) return fail();
+      if (custody.state === "PENDING_CUSTODY") return true;
+      if (!custody.fact) return false;
+      custody.busy = true;
+      let c: PoolClient | undefined;
+      try {
+        c = await this.pool.connect();
+        await c.query("BEGIN");
+        await c.query("SET LOCAL statement_timeout='3000ms'");
+        await c.query("SET LOCAL lock_timeout='2000ms'");
+        const h = f.handle;
+        if (
+          !(
+            await c.query(
+              "SELECT run_id FROM phase30_test_execution.runs WHERE run_id=$1 AND activation_id=$2 AND boot_id=$3 AND activation_control_required AND preparation_sealed AND state IN ('ACTIVE','CLOSED','EXPIRED') FOR UPDATE",
+              [h.runId, f.active.activationId, f.active.bootId],
+            )
+          ).rows[0]
+        )
+          return fail();
+        if (
+          !(
+            await c.query(
+              "SELECT attempt_key FROM phase30_test_execution.request_attempts WHERE run_id=$1 AND attempt_key=$2 AND bound_operation_key=$3 AND boot_id=$4 AND state='BOUND' FOR UPDATE",
+              [h.runId, h.attemptKey, h.operationKey, f.active.bootId],
+            )
+          ).rows[0]
+        )
+          return fail();
+        if (
+          !(
+            await c.query(
+              "SELECT operation_key FROM phase30_test_execution.bound_operations WHERE run_id=$1 AND operation_key=$2 AND bound_attempt_key=$3 AND policy_key=$4 AND policy_attempt_key=$5 AND state='BOUND' FOR UPDATE",
+              [
+                h.runId,
+                h.operationKey,
+                h.attemptKey,
+                h.policyKey,
+                h.policyAttemptKey,
+              ],
+            )
+          ).rows[0]
+        )
+          return fail();
+        await new AttachmentLifecycleLedger().lockForTerminalRetention(
+          c,
+          h.attachmentId,
+        );
+        const a = (
+          await c.query("SELECT * FROM attachments WHERE id=$1 FOR UPDATE", [
+            h.attachmentId,
+          ])
+        ).rows[0];
+        if (a?.state === "PENDING") {
+          await pendingPredicate(c);
+          await c.query("COMMIT");
+          custody.state = "PENDING_CUSTODY";
+          return true;
+        }
+        if (
+          !a ||
+          a.init_fingerprint !== f.initiationFingerprint ||
+          !(
+            (a.state === "UPLOADING" && a.lease_owner === f.ids.uploadOwner) ||
+            ["DELETED", "REJECTED"].includes(a.state)
+          )
+        )
+          return fail();
+        await c.query("COMMIT");
+        return false;
+      } catch (error) {
+        if (c) await c.query("ROLLBACK").catch(() => undefined);
+        return fail();
+      } finally {
+        c?.release();
+        custody.busy = false;
       }
     };
     const access: SourceUploadAccess = Object.freeze({
@@ -369,6 +586,83 @@ export class ControlledSourceUploads {
       sha256: f.inputSha256,
       initiationFingerprint: f.initiationFingerprint,
       stage,
+      recordSourceReceipt: async <R>(work: (c: PoolClient) => Promise<R>) => {
+        if (!registered || custody.settled || custody.busy) return fail();
+        custody.busy = true;
+        let snapshot: SourceCustody["settled"];
+        try {
+          return await stage(
+            async (c) => {
+              const result = await work(c);
+              snapshot = await sourceSnapshot(c);
+              return result;
+            },
+            undefined,
+            () => {
+              custody.settled = snapshot;
+            },
+            true,
+          );
+        } finally {
+          custody.busy = false;
+        }
+      },
+      captureQuiescence: async (closed: () => Promise<void>) => {
+        checkOpen();
+        if (
+          !registered ||
+          !custody.settled ||
+          custody.state !== "UPLOAD_ACTIVE" ||
+          custody.busy
+        )
+          return fail();
+        custody.busy = true;
+        try {
+          const local = await createPutLocalClosure(
+            registered.claim,
+            registered.handle,
+            closed,
+          );
+          checkOpen();
+          custody.fact = captureSourcePutQuiescence(
+            registered.claim,
+            registered.handle,
+            local,
+          );
+          retainCustody();
+          custody.state = "QUIESCED_UNPUBLISHED";
+        } finally {
+          custody.busy = false;
+        }
+      },
+      publishPending: async <R>(work: (c: PoolClient) => Promise<R>) => {
+        if (
+          custody.busy ||
+          custody.state !== "QUIESCED_UNPUBLISHED" ||
+          !custody.fact
+        )
+          return fail();
+        custody.busy = true;
+        try {
+          return await stage(
+            async (c) => {
+              const result = await work(c);
+              await pendingPredicate(c);
+              return result;
+            },
+            () => {
+              custody.state = "PENDING_MAYBE";
+            },
+            () => {
+              custody.state = "PENDING_CUSTODY";
+            },
+            true,
+          );
+        } finally {
+          custody.busy = false;
+        }
+      },
+      reconcilePending,
       assertForward: checkOpen,
       terminalize: async (
         closed: () => Promise<void>,
